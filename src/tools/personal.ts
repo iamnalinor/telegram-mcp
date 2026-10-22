@@ -10,7 +10,7 @@ import { z } from "zod";
 
 import { telegramChat, type ChatView } from "../access";
 import { uploadLink } from "../files";
-import { TELEGRAM_TEXT_LIMIT } from "../markdown";
+import { TELEGRAM_CAPTION_LIMIT, TELEGRAM_TEXT_LIMIT } from "../markdown";
 import { AS_USER_NOTE } from "../prompts";
 import { editMessage, ownMessage } from "./edit";
 import { inlineBytes, replyToArg, sentSummary, silentArg, uploadInstructions } from "./send";
@@ -98,7 +98,15 @@ export function registerPersonalTools(server: McpServer, ctx: ToolContext): void
           silent: args.silent,
           session: args.session,
         };
+        if (args.file && args.text && args.text.length > TELEGRAM_CAPTION_LIMIT) {
+          throw new ToolError(
+            `With a file, text is its caption, and captions stop at ${TELEGRAM_CAPTION_LIMIT} characters.`,
+          );
+        }
         if (args.file?.upload) {
+          if (args.file.text !== undefined || args.file.content_base64 !== undefined) {
+            throw new ToolError("Pass the content or upload: true, not both.");
+          }
           await mayPost(ctx, chat);
           const url = await uploadLink(ctx, chat, args.file.filename, options);
           return text(uploadInstructions(args.file.filename, chat, url));

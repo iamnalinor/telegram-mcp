@@ -157,7 +157,7 @@ other chat.
 Without a permission the tool refuses before anything reaches Telegram. Change it in Telegram and
 the next call follows; the bot tells you in its chat what Claude can do whenever it changes.
 Telegram also allows writing only within 24 hours of the other person's last message. Buttons,
-`ask_user`, reactions, pins and forwards are not used in personal chats. Claude is told that
+`ask_user`, reactions, pins, forwards, albums, locations and polls are not used in personal chats. Claude is told that
 anything it sends there goes out as you, and to send only when you ask it to in the conversation.
 
 Acting as you has its own tools, marked destructive, and the bot's tools (`send_message`,

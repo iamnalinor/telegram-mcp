@@ -372,6 +372,61 @@ describe("personal chats: mark_read", () => {
   });
 });
 
+describe("personal chats: the bot's side stays apart", () => {
+  it("an album cannot take a personal chat's files elsewhere", async () => {
+    const { token } = await aliceConnected(ALL);
+    await h.update({
+      business_message: {
+        message_id: 60,
+        business_connection_id: `bc-${ALICE.id}`,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: ANNA.id, type: "private", first_name: "Anna" },
+        from: { id: ANNA.id, is_bot: false, first_name: "Anna" },
+        photo: [{ file_id: "ph1", file_unique_id: "u1", width: 1, height: 1 }],
+      },
+    });
+    const result = await h.tool(token, "send_album", {
+      items: [{ message_id: 60, from_chat: ANNA.id }, { url: "https://a.b/2" }],
+    });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("Not available in personal chats");
+    expect(h.telegram.called("sendMediaGroup")).toEqual([]);
+  });
+
+  it("an upload link sends as the user only if send_as_user made it", async () => {
+    await aliceConnected(REPLY);
+    await h.businessSay(ALICE, ANNA, "send it");
+    // A link made for the chat without the as-user mark, as create_upload_url made them before.
+    const { sign } = await import("../src/crypto");
+    const blob = { u: ALICE.id, v: 0, c: ANNA.id, f: "a.txt", n: "nonce-legacy-1" };
+    const legacy = await sign(await h.signingKey(), "upload", blob, 600);
+    const put = await h.fetch(`/upload/${legacy}`, {
+      method: "PUT",
+      headers: { "content-length": "1" },
+      body: new Uint8Array([1]),
+    });
+    expect(put.status).toBe(403);
+    expect(await put.text()).toContain("not for that chat");
+    expect(h.telegram.called("sendDocument")).toEqual([]);
+  });
+
+  it("refuses a caption too long to send whole, and content with upload", async () => {
+    const { token } = await aliceConnected(REPLY);
+    await h.businessSay(ALICE, ANNA, "ping");
+    const long = await h.tool(token, "send_as_user", {
+      chat: ANNA.id,
+      text: "x".repeat(1100),
+      file: { filename: "a.txt", text: "a" },
+    });
+    expect(long.text).toContain("captions stop at 1024");
+    const both = await h.tool(token, "send_as_user", {
+      chat: ANNA.id,
+      file: { filename: "a.txt", text: "a", upload: true },
+    });
+    expect(both.text).toContain("not both");
+  });
+});
+
 describe("personal chats: review fixes", () => {
   it("an upload link refused at upload time answers 403 and spends nothing", async () => {
     const { token } = await aliceConnected(REPLY);

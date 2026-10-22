@@ -447,6 +447,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         for (const item of args.items) {
           if (item.message_id) {
             const from = await ctx.access.resolve(item.from_chat);
+            notPersonal(from, "the bot cannot carry a personal chat's files elsewhere.");
             const stored = await ctx.store.getMessage(from, item.message_id);
             if (!stored?.file_id || stored.date < from.visible_from) {
               throw new ToolError(`Message #${item.message_id} has no stored attachment.`);
