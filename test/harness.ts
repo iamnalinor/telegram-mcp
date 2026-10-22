@@ -461,12 +461,15 @@ export class Harness {
   }
 
   /** The whole OAuth dance; returns the token response. */
-  async connect(user: { id: number; first_name?: string; username?: string }) {
-    const redirect = "https://claude.ai/api/mcp/auth_callback";
+  async connect(
+    user: { id: number; first_name?: string; username?: string },
+    client: { redirect?: string; name?: string } = {},
+  ) {
+    const redirect = client.redirect ?? "https://claude.ai/api/mcp/auth_callback";
     const register = await this.fetch("/register", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ redirect_uris: [redirect], client_name: "test" }),
+      body: JSON.stringify({ redirect_uris: [redirect], client_name: client.name ?? "test" }),
     });
     const { client_id } = await register.json<{ client_id: string }>();
 

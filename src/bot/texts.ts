@@ -54,6 +54,22 @@ const en = {
   buttonBack: "« Back",
   buttonAddToGroup: "Add to a group",
   buttonRevoke: "Revoke access",
+  buttonSignIns: "🔑 Sign-ins",
+  buttonSignOutAll: "Sign out everywhere",
+  buttonConfirmSignOut: "Yes, sign out everywhere",
+  buttonCancel: "Cancel",
+  signInsScreen: (lines: string[]) =>
+    lines.length
+      ? `<b>Sign-ins</b>\nWhere an assistant is signed in with your account. Tap one to sign it out.\n\n${lines.join("\n")}`
+      : "<b>Sign-ins</b>\n\nNo assistant is signed in with your account.",
+  signInLine: (p: { client: string; since: string | null; seen: string }) =>
+    `• <b>${escapeHtml(p.client)}</b> — ${p.since ? `signed in ${p.since}, ` : ""}last seen ${p.seen}`,
+  signOutButton: (client: string) => `Sign out ${client}`,
+  unknownClient: "Unknown client",
+  signedOut: "Signed out.",
+  alreadySignedOut: "Already signed out.",
+  confirmSignOutAll:
+    "Sign out every assistant connected with your account? Each of them will have to sign in again.",
   connectFirst:
     "Connect your AI assistant to this bot first (add it as a connector in Claude or ChatGPT and sign in with Telegram), then link groups.",
   leavingNotConnected: (name: string) =>
@@ -160,6 +176,22 @@ const ru: Texts = {
   buttonBack: "« Назад",
   buttonAddToGroup: "Добавить в группу",
   buttonRevoke: "Отозвать доступ",
+  buttonSignIns: "🔑 Входы",
+  buttonSignOutAll: "Выйти везде",
+  buttonConfirmSignOut: "Да, выйти везде",
+  buttonCancel: "Отмена",
+  signInsScreen: (lines) =>
+    lines.length
+      ? `<b>Входы</b>\nГде под твоим аккаунтом вошёл ассистент. Нажми, чтобы выйти.\n\n${lines.join("\n")}`
+      : "<b>Входы</b>\n\nПод твоим аккаунтом не вошёл ни один ассистент.",
+  signInLine: (p) =>
+    `• <b>${escapeHtml(p.client)}</b> — ${p.since ? `вошёл ${p.since}, ` : ""}последняя активность ${p.seen}`,
+  signOutButton: (client) => `Выйти: ${client}`,
+  unknownClient: "Неизвестный клиент",
+  signedOut: "Вход завершён.",
+  alreadySignedOut: "Этот вход уже завершён.",
+  confirmSignOutAll:
+    "Выйти из всех ассистентов, подключённых под твоим аккаунтом? Каждому придётся войти заново.",
   connectFirst:
     "Сначала подключи AI-ассистента к этому боту (добавь коннектор в Claude или ChatGPT и войди через Telegram), потом привязывай группы.",
   leavingNotConnected: (name) =>

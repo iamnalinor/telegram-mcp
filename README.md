@@ -271,11 +271,14 @@ Increasing `RETENTION_DAYS` costs storage, not writes.
   bot's own messages, and in a shared group only those sent for the same user.
 - **Refresh tokens rotate**: each refresh returns a new one and retires the old. A retired token
   coming back after its successor was used, or more than 10 minutes later, means someone else holds
-  a copy, and that sign-in's refresh tokens are revoked (access tokens already issued run out within
-  a day; `/disconnect` stops those too). An assistant used at least once in 90 days never has to
-  reconnect.
-- **`/disconnect`** revokes every token you issued. Removing an ID from `ALLOWED_USER_IDS` cuts
-  access on the next call.
+  a copy, and that sign-in's tokens are revoked. An assistant used at least once in 90 days never
+  has to reconnect.
+- **Sign-ins** in the bot's menu lists where an assistant is signed in with your account (Claude,
+  ChatGPT, an app on your computer), with when it signed in and was last seen. Signing one out stops
+  its tokens on the next call. Upload and download links it already made keep working until they
+  expire (10 to 15 minutes); signing out everywhere stops those too.
+- **`/disconnect`** (or **Sign out everywhere**) revokes every token you issued. Removing an ID from
+  `ALLOWED_USER_IDS` cuts access on the next call.
 - **What is stored**: message text and attachment metadata (Telegram file ids, not the files), for
   `RETENTION_DAYS`. Whoever runs the Worker can read the database. Run your own.
 
