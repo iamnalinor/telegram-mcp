@@ -219,10 +219,17 @@ Increasing `RETENTION_DAYS` costs storage, not writes.
   the token in BotFather invalidates all sessions and links; the Worker re-registers the webhook on
   its own (on the next visit to its page, or the daily cron).
 - **Login** is Telegram Login, checked against the bot token's hash, valid for 10 minutes. OAuth
-  uses PKCE, and codes only go to Claude's, ChatGPT's or loopback callbacks.
+  uses PKCE, and codes only go to Claude's and ChatGPT's exact callback URLs or to loopback. Before
+  Telegram's login, a page names the assistant that will get access, and the sign-in can only finish
+  in the browser that saw it, so a link someone else started cannot be accepted by mistake.
 - **Access** is checked on every call: your own private chat, plus groups where you hold a grant and
   are still a member. A model cannot post to or read any other chat. It can only edit or delete the
   bot's own messages, and in a shared group only those sent for the same user.
+- **Refresh tokens rotate**: each refresh returns a new one and retires the old. A retired token
+  coming back after its successor was used, or more than 10 minutes later, means someone else holds
+  a copy, and that sign-in's refresh tokens are revoked (access tokens already issued run out within
+  a day; `/disconnect` stops those too). An assistant used at least once in 90 days never has to
+  reconnect.
 - **`/disconnect`** revokes every token you issued. Removing an ID from `ALLOWED_USER_IDS` cuts
   access on the next call.
 - **What is stored**: message text and attachment metadata (Telegram file ids, not the files), for
@@ -249,7 +256,9 @@ bun run dev
 - `bun test`: unit tests plus end-to-end runs of the real Worker against SQLite (behind a D1-shaped
   adapter) and a fake Bot API. They cover the webhook gate, groups and grants, topics, replies,
   buttons, file links, OAuth, the allowlist, and concurrent and out-of-order updates.
-- `bun run lint`: prettier, eslint, tsc (TypeScript 7) and knip.
+- `bun run lint`: prettier, eslint, tsc (TypeScript 7) and knip. It fixes what it can in place;
+  `bun run check` only reports, and is what CI runs, with `bun test`, on pushes to `main` and on
+  pull requests.
 - `bun run dev` reads `BOT_TOKEN` from `.dev.vars` or `.env`. To feed it webhook calls from your
   machine, also set `DEV_SKIP_IP_CHECK=1` there (never in production).
 

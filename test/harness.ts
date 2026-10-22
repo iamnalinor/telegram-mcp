@@ -205,6 +205,20 @@ class FixedLengthStreamPolyfill extends TransformStream<Uint8Array, Uint8Array> 
 }
 (globalThis as Record<string, unknown>).FixedLengthStream ??= FixedLengthStreamPolyfill;
 
+/**
+ * What the consent page /authorize answers with hands on: the Telegram login
+ * link, and the cookie the return from Telegram must carry.
+ */
+export async function consentLink(
+  response: Response,
+): Promise<{ telegram: URL; returnTo: string; cookie: string }> {
+  const cookie = response.headers.get("set-cookie")!.split(";")[0];
+  const href = /id="continue" href="([^"]+)"/.exec(await response.text())![1];
+  const telegram = new URL(href.replaceAll("&amp;", "&"));
+  const back = new URL(telegram.searchParams.get("return_to")!);
+  return { telegram, returnTo: `${back.pathname}${back.search}`, cookie };
+}
+
 export class Harness {
   db = new SqliteD1();
   telegram = new FakeTelegram();
@@ -246,6 +260,24 @@ export class Harness {
     );
     await Promise.allSettled(this.waits);
     return response;
+  }
+
+  /** The key the Worker signs its tokens with. */
+  async signingKey(): Promise<CryptoKey> {
+    return hmacKey(await hmac(await hmacKey(BOT_TOKEN), "telegram-mcp/sign"));
+  }
+
+  /** POST /token with a refresh grant. */
+  async refresh(refreshToken: string) {
+    const response = await this.fetch("/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken }),
+    });
+    return {
+      status: response.status,
+      body: await response.json<{ access_token?: string; refresh_token?: string }>(),
+    };
   }
 
   async webhookSecret(): Promise<string> {
@@ -373,12 +405,11 @@ export class Harness {
     const authorize = await this.fetch(
       `/authorize?${new URLSearchParams({ response_type: "code", client_id, redirect_uri: redirect, state: "xyz", code_challenge: challenge, code_challenge_method: "S256" }).toString()}`,
     );
-    const telegramUrl = new URL(authorize.headers.get("location")!);
-    const returnTo = new URL(telegramUrl.searchParams.get("return_to")!);
+    const consent = await consentLink(authorize);
 
-    const finish = await this.fetch(`${returnTo.pathname}${returnTo.search}`, {
+    const finish = await this.fetch(consent.returnTo, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", cookie: consent.cookie },
       body: JSON.stringify(await this.loginPayload(user)),
     });
     const body = await finish.json<{ redirect?: string; error?: string }>();

@@ -8,7 +8,7 @@ import { z } from "zod";
 
 import type { ChatView } from "../access";
 import { uploadLink } from "../files";
-import { formatTime } from "../format";
+import { Fence, formatTime, person } from "../format";
 import { GROUP_NOTE } from "../prompts";
 import type { PressRow, StoredMessage } from "../store";
 import type { Message } from "../telegram/types";
@@ -78,7 +78,12 @@ async function waitForAnswer(
   }
 }
 
-function describeAnswer(answer: Answer | null, messageId: number, seconds: number): string {
+function describeAnswer(
+  answer: Answer | null,
+  messageId: number,
+  seconds: number,
+  userId: number,
+): string {
   if (!answer) {
     return (
       `No answer to #${messageId} within ${seconds} s. The user may be away: call wait_for_reply again ` +
@@ -88,16 +93,22 @@ function describeAnswer(answer: Answer | null, messageId: number, seconds: numbe
   if (answer.kind === "press") {
     const { press } = answer;
     const value = press.data !== press.label ? ` (value: ${press.data})` : "";
-    return `${press.user_name ?? press.user_id} pressed "${press.label}"${value} at ${formatTime(press.date)} UTC.`;
+    const who = person(press.user_name, null, press.user_id, userId);
+    const body = `${who} pressed "${press.label}"${value} at ${formatTime(press.date)} UTC.`;
+    const fence = new Fence(userId, [body]);
+    return `${fence.note()}\n${fence.wrap(body)}`;
   }
   const message = answer.message;
-  const who = message.from_username
-    ? `@${message.from_username}`
-    : (message.from_name ?? "The user");
+  const who = person(message.from_name, message.from_username, message.from_id, userId);
   const file = message.file_id
-    ? ` [attachment: ${message.file_name ?? message.file_kind} — get_file chat ${message.chat_id} message ${message.message_id}]`
+    ? `\n[attachment: ${message.file_name ?? message.file_kind} — get_file chat ${message.chat_id} message ${message.message_id}]`
     : "";
-  return `${who} answered (#${message.message_id}, ${formatTime(message.date)} UTC): ${message.text}${file}`;
+  const body = `${who}: ${message.text}${file}`;
+  const fence = new Fence(userId, [body]);
+  return (
+    `Answer #${message.message_id}, ${formatTime(message.date)} UTC. ${fence.note()}\n` +
+    fence.wrap(body)
+  );
 }
 
 export function registerSendTools(server: McpServer, ctx: ToolContext): void {
@@ -198,7 +209,9 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
             `${sentNote} Not waiting; use wait_for_reply with message_id ${message.message_id}.`,
           );
         const answer = await waitForAnswer(ctx, chat, message.message_id, seconds);
-        return text(`${sentNote}\n${describeAnswer(answer, message.message_id, seconds)}`);
+        return text(
+          `${sentNote}\n${describeAnswer(answer, message.message_id, seconds, ctx.userId)}`,
+        );
       } catch (error) {
         return toolError(error, ctx);
       }
@@ -231,7 +244,12 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
           );
         const seconds = args.wait_seconds ?? WAIT_MAX_SECONDS;
         return text(
-          describeAnswer(await waitForAnswer(ctx, chat, messageId, seconds), messageId, seconds),
+          describeAnswer(
+            await waitForAnswer(ctx, chat, messageId, seconds),
+            messageId,
+            seconds,
+            ctx.userId,
+          ),
         );
       } catch (error) {
         return toolError(error, ctx);

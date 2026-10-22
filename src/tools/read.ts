@@ -16,7 +16,7 @@ import {
   isInlineImage,
   isTextual,
 } from "../files";
-import { formatPresses, formatReactions, formatTime, humanSize, Renderer } from "../format";
+import { Fence, formatPresses, formatReactions, formatTime, humanSize, Renderer } from "../format";
 import { retentionNote } from "../prompts";
 import { MAX_SCOPES, type StoredMessage } from "../store";
 import {
@@ -62,6 +62,7 @@ async function renderer(
   ctx: ToolContext,
   chats: ChatView[],
   messages: StoredMessage[],
+  extra: string[] = [],
 ): Promise<Renderer> {
   const present = new Map(
     messages.map((message) => [`${message.chat_id}:${message.message_id}`, message]),
@@ -83,7 +84,7 @@ async function renderer(
   const topics = await ctx.store.topics(
     chats.filter((chat) => chat.is_forum).map((chat) => chat.chat_id),
   );
-  return new Renderer(ctx.bot.username, chats, topics, present);
+  return new Renderer(ctx.bot.username, ctx.userId, chats, topics, present, extra);
 }
 
 function nothingFound(ctx: ToolContext, what: string): string {
@@ -266,7 +267,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         const truncated =
           chats.length > MAX_SCOPES ? `\n(Searched the first ${MAX_SCOPES} chats only.)` : "";
         return text(
-          `${window}\n${found.length} message${found.length === 1 ? "" : "s"}, newest first. Times are UTC.\n\n${body}${more}${truncated}`,
+          `${window}\n${found.length} message${found.length === 1 ? "" : "s"}, newest first. Times are UTC.\n${render.fence.note()}\n\n${body}${more}${truncated}`,
         );
       } catch (error) {
         return toolError(error, ctx);
@@ -332,7 +333,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         const render = await renderer(ctx, [chat], messages);
         const heading = `${chat.kind === "dm" ? "Private chat with the bot" : `"${chat.title}"`}${
           args.topic ? ` › ${render.topicName(chat.chat_id, args.topic)}` : ""
-        } — ${messages.length} message${messages.length === 1 ? "" : "s"}, oldest first, UTC.`;
+        } — ${messages.length} message${messages.length === 1 ? "" : "s"}, oldest first, UTC.\n${render.fence.note()}`;
         const older = `\n\n(Older: before_message_id ${messages[0].message_id}.)`;
         return text(
           `${heading}\n\n${messages.map((message) => render.message(message)).join("\n\n")}${older}`,
@@ -374,15 +375,21 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           ctx.store.reactionsFor(chat.chat_id, message.message_id),
         ]);
 
-        const render = await renderer(ctx, [chat], [message, ...chain]);
-        const parts = [render.message(message, { full: true })];
+        const presented = formatPresses(presses, ctx.userId);
+        const reacted = formatReactions(reactions, ctx.userId);
+        const render = await renderer(ctx, [chat], [message, ...chain], [presented, reacted]);
+        const parts = [render.fence.note(), render.message(message, { full: true })];
         if (message.file_id) {
           parts.push(
             `Attachment: get_file with message_id ${message.message_id} to read or download it.`,
           );
         }
-        if (presses.length) parts.push(`Button presses:\n${formatPresses(presses)}`);
-        if (reactions.length) parts.push(`Reactions: ${formatReactions(reactions)}`);
+        if (presses.length) {
+          parts.push(`Button presses:\n${render.fence.wrap(presented)}`);
+        }
+        if (reactions.length) {
+          parts.push(`Reactions:\n${render.fence.wrap(reacted)}`);
+        }
         if (chain.length) {
           parts.push(
             `Replying to (nearest first):\n\n${chain.map((parent) => render.message(parent)).join("\n\n")}`,
@@ -416,11 +423,16 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         );
         const link = await downloadLink(ctx, message);
         const name = message.file_name ?? message.file_kind ?? "file";
-        const info =
-          `${name} — ${humanSize(message.file_size)}, ${message.file_kind}${message.file_mime ? `, ${message.file_mime}` : ""}.\n` +
-          `Download (valid 15 min): curl -sS --fail-with-body -o '${safeFilename(name)}' '${link}'`;
-
         const bytes = await inlineBytes(ctx, message).catch(() => null);
+        const content = bytes && isTextual(message) ? new TextDecoder().decode(bytes) : null;
+        const fence = new Fence(ctx.userId, [name, message.file_mime ?? "", content ?? ""]);
+        const info =
+          `${fence.note()}\n` +
+          fence.wrap(
+            `${name} — ${humanSize(message.file_size)}, ${message.file_kind}${message.file_mime ? `, ${message.file_mime}` : ""}.`,
+          ) +
+          `\nDownload (valid 15 min): curl -sS --fail-with-body -o '${safeFilename(name)}' '${link}'`;
+
         if (!bytes) {
           return text(
             `${info}\n\n${message.file_size && message.file_size > 20 * 1024 * 1024 ? "Too big for bots to download (over 20 MB)." : "Not inlined (too big, or not text/image): use the link."}`,
@@ -438,12 +450,11 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
             ],
           };
         }
-        if (isTextual(message)) {
-          const content = new TextDecoder().decode(bytes);
+        if (content !== null) {
           const cut = content.length > INLINE_TEXT_CHARS;
           return text(
             `${info}\n\nContent${cut ? ` (first ${INLINE_TEXT_CHARS} characters of ${content.length}; download for the rest)` : ""}:\n` +
-              content.slice(0, INLINE_TEXT_CHARS),
+              fence.wrap(content.slice(0, INLINE_TEXT_CHARS)),
           );
         }
         return text(info);
