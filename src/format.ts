@@ -10,8 +10,8 @@
  * marked, tell the user's words from everyone else's.
  *
  *   <tg-Xy7k>
- *   #4512 · 2026-10-22 14:03 · Team chat › Design · Alice (@alice, id 111, the user) 🔔
- *     ↩ #4510 Bob (id 222): "can someone check the deploy?"
+ *   #4512 · 2026-10-22 14:03 · Team chat › Design · "Alice" (@alice, id 111, the user) 🔔
+ *     ↩ #4510 "Bob" (id 222): "can someone check the deploy?"
  *     Looks good, @bot please summarise
  *     📎 report.pdf (2.1 MB, document)
  *     https://t.me/c/123/7/4512
@@ -43,7 +43,11 @@ function clip(text: string, length: number): string {
   return flat.length > length ? `${flat.slice(0, length - 1)}…` : flat;
 }
 
-/** `Alice (@alice, id 111, the user)`: who, and whether it is the user. */
+/**
+ * `"Alice" (@alice, id 111, the user)`: who, and whether it is the user. The
+ * name is quoted, so one like `Alice (id 111, the user)` cannot pass for the
+ * marker that follows it.
+ */
 export function person(
   name: string | null,
   username: string | null,
@@ -55,7 +59,8 @@ export function person(
     id === null ? null : `id ${id}`,
     id === userId ? "the user" : null,
   ].filter(Boolean);
-  return details.length ? `${name ?? "unknown"} (${details.join(", ")})` : (name ?? "unknown");
+  const quoted = JSON.stringify(name ?? "unknown");
+  return details.length ? `${quoted} (${details.join(", ")})` : quoted;
 }
 
 function sender(message: StoredMessage, botUsername: string, userId: number): string {
@@ -74,6 +79,7 @@ function authored(message: StoredMessage): string[] {
     message.from_username,
     message.forwarded_from,
     message.file_name,
+    message.file_mime,
     message.buttons,
   ].filter((part): part is string => part !== null);
 }
@@ -126,7 +132,12 @@ export class Renderer {
   ) {
     this.chats = new Map(chats.map((chat) => [chat.chat_id, chat]));
     for (const topic of topics) this.topics.set(`${topic.chat_id}:${topic.thread_id}`, topic.name);
-    this.fence = new Fence(userId, [...[...replyTargets.values()].flatMap(authored), ...extra]);
+    this.fence = new Fence(userId, [
+      ...[...replyTargets.values()].flatMap(authored),
+      ...chats.map((chat) => chat.title),
+      ...topics.map((topic) => topic.name),
+      ...extra,
+    ]);
   }
 
   topicName(chatId: number, threadId: number | null): string | null {

@@ -423,11 +423,16 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         );
         const link = await downloadLink(ctx, message);
         const name = message.file_name ?? message.file_kind ?? "file";
-        const info =
-          `${name} — ${humanSize(message.file_size)}, ${message.file_kind}${message.file_mime ? `, ${message.file_mime}` : ""}.\n` +
-          `Download (valid 15 min): curl -sS --fail-with-body -o '${safeFilename(name)}' '${link}'`;
-
         const bytes = await inlineBytes(ctx, message).catch(() => null);
+        const content = bytes && isTextual(message) ? new TextDecoder().decode(bytes) : null;
+        const fence = new Fence(ctx.userId, [name, message.file_mime ?? "", content ?? ""]);
+        const info =
+          `${fence.note()}\n` +
+          fence.wrap(
+            `${name} — ${humanSize(message.file_size)}, ${message.file_kind}${message.file_mime ? `, ${message.file_mime}` : ""}.`,
+          ) +
+          `\nDownload (valid 15 min): curl -sS --fail-with-body -o '${safeFilename(name)}' '${link}'`;
+
         if (!bytes) {
           return text(
             `${info}\n\n${message.file_size && message.file_size > 20 * 1024 * 1024 ? "Too big for bots to download (over 20 MB)." : "Not inlined (too big, or not text/image): use the link."}`,
@@ -445,12 +450,10 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
             ],
           };
         }
-        if (isTextual(message)) {
-          const content = new TextDecoder().decode(bytes);
+        if (content !== null) {
           const cut = content.length > INLINE_TEXT_CHARS;
-          const fence = new Fence(ctx.userId, [content]);
           return text(
-            `${info}\n\nContent${cut ? ` (first ${INLINE_TEXT_CHARS} characters of ${content.length}; download for the rest)` : ""}. ${fence.note()}\n` +
+            `${info}\n\nContent${cut ? ` (first ${INLINE_TEXT_CHARS} characters of ${content.length}; download for the rest)` : ""}:\n` +
               fence.wrap(content.slice(0, INLINE_TEXT_CHARS)),
           );
         }
