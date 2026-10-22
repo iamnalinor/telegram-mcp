@@ -253,6 +253,19 @@ export async function mayPost(
   await ctx.access.allow(chat, "reply");
 }
 
+/**
+ * The bot's tools speak as the bot. A personal chat would make the same call
+ * speak as the user, so it has tools of its own, which a client can gate.
+ */
+export function asBot(chat: ChatView, instead: string): void {
+  if (chat.kind === "personal") {
+    throw new ToolError(
+      `${JSON.stringify(chat.title)} is a personal chat: anything sent there goes out as the user. Use ` +
+        `${instead}, and only if the user asked for it in this conversation.`,
+    );
+  }
+}
+
 /** For tools that only make sense in the bot's own chats. */
 export function notPersonal(chat: ChatView, why: string): void {
   if (chat.kind === "personal") throw new ToolError(`Not available in personal chats: ${why}`);

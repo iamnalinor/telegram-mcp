@@ -1,9 +1,9 @@
 /**
- * Tools that change what is already in a chat: edit, delete, pin, react,
- * forward, mark as read. Edits and deletes are limited to the bot's own
- * messages (plus, for deletes, the user's own messages in their private chat;
- * in personal chats, only what was sent through the assistant), so a model
- * can never rewrite or remove what other people — or the user — said.
+ * Tools that change what is already in the bot's chats: edit, delete, pin,
+ * react, forward. Edits and deletes are limited to the bot's own messages
+ * (plus, for deletes, the user's own messages in their private chat), so a
+ * model can never rewrite or remove what other people — or the user — said.
+ * Personal chats have their own tools (personal.ts).
  */
 
 import type { McpServer } from "@modelcontextprotocol/server";
@@ -15,6 +15,7 @@ import type { StoredMessage } from "../store";
 import type { Message } from "../telegram/types";
 import { sentSummary } from "./send";
 import {
+  asBot,
   buttonsArg,
   chatArg,
   formatArg,
@@ -34,7 +35,7 @@ import {
   type ToolContext,
 } from "./common";
 
-async function ownMessage(
+export async function ownMessage(
   ctx: ToolContext,
   chat: ChatView,
   messageId: number,
@@ -60,6 +61,49 @@ async function ownMessage(
     );
   }
   return message;
+}
+
+/** Change a message's text and/or buttons, in Telegram and in storage. */
+export async function editMessage(
+  ctx: ToolContext,
+  chat: ChatView,
+  args: { message_id: number; text?: string; format?: "markdown" | "plain"; buttons?: Buttons },
+): Promise<void> {
+  const stored = await ownMessage(ctx, chat, args.message_id);
+  if (args.text === undefined && args.buttons === undefined)
+    throw new ToolError("Pass text, buttons, or both.");
+  await mayPost(ctx, chat, args.buttons);
+
+  const markup =
+    args.buttons === undefined ? undefined : (keyboard(args.buttons) ?? { inline_keyboard: [] });
+  const base = { ...telegramChat(chat), message_id: args.message_id };
+  const markdown = (args.format ?? "markdown") === "markdown";
+
+  if (args.text !== undefined) {
+    const isCaption = stored.file_id !== null;
+    if (isCaption && args.text.length > TELEGRAM_CAPTION_LIMIT) {
+      throw new ToolError(`Captions stop at ${TELEGRAM_CAPTION_LIMIT} characters.`);
+    }
+    const newText = args.text;
+    await withPlainFallback((plain) =>
+      ctx.api.call(isCaption ? "editMessageCaption" : "editMessageText", {
+        ...base,
+        [isCaption ? "caption" : "text"]: markdown && !plain ? markdownToHtml(newText) : newText,
+        ...(markdown && !plain ? { parse_mode: "HTML" } : {}),
+        ...(isCaption ? {} : { link_preview_options: { is_disabled: true } }),
+        // Without reply_markup an edit drops the buttons; keep them unless replaced.
+        reply_markup:
+          markup ?? (stored.buttons ? keyboard(JSON.parse(stored.buttons) as Buttons) : undefined),
+      }),
+    );
+  } else {
+    await ctx.api.call("editMessageReplyMarkup", { ...base, reply_markup: markup });
+  }
+
+  await ctx.store.updateOutgoing(chat, args.message_id, {
+    text: args.text,
+    buttons: args.buttons === undefined ? undefined : storedButtons(args.buttons),
+  });
 }
 
 export function registerEditTools(server: McpServer, ctx: ToolContext): void {
@@ -92,45 +136,8 @@ export function registerEditTools(server: McpServer, ctx: ToolContext): void {
     async (args) => {
       try {
         const chat = await ctx.access.resolve(args.chat);
-        const stored = await ownMessage(ctx, chat, args.message_id);
-        if (args.text === undefined && args.buttons === undefined)
-          throw new ToolError("Pass text, buttons, or both.");
-        await mayPost(ctx, chat, args.buttons);
-
-        const markup =
-          args.buttons === undefined
-            ? undefined
-            : (keyboard(args.buttons) ?? { inline_keyboard: [] });
-        const base = { ...telegramChat(chat), message_id: args.message_id };
-        const markdown = (args.format ?? "markdown") === "markdown";
-
-        if (args.text !== undefined) {
-          const isCaption = stored.file_id !== null;
-          if (isCaption && args.text.length > TELEGRAM_CAPTION_LIMIT) {
-            throw new ToolError(`Captions stop at ${TELEGRAM_CAPTION_LIMIT} characters.`);
-          }
-          const newText = args.text;
-          await withPlainFallback((plain) =>
-            ctx.api.call(isCaption ? "editMessageCaption" : "editMessageText", {
-              ...base,
-              [isCaption ? "caption" : "text"]:
-                markdown && !plain ? markdownToHtml(newText) : newText,
-              ...(markdown && !plain ? { parse_mode: "HTML" } : {}),
-              ...(isCaption ? {} : { link_preview_options: { is_disabled: true } }),
-              // Without reply_markup an edit drops the buttons; keep them unless replaced.
-              reply_markup:
-                markup ??
-                (stored.buttons ? keyboard(JSON.parse(stored.buttons) as Buttons) : undefined),
-            }),
-          );
-        } else {
-          await ctx.api.call("editMessageReplyMarkup", { ...base, reply_markup: markup });
-        }
-
-        await ctx.store.updateOutgoing(chat, args.message_id, {
-          text: args.text,
-          buttons: args.buttons === undefined ? undefined : storedButtons(args.buttons),
-        });
+        asBot(chat, "edit_as_user");
+        await editMessage(ctx, chat, args);
         return text(`Edited #${args.message_id}.`);
       } catch (error) {
         return toolError(error, ctx);
@@ -143,8 +150,7 @@ export function registerEditTools(server: McpServer, ctx: ToolContext): void {
     {
       title: "Delete a message",
       description:
-        "Delete a message the bot sent, or one the user sent in their private chat with the bot. In a personal " +
-        "chat, only a message sent through you, and only if the user allowed deleting in Telegram. Telegram only " +
+        "Delete a message the bot sent, or one the user sent in their private chat with the bot. Telegram only " +
         "allows this within 48 hours. Only when the user asks for it.",
       inputSchema: z.object({ message_id: messageIdArg, chat: chatArg }),
       annotations: {
@@ -157,16 +163,7 @@ export function registerEditTools(server: McpServer, ctx: ToolContext): void {
     async (args) => {
       try {
         const chat = await ctx.access.resolve(args.chat);
-        if (chat.kind === "personal") {
-          await ownMessage(ctx, chat, args.message_id);
-          await ctx.access.allow(chat, "delete");
-          await ctx.api.call("deleteBusinessMessages", {
-            business_connection_id: telegramChat(chat).business_connection_id,
-            message_ids: [args.message_id],
-          });
-          await ctx.store.deleteMessages(chat, [args.message_id]);
-          return text(`Deleted #${args.message_id}.`);
-        }
+        asBot(chat, "delete_as_user");
         const stored = await ctx.store.getMessage(chat, args.message_id);
         if (!stored)
           throw new ToolError(`Message #${args.message_id} is not stored for that chat.`);
@@ -328,43 +325,6 @@ export function registerEditTools(server: McpServer, ctx: ToolContext): void {
         );
         const sent = { message_id: copy.message_id, message_thread_id: args.topic } as Message;
         return text(sentSummary(ctx, to, [sent]));
-      } catch (error) {
-        return toolError(error, ctx);
-      }
-    },
-  );
-
-  server.registerTool(
-    "mark_read",
-    {
-      title: "Mark a personal chat as read",
-      description:
-        "Mark a message in one of the user's personal chats as read (default: the other person's latest). They " +
-        'will see it as read by the user, so do it only when the user asks. Needs the "Mark messages as read" ' +
-        "permission the user gives in Telegram.",
-      inputSchema: z.object({
-        chat: chatArg.describe("A personal chat, by name, @username or id from list_chats."),
-        message_id: messageIdArg.optional(),
-      }),
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: true,
-        openWorldHint: true,
-      },
-    },
-    async (args) => {
-      try {
-        const chat = await ctx.access.resolve(args.chat);
-        if (chat.kind !== "personal") {
-          throw new ToolError("mark_read is for personal chats only; list_chats shows them.");
-        }
-        await ctx.access.allow(chat, "read");
-        const messageId = args.message_id ?? (await ctx.store.lastIncoming(chat))?.message_id;
-        if (!messageId)
-          throw new ToolError("No stored messages from the other person in that chat.");
-        await ctx.api.call("readBusinessMessage", { ...telegramChat(chat), message_id: messageId });
-        return text(`Marked as read up to #${messageId}.`);
       } catch (error) {
         return toolError(error, ctx);
       }
