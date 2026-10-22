@@ -90,7 +90,7 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
         "Send a message to another of the user's Claude Code cloud sessions, by its id or claude.ai/code link — " +
         "to ask how its work is going, or to hand it a request that belongs there. It arrives as a message in " +
         "that session, marked as data and with who stands behind it; that session answers with answer_session. " +
-        "With expect_answer (default), waits for the answer up to wait_seconds; if none comes, call " +
+        "Say which with expect_answer. A question waits for the answer up to wait_seconds; if none comes, call " +
         'wait_for_session later. expect_answer false sends a notice that needs no answer ("done, the PR is ' +
         "merged\") and returns once queued. Needs the user's " +
         "relay: if it is down, the result says so — tell whoever asked. Only for the user, or for others as far " +
@@ -107,9 +107,9 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
           .describe("The message. Say who asks and what you need."),
         expect_answer: z
           .boolean()
-          .optional()
           .describe(
-            "Default true: a question, answered with answer_session. false: a notice, no answer.",
+            "true: a question — the session answers with answer_session, and you wait for it here or with " +
+              "wait_for_session. false: a notice that needs no answer.",
           ),
         on_behalf_of: z
           .enum(["user", "third_party"])
@@ -140,7 +140,7 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
         const from = sessionId(args.session);
         if (from === target) throw new ToolError("That is this session.");
         const origin = await originOf(ctx, from, args.on_behalf_of);
-        const expectAnswer = args.expect_answer ?? true;
+        const expectAnswer = args.expect_answer;
         const ask = await enqueue(
           ctx.store,
           {

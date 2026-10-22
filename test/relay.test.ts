@@ -162,6 +162,7 @@ describe("a reply to a session's message", () => {
     const tried = await h.tool(alice, "message_session", {
       to: `session_${OTHER}`,
       text: "status?",
+      expect_answer: true,
     });
     expect(tried.isError).toBe(true);
     expect(tried.text).toContain("sign-in expired");
@@ -194,6 +195,7 @@ describe("the session tools", () => {
     const sent = await h.tool(alice, "message_session", {
       to: `session_${OTHER}`,
       text: "status?",
+      expect_answer: true,
     });
     expect(sent.isError).toBe(true);
     expect(sent.text).toContain("has not set one up");
@@ -205,6 +207,7 @@ describe("the session tools", () => {
     const asked = h.tool(alice, "message_session", {
       to: `https://claude.ai/code/session_${OTHER}`,
       text: "How is the migration going?",
+      expect_answer: true,
       wait_seconds: 20,
       session: `cse_${SESSION}`,
     });
@@ -240,6 +243,7 @@ describe("the session tools", () => {
     await h.tool(alice, "message_session", {
       to: `session_${OTHER}`,
       text: "do it",
+      expect_answer: true,
       on_behalf_of: "user",
       wait_seconds: 0,
       session: started.session_id,
