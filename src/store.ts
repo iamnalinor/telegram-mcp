@@ -123,6 +123,8 @@ export interface RelayJob {
   thread_id: number | null;
   status: "queued" | "taken" | "done" | "failed";
   error: string | null;
+  /** reply: a Telegram reply to the session's message; day: a private-chat message for the day's session. */
+  kind: "reply" | "day" | "ask";
   /** 1 when the sender waits for answer_session; a notice expects none. */
   wants_answer: number;
   answer: string | null;
@@ -147,8 +149,11 @@ export interface KnownSession {
 
 export interface FireRow {
   message_id: number;
-  /** relayed: passed on to the session it replies to, instead of a new one. */
-  status: "pending" | "started" | "relayed" | "failed";
+  /**
+   * relayed: passed on to an existing session instead of a new one. joined:
+   * came right after a start in the private chat, which reads it along.
+   */
+  status: "pending" | "started" | "relayed" | "joined" | "failed";
   session_id: string | null;
   at: number;
   from_name: string | null;
@@ -1641,7 +1646,8 @@ export class Store {
       .prepare(
         `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at, from_name, excerpt, album)
          SELECT ?1, ?2, ?3, ?4, 'pending', ?5, ?9, ?10, ?11
-         WHERE (SELECT COUNT(*) FROM fires WHERE user_id = ?3 AND at >= ?6 AND status IN ('pending', 'started', 'relayed')) < ?7
+         WHERE (SELECT COUNT(*) FROM fires WHERE user_id = ?3 AND at >= ?6
+                AND (status IN ('pending', 'started') OR (status = 'relayed' AND by_other = 1))) < ?7
            AND (?4 = 0 OR (SELECT COUNT(*) FROM fires
                 WHERE user_id = ?3 AND at >= ?6 AND chat_id = ?1 AND by_other = 1
                   AND status IN ('pending', 'started', 'relayed')) < ?8)
@@ -1673,7 +1679,7 @@ export class Store {
   async endFire(
     chatId: number,
     messageId: number,
-    outcome: { status: "started" | "relayed"; sessionId: string } | { status: "failed" },
+    outcome: { status: "started" | "relayed"; sessionId: string } | { status: "failed" | "joined" },
   ): Promise<void> {
     await this.db
       .prepare("UPDATE fires SET status = ?, session_id = ? WHERE chat_id = ? AND message_id = ?")
@@ -1741,6 +1747,31 @@ export class Store {
       fires: fires.results as FireRow[],
       limited: (limited.results[0] as { n: number } | undefined)?.n ?? 0,
     };
+  }
+
+  /** A start in this chat since `since`, other than this message's: a session about to read it along. */
+  async recentStart(chatId: number, messageId: number, since: number): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        `SELECT 1 FROM fires WHERE chat_id = ? AND message_id != ? AND at >= ?
+         AND status IN ('pending', 'started') LIMIT 1`,
+      )
+      .bind(chatId, messageId, since)
+      .first();
+    return row !== null;
+  }
+
+  /** The session the holder's messages in this chat went to most recently since `since`. */
+  async latestSession(userId: number, chatId: number, since: number): Promise<string | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT session_id FROM fires WHERE user_id = ? AND at >= ? AND chat_id = ?
+         AND status IN ('started', 'relayed') AND session_id IS NOT NULL
+         ORDER BY at DESC, message_id DESC LIMIT 1`,
+      )
+      .bind(userId, since, chatId)
+      .first<{ session_id: string }>();
+    return row?.session_id ?? null;
   }
 
   /** Whether other members' starts already failed in this chat since `since`: the holder heard once. */
@@ -1852,13 +1883,14 @@ export class Store {
       | "message_id"
       | "thread_id"
       | "wants_answer"
+      | "kind"
     >,
   ): Promise<void> {
     await this.db
       .prepare(
         `INSERT INTO relay_jobs (id, user_id, target_session, body, origin, from_session,
-           chat_id, message_id, thread_id, wants_answer, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
+           chat_id, message_id, thread_id, wants_answer, kind, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
       )
       .bind(
         job.id,
@@ -1871,6 +1903,7 @@ export class Store {
         job.message_id,
         job.thread_id,
         job.wants_answer,
+        job.kind,
         nowSeconds(),
       )
       .run();

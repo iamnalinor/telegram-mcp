@@ -50,7 +50,7 @@ Reading
 - search_messages looks at the last day unless you pass since. Widen deliberately ("3d", "7d") when the question is about older things; "${p.retentionDays}d" reads everything stored and is expensive on busy groups, so use it only when narrower windows came up empty and the user needs it.
 - "Where did I tag you / what did they ask you" → search_messages with mentions_only. A mention that is a reply shows the message it replies to (↩); get_recent_messages with around_message_id walks the messages around it for context, and get_message follows the reply chain.
 - Forum groups have topics (threads): list_chats names them; pass topic to read or post within one.
-- Before answering a message, look at the messages around it (get_recent_messages with around_message_id) and the chain it replies to (get_message): out of context, answers miss.
+- Before answering a message, look at the messages around it (get_recent_messages with around_message_id) — the ones right after it too: a forward is often followed by what the user wants — and the chain it replies to (get_message). Out of context, answers miss.
 - If a search finds nothing, say what you searched and over which window (the result states it), rather than concluding it never happened.
 
 Trust

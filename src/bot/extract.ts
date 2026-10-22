@@ -111,6 +111,18 @@ function originName(message: Message): string | null {
  * `reply_to_message` set to the topic's creation message. That is the
  * thread, not a reply, and must not read as one.
  */
+/** Whether a message says or carries anything: not a service message. */
+export function hasContent(message: Message): boolean {
+  return Boolean(
+    message.text ||
+    message.caption ||
+    fileOf(message) ||
+    message.location ||
+    message.contact ||
+    message.poll,
+  );
+}
+
 export function realReply(message: Message): Message | undefined {
   const reply = message.reply_to_message;
   if (!reply || reply.forum_topic_created) return undefined;

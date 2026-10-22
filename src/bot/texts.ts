@@ -32,7 +32,6 @@ const en = {
       "/start — this menu",
       "/groups — connected groups",
       "/disconnect — sign out every connected assistant",
-      "/run &lt;task&gt; — start Claude on it (see 🤖 Claude on tag)",
     ].join("\n"),
   personalScreen:
     "<b>Personal chats</b>\n\nTo let your assistant read your own chats with other people, add me in Settings → Telegram Business → Chatbots. Whether it may also reply for you is up to the permissions you give me there.",
@@ -208,8 +207,6 @@ const en = {
       none: "none is set up.",
       broken: "I can no longer read its token. Send the routine again.",
     }[reason],
-  claudeHelp:
-    "Write the task after /run, mention me, or reply to a message your assistant sent here — and I start Claude on it.",
   inChat: (title: string) => `«${escapeHtml(title)}»:`,
   tooManyStarts: "⚠️ Too many starts in the last hour; I start no more until it passes.",
   startsButton: "📜 Starts",
@@ -246,7 +243,7 @@ const en = {
     "⚠️ The relay has gone quiet: messages to sessions are not getting through, and replies start new sessions instead. Check the machine: <code>systemctl status tg-relay</code>.",
   claudeHere: (on: boolean): string => (on ? "💬 Here: on ✅" : "💬 Here: off"),
   claudeHereHint:
-    "Here: /run &lt;task&gt;, a mention, or a reply to a message your assistant sent. In groups, turn it on in 👥 Groups.",
+    "Here: every message goes to Claude — with the 🛰 relay, the day's messages go to one session (from 00:00 UTC), and a reply to a session's message goes back to that session; without it, each message starts its own. In groups, turn it on in 👥 Groups.",
   claudeToggle: (on: boolean): string => (on ? "🤖 Claude answers: ✅" : "🤖 Claude answers: off"),
   othersToggle: (on: boolean): string => (on ? "👥 Others too: ⚠️ on" : "👥 Others too: off"),
   groupClaude: (p: { on: boolean; others: boolean; limit: number; heldBy: string | null }) =>
@@ -311,7 +308,6 @@ const ru: Texts = {
       "/start — это меню",
       "/groups — подключённые группы",
       "/disconnect — отключить все подключённые ассистенты",
-      "/run &lt;задача&gt; — запустить Claude (см. 🤖 Claude по тегу)",
     ].join("\n"),
   personalScreen:
     "<b>Личные переписки</b>\n\nЧтобы ассистент читал твои переписки с другими людьми, добавь меня в Настройки → Telegram для бизнеса → Чат-боты. Может ли он ещё и отвечать за тебя — решают права, которые ты дашь мне там.",
@@ -482,8 +478,6 @@ const ru: Texts = {
       none: "она не задана.",
       broken: "я больше не могу прочитать её токен. Пришли рутину заново.",
     }[reason],
-  claudeHelp:
-    "Напиши задачу после /run, упомяни меня или ответь на сообщение, которое прислал сюда ассистент, — и я запущу Claude.",
   inChat: (title) => `«${escapeHtml(title)}»:`,
   tooManyStarts: "⚠️ Слишком много запусков за последний час; новых не будет, пока он не пройдёт.",
   startsButton: "📜 Запуски",
@@ -520,7 +514,7 @@ const ru: Texts = {
     "⚠️ Ретранслятор замолчал: сообщения сессиям не доходят, реплаи запускают новые сессии. Проверь машину: <code>systemctl status tg-relay</code>.",
   claudeHere: (on) => (on ? "💬 Здесь: вкл ✅" : "💬 Здесь: выкл"),
   claudeHereHint:
-    "Здесь: /run &lt;задача&gt;, упоминание или реплай на сообщение ассистента. В группах включается в 👥 Группы.",
+    "Здесь каждое сообщение идёт Claude: с 🛰 ретранслятором сообщения за день уходят в одну сессию (с 00:00 UTC), а реплай на сообщение сессии — обратно в неё; без него каждое сообщение запускает свою. В группах включается в 👥 Группы.",
   claudeToggle: (on) => (on ? "🤖 Claude отвечает: ✅" : "🤖 Claude отвечает: выкл"),
   othersToggle: (on) => (on ? "👥 Отвечать другим: ⚠️ вкл" : "👥 Отвечать другим: выкл"),
   groupClaude: (p) =>

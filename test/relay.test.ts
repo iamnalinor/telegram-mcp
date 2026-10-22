@@ -332,3 +332,67 @@ describe("what the review found", () => {
     expect(h.fires[0].body.text).toContain(`continues: session_${SESSION}`);
   });
 });
+
+describe("the private chat's day session", () => {
+  const age = (seconds: number) => h.db.raw.exec(`UPDATE fires SET at = at - ${seconds}`);
+  const reactions = () => h.telegram.called("setMessageReaction").length;
+
+  it("takes the day's messages into one session, without 👀, and starts afresh the next day", async () => {
+    const token = await relayToken();
+    await poll(token);
+    await h.say(dm(ALICE), ALICE, "plan my week");
+    expect(h.fires).toHaveLength(1);
+    expect(reactions()).toBe(1);
+    const started = (h.db.raw.query("SELECT session_id FROM fires").get() as { session_id: string })
+      .session_id;
+
+    age(120); // past the burst a starting session reads along
+    await h.say(dm(ALICE), ALICE, "and book the gym");
+    expect(h.fires).toHaveLength(1);
+    expect(reactions()).toBe(1);
+    const [job] = await jobs(token);
+    expect(job.session).toBe(started);
+    expect(job.text).toContain("the day's messages there come to this session");
+    expect(job.text).toContain("the ones right after it too");
+
+    age(86_400);
+    await h.say(dm(ALICE), ALICE, "new day");
+    expect(h.fires).toHaveLength(2);
+  });
+
+  it("starts a fresh session when the day's session cannot take a message", async () => {
+    const token = await relayToken();
+    await poll(token);
+    await h.say(dm(ALICE), ALICE, "plan my week");
+    age(120);
+    await h.say(dm(ALICE), ALICE, "and book the gym");
+    const [job] = await jobs(token);
+    await report(token, job.id, { ok: false, error: "cloud session is archived" });
+    expect(h.fires).toHaveLength(2);
+    expect(h.fires[1].body.text).toContain("continues: -");
+    expect(h.fires[1].body.text).not.toContain("relay:");
+  });
+});
+
+describe("long poll", () => {
+  it("answers as soon as a job comes, or empty after the wait", async () => {
+    const token = await relayToken();
+    await poll(token);
+    const t0 = Date.now();
+    const empty = await (
+      await h.fetch("/relay/jobs?wait=3", { headers: { authorization: `Bearer ${token}` } })
+    ).json<unknown[]>();
+    expect(empty).toEqual([]);
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(1500);
+
+    const waiting = h.fetch("/relay/jobs?wait=10", {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const t1 = Date.now();
+    await replyToSession();
+    const got = await (await waiting).json<{ session: string }[]>();
+    expect(got[0].session).toBe(`session_${SESSION}`);
+    expect(Date.now() - t1).toBeLessThan(5000);
+  });
+});

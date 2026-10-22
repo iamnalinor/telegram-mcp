@@ -1,15 +1,21 @@
 /**
  * Starting the user's routine from Telegram.
  *
- * In a chat where Claude answers (see `claude_chats`), a message starts a
- * cloud session when it calls on the bot: `/run …` (private chat only), a mention, or a reply
- * to a message the bot sent for the chat's holder. A mention in the private
- * chat must be spelled out — everything there is "for the bot".
+ * In a group where Claude answers (see `claude_chats`), a message calls on it
+ * by mentioning the bot or replying to a message the bot sent for the chat's
+ * holder; forwards and messages via inline bots call on nobody. In the
+ * holder's private chat with the bot, every message does — forwards too —
+ * except commands and an answer a waiting session (ask_user, wait_for_reply)
+ * is about to take.
  *
- * Nothing starts for a forward, a message via an inline bot, or a reply that
- * a waiting session (ask_user, wait_for_reply) is about to take. Other
- * members' messages start it only where the holder allowed them, a few times
- * an hour; a message posted as a channel or the chat is always someone
+ * Where it goes: a reply to a session's message goes back into that session,
+ * and in the private chat the day's messages (from 00:00 UTC) go to one
+ * session — when the user's relay is online (src/relay.ts). Otherwise each
+ * starts a new session; one right after a start in the private chat (a
+ * forward, then what to do with it) joins it, as that session reads along.
+ *
+ * Other members' messages count only where the holder allowed them, a few
+ * times an hour; a message posted as a channel or the chat is always someone
  * else's. Each start goes into the chat's log in the menu; failures go to the
  * holder's private chat, never into the chat itself.
  */
@@ -24,7 +30,7 @@ import { BOT_ACCOUNT } from "../store";
 import { TelegramError } from "../telegram/api";
 import { displayName, isMember, type ChatMember, type Message } from "../telegram/types";
 import type { BotContext } from "./context";
-import { realReply, tagsBot, type Command } from "./extract";
+import { hasContent, realReply, tagsBot, type Command } from "./extract";
 import { escapeHtml, texts } from "./texts";
 
 /** A reply this long after a wait ended is a new task, not the answer. */
@@ -33,6 +39,9 @@ const AWAIT_GRACE = 60;
 const USER_PER_HOUR = 30;
 /** How much of the message the log keeps. */
 const EXCERPT_LENGTH = 20;
+/** A private-chat message this soon after a start is read by that session. */
+const BURST_SECONDS = 20;
+const DAY = 86_400;
 
 const silent = {
   parse_mode: "HTML",
@@ -48,15 +57,18 @@ export async function maybeStart(
   const from = message.from;
   // Posted as a channel or the chat, `from` is Telegram's stand-in bot: no person is known.
   const asChat = message.sender_chat;
-  if (!from || (from.is_bot && !asChat)) return;
-  if (message.forward_origin || message.via_bot) return;
+  if (!from || (from.is_bot && !asChat) || command) return;
   const chat = message.chat;
-  // /run is for the private chat; in groups, commands start nothing — a mention does.
-  if (command && (command.name !== "run" || chat.type !== "private")) return;
-  if (chat.type !== "private" && chat.type !== "group" && chat.type !== "supergroup") return;
-  // Most messages call on nobody: they cost no read.
+  const isPrivate = chat.type === "private";
+  if (!isPrivate && chat.type !== "group" && chat.type !== "supergroup") return;
+  // In the private chat a forward is the user's own pick; in a group it calls on nobody.
+  if (!isPrivate && (message.forward_origin || message.via_bot)) return;
   const target = realReply(message);
-  if (!command && !tagsBot(message, ctx.bot) && target?.from?.id !== ctx.bot.id) return;
+  // Most group messages call on nobody: they cost no read.
+  if (
+    isPrivate ? !hasContent(message) : !tagsBot(message, ctx.bot) && target?.from?.id !== ctx.bot.id
+  )
+    return;
 
   const claim = await ctx.store.getClaudeChat(chat.id);
   if (!claim || !isAllowed(ctx.config, claim.user_id)) return;
@@ -70,15 +82,7 @@ export async function maybeStart(
       ? await ctx.store.getMessage({ account_id: BOT_ACCOUNT, chat_id: chat.id }, target.message_id)
       : null;
   const replyToHolder = answered?.outgoing === true && answered.sent_by === holder;
-  if (!command && !tagsBot(message, ctx.bot) && !replyToHolder) return;
-
-  const t = texts(from.language_code);
-  if (command && !command.args && !replyToHolder && chat.type === "private") {
-    await ctx.api
-      .call("sendMessage", { chat_id: chat.id, text: t.claudeHelp, ...silent })
-      .catch(() => undefined);
-    return;
-  }
+  if (!isPrivate && !tagsBot(message, ctx.bot) && !replyToHolder) return;
 
   // The session that sent it is listening: the answer is its to take.
   const now = nowSeconds();
@@ -112,63 +116,75 @@ export async function maybeStart(
 
   const topic = message.is_topic_message ? (message.message_thread_id ?? null) : null;
   const continues = replyToHolder ? answered.session_id : null;
-  let relay: "login" | "offline" | null = null;
-  if (continues) {
-    // A reply to a session goes to that session, when the relay can take it there.
-    const state = relayState(await ctx.store.getRelay(holder));
-    if (state === "online") {
-      const owner = await ctx.store.getUser(holder);
-      await enqueue(
-        ctx.store,
-        {
-          user_id: holder,
-          target_session: continues,
-          origin: byOther ? "other" : "user",
-          from_session: null,
-          chat_id: chat.id,
-          message_id: message.message_id,
-          thread_id: topic,
-          wants_answer: 0,
-        },
-        () =>
-          replyEnvelope({
-            user: {
-              id: holder,
-              username: owner?.username ?? null,
-              name: owner?.first_name ?? null,
-            },
-            chat: { id: chat.id, title: chat.title ?? null },
-            messageId: message.message_id,
-            link: messageLink(
-              { type: chat.type, chat_id: chat.id, username: chat.username ?? null },
-              message.message_id,
-              topic,
-              ctx.bot.username,
-            ),
-            sender: asChat
-              ? { id: null, name: asChat.title ?? null }
-              : { id: from.id, name: displayName(from) },
-            byUser: !byOther,
-          }),
-      );
-      await ctx.store.endFire(chat.id, message.message_id, {
-        status: "relayed",
-        sessionId: continues,
-      });
-      await react(ctx, chat.id, message.message_id, "👀");
+  const state =
+    continues || isPrivate ? relayState(await ctx.store.getRelay(holder)) : ("none" as const);
+
+  // Where it goes: the session it replies to, else the day's session in the private chat.
+  let into: { session: string; kind: "reply" | "day" } | null = continues
+    ? { session: continues, kind: "reply" }
+    : null;
+  if (!into && isPrivate) {
+    // A session just started reads this along: a forward, then what to do with it.
+    if (await ctx.store.recentStart(chat.id, message.message_id, now - BURST_SECONDS)) {
+      await ctx.store.endFire(chat.id, message.message_id, { status: "joined" });
       return;
     }
-    if (state === "login" || state === "offline") relay = state;
+    const day =
+      state === "online" ? await ctx.store.latestSession(holder, chat.id, now - (now % DAY)) : null;
+    if (day) into = { session: day, kind: "day" };
+  }
+
+  if (into && state === "online") {
+    // Passed on to a session that exists: no new start, so no 👀.
+    const owner = await ctx.store.getUser(holder);
+    const kind = into.kind;
+    await enqueue(
+      ctx.store,
+      {
+        user_id: holder,
+        target_session: into.session,
+        origin: byOther ? "other" : "user",
+        from_session: null,
+        chat_id: chat.id,
+        message_id: message.message_id,
+        thread_id: topic,
+        wants_answer: 0,
+        kind,
+      },
+      () =>
+        replyEnvelope({
+          kind,
+          user: { id: holder, username: owner?.username ?? null, name: owner?.first_name ?? null },
+          chat: { id: chat.id, title: chat.title ?? null },
+          messageId: message.message_id,
+          link: messageLink(
+            { type: chat.type, chat_id: chat.id, username: chat.username ?? null },
+            message.message_id,
+            topic,
+            ctx.bot.username,
+          ),
+          sender: asChat
+            ? { id: null, name: asChat.title ?? null }
+            : { id: from.id, name: displayName(from) },
+          byUser: !byOther,
+        }),
+    );
+    await ctx.store.endFire(chat.id, message.message_id, {
+      status: "relayed",
+      sessionId: into.session,
+    });
+    return;
   }
 
   await launch(ctx, {
     holder,
-    chat: { id: chat.id, title: chat.title ?? null, private: chat.type === "private" },
+    chat: { id: chat.id, title: chat.title ?? null, private: isPrivate },
     messageId: message.message_id,
     topic,
     byOther,
     continues,
-    relay,
+    // A reply that should have gone into its session: the new one says why it did not.
+    relay: continues && (state === "login" || state === "offline") ? state : null,
   });
 }
 

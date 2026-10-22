@@ -338,7 +338,13 @@ async function groupScreen(
 }
 
 const STARTS_SHOWN = 15;
-const STARTS_MARK = { pending: "⏳", started: "▶️", relayed: "↪️", failed: "⚠️" } as const;
+const STARTS_MARK = {
+  pending: "⏳",
+  started: "▶️",
+  relayed: "↪️",
+  joined: "➕",
+  failed: "⚠️",
+} as const;
 
 /** The holder's latest starts in a group: who, when, the first words, the session. */
 async function startsScreen(
