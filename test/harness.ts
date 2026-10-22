@@ -205,6 +205,12 @@ class FixedLengthStreamPolyfill extends TransformStream<Uint8Array, Uint8Array> 
 }
 (globalThis as Record<string, unknown>).FixedLengthStream ??= FixedLengthStreamPolyfill;
 
+/** The Telegram login link on the consent page /authorize answers with. */
+export async function consentLink(response: Response): Promise<URL> {
+  const href = /id="continue" href="([^"]+)"/.exec(await response.text())![1];
+  return new URL(href.replaceAll("&amp;", "&"));
+}
+
 export class Harness {
   db = new SqliteD1();
   telegram = new FakeTelegram();
@@ -373,7 +379,7 @@ export class Harness {
     const authorize = await this.fetch(
       `/authorize?${new URLSearchParams({ response_type: "code", client_id, redirect_uri: redirect, state: "xyz", code_challenge: challenge, code_challenge_method: "S256" }).toString()}`,
     );
-    const telegramUrl = new URL(authorize.headers.get("location")!);
+    const telegramUrl = await consentLink(authorize);
     const returnTo = new URL(telegramUrl.searchParams.get("return_to")!);
 
     const finish = await this.fetch(`${returnTo.pathname}${returnTo.search}`, {

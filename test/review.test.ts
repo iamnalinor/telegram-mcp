@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { nowSeconds, sha256Base64Url } from "../src/crypto";
 import { markdownToHtml } from "../src/markdown";
 import { safeFilename } from "../src/tools/read";
-import { Harness } from "./harness";
+import { consentLink, Harness } from "./harness";
 
 const ALICE = { id: 111, first_name: "Alice", username: "alice" };
 const BOB = { id: 222, first_name: "Bob", username: "bob" };
@@ -86,7 +86,7 @@ describe("oauth misuse", () => {
         code_challenge_method: "S256",
       }).toString()}`,
     );
-    const back = new URL(new URL(auth.headers.get("location")!).searchParams.get("return_to")!);
+    const back = new URL((await consentLink(auth)).searchParams.get("return_to")!);
     const done = await h.fetch(`${back.pathname}${back.search}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -142,11 +142,22 @@ describe("oauth misuse", () => {
     expect(auth.status).toBe(400);
   });
 
+  it("asks before Telegram, naming who gets access", async () => {
+    const auth = await h.fetch(
+      `/authorize?${new URLSearchParams({ response_type: "code", client_id: "c", redirect_uri: "https://chatgpt.com/connector_platform_oauth_redirect", code_challenge: "abc" }).toString()}`,
+    );
+    expect(auth.status).toBe(200);
+    expect(auth.headers.get("x-frame-options")).toBe("DENY");
+    const html = await auth.clone().text();
+    expect(html).toContain("Connect ChatGPT to @test_mcp_bot?");
+    expect((await consentLink(auth)).host).toBe("oauth.telegram.org");
+  });
+
   it("refuses a forged or stale login", async () => {
     const auth = await h.fetch(
-      `/authorize?${new URLSearchParams({ response_type: "code", client_id: "c", redirect_uri: "https://claude.ai/cb", code_challenge: "abc" }).toString()}`,
+      `/authorize?${new URLSearchParams({ response_type: "code", client_id: "c", redirect_uri: "https://claude.ai/api/mcp/auth_callback", code_challenge: "abc" }).toString()}`,
     );
-    const back = new URL(new URL(auth.headers.get("location")!).searchParams.get("return_to")!);
+    const back = new URL((await consentLink(auth)).searchParams.get("return_to")!);
     const forged = { ...(await h.loginPayload(ALICE)), id: BOB.id };
     const stale = await h.loginPayload(ALICE, nowSeconds() - 3600);
     for (const body of [forged, stale]) {
@@ -216,9 +227,9 @@ describe("files", () => {
 describe("login page", () => {
   it("renders loading, success and failure states with the fallback widget", async () => {
     const auth = await h.fetch(
-      `/authorize?${new URLSearchParams({ response_type: "code", client_id: "c", redirect_uri: "https://claude.ai/cb", code_challenge: "abc" }).toString()}`,
+      `/authorize?${new URLSearchParams({ response_type: "code", client_id: "c", redirect_uri: "https://claude.ai/api/mcp/auth_callback", code_challenge: "abc" }).toString()}`,
     );
-    const back = new URL(new URL(auth.headers.get("location")!).searchParams.get("return_to")!);
+    const back = new URL((await consentLink(auth)).searchParams.get("return_to")!);
     const html = await (await h.fetch(`${back.pathname}${back.search}`)).text();
     for (const id of [
       'id="loading"',

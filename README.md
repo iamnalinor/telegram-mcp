@@ -219,7 +219,9 @@ Increasing `RETENTION_DAYS` costs storage, not writes.
   the token in BotFather invalidates all sessions and links; the Worker re-registers the webhook on
   its own (on the next visit to its page, or the daily cron).
 - **Login** is Telegram Login, checked against the bot token's hash, valid for 10 minutes. OAuth
-  uses PKCE, and codes only go to Claude's, ChatGPT's or loopback callbacks.
+  uses PKCE, and codes only go to Claude's and ChatGPT's exact callback URLs or to loopback. Before
+  Telegram's login, a page names the assistant that will get access, so a sign-in link someone else
+  started cannot be accepted in one click by mistake.
 - **Access** is checked on every call: your own private chat, plus groups where you hold a grant and
   are still a member. A model cannot post to or read any other chat. It can only edit or delete the
   bot's own messages, and in a shared group only those sent for the same user.

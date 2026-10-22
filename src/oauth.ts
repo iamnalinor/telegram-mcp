@@ -3,7 +3,8 @@
  *
  *   /register        dynamic client registration — so neither Claude nor
  *                    ChatGPT asks for a client id or secret
- *   /authorize       straight on to Telegram's own login page
+ *   /authorize       a consent page naming the assistant, then Telegram's
+ *                    own login page
  *   /auth/telegram   where Telegram sends the user back; verifies the login
  *                    and returns to the client with a code
  *   /token           code (+ PKCE verifier) → access and refresh tokens
@@ -42,10 +43,19 @@ const ACCESS_TTL = 24 * 60 * 60;
 const REFRESH_TTL = 90 * 24 * 60 * 60;
 
 /**
- * Hosts Claude and ChatGPT use for their OAuth callbacks, plus loopback —
- * where Codex, Claude Code and other local clients listen.
+ * The exact callbacks of Claude and ChatGPT. Any other page on those sites —
+ * or one of their subdomains — could end up in someone else's hands, and a
+ * code sent there would be theirs to redeem: they started the flow, so they
+ * hold the PKCE verifier. Loopback (Codex, Claude Code and other local
+ * clients) is allowed on any port and path: only the machine itself listens.
  */
-const REDIRECT_HOSTS = ["claude.ai", "claude.com", "chatgpt.com", "chat.openai.com"];
+const CALLBACKS: Record<string, string> = {
+  "https://claude.ai/api/mcp/auth_callback": "Claude",
+  "https://claude.com/api/mcp/auth_callback": "Claude",
+  "https://chatgpt.com/connector_platform_oauth_redirect": "ChatGPT",
+};
+
+const LOOPBACK = ["localhost", "127.0.0.1", "[::1]"];
 
 export interface OAuthDeps {
   env: Env;
@@ -88,21 +98,27 @@ function publicMcpUrl(request: Request): URL {
 }
 
 /**
- * Codes may only go to Claude's or ChatGPT's own callback, or to loopback.
- * Exact host or a real subdomain — never a suffix — so `claude.ai.evil.com`
- * and `notclaude.ai` are refused.
+ * Who a code for `target` goes to — "Claude", "ChatGPT", or an app on this
+ * computer — or null when codes may not go there at all.
  */
-export function allowedRedirect(target: string): boolean {
+function redirectOwner(target: string): string | null {
   let url: URL;
   try {
     url = new URL(target);
   } catch {
-    return false;
+    return null;
   }
-  const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-  if (loopback) return url.protocol === "http:" || url.protocol === "https:";
-  if (url.protocol !== "https:") return false;
-  return REDIRECT_HOSTS.some((host) => url.hostname === host || url.hostname.endsWith(`.${host}`));
+  if (LOOPBACK.includes(url.hostname)) {
+    return url.protocol === "http:" || url.protocol === "https:"
+      ? `An app on this computer (${url.host})`
+      : null;
+  }
+  return Object.hasOwn(CALLBACKS, url.href) ? CALLBACKS[url.href] : null;
+}
+
+/** Codes may only go to Claude's or ChatGPT's own callback, or to loopback. */
+export function allowedRedirect(target: string): boolean {
+  return redirectOwner(target) !== null;
 }
 
 function metadataOptions(mcpUrl: URL): AuthMetadataOptions {
@@ -230,7 +246,7 @@ async function handleRegister(request: Request, deps: OAuthDeps): Promise<Respon
   if (!uris.length || uris.length > 10 || !uris.every(allowedRedirect)) {
     return oauthError(
       "invalid_redirect_uri",
-      "Only Claude's, ChatGPT's and loopback callbacks are allowed.",
+      "Only Claude's and ChatGPT's own callbacks, and loopback, are allowed.",
     );
   }
   const name = typeof body.client_name === "string" ? body.client_name.slice(0, 80) : undefined;
@@ -302,7 +318,32 @@ async function handleAuthorize(request: Request, deps: OAuthDeps): Promise<Respo
     },
     STATE_TTL,
   );
-  return Response.redirect(telegramLoginUrl(deps.config, publicOrigin(request), state), 302);
+  return consentPage(
+    deps,
+    redirectUri,
+    telegramLoginUrl(deps.config, publicOrigin(request), state),
+  );
+}
+
+/**
+ * One click between /authorize and Telegram. Without it, a link someone else
+ * started — their client, their PKCE — would hand them access after a single
+ * "Accept" on Telegram's page, which names the bot but not who gets it. The
+ * assistant is named after where the code goes, not the client's own name,
+ * which anyone registering a client may choose.
+ */
+function consentPage(deps: OAuthDeps, redirectUri: string, telegramUrl: string): Response {
+  const owner = escapeHtml(redirectOwner(redirectUri) ?? redirectUri);
+  const bot = escapeHtml(deps.botUsername);
+  return page(
+    "Connect Telegram",
+    `<h1>Connect ${owner} to @${bot}?</h1>
+<p>${owner} will read the messages @${bot} receives — your private chat with it and the groups you
+connect — and send messages as the bot.</p>
+<p>Continue only if you started connecting it yourself, just now.</p>
+<a class="button" id="continue" href="${escapeHtml(telegramUrl)}">Continue with Telegram</a>
+<footer><a href="https://t.me/${bot}">@${bot}</a></footer>`,
+  );
 }
 
 /**

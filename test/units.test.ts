@@ -144,10 +144,17 @@ describe("telegram login", () => {
 });
 
 describe("redirects", () => {
-  it("allows Claude, ChatGPT and loopback only", () => {
+  it("allows Claude's and ChatGPT's exact callbacks, and loopback, only", () => {
     expect(allowedRedirect("https://claude.ai/api/mcp/auth_callback")).toBe(true);
+    expect(allowedRedirect("https://claude.com/api/mcp/auth_callback")).toBe(true);
     expect(allowedRedirect("https://chatgpt.com/connector_platform_oauth_redirect")).toBe(true);
     expect(allowedRedirect("http://localhost:6274/cb")).toBe(true);
+    expect(allowedRedirect("http://127.0.0.1:8080/oauth/callback")).toBe(true);
+    expect(allowedRedirect("https://claude.ai/some/other/page")).toBe(false);
+    expect(allowedRedirect("https://claude.ai/api/mcp/auth_callback?next=x")).toBe(false);
+    expect(allowedRedirect("https://sub.claude.ai/api/mcp/auth_callback")).toBe(false);
+    expect(allowedRedirect("https://chat.openai.com/x")).toBe(false);
+    expect(allowedRedirect("https://claude.ai/__proto__")).toBe(false);
     expect(allowedRedirect("https://claude.ai.evil.com/x")).toBe(false);
     expect(allowedRedirect("http://claude.ai/x")).toBe(false);
     expect(allowedRedirect("javascript:alert(1)")).toBe(false);
