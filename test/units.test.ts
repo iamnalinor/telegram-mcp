@@ -26,6 +26,7 @@ const msg = (extra: Partial<Message>): Message => ({
 
 describe("rendered messages", () => {
   const stored = (extra: Partial<StoredMessage>): StoredMessage => ({
+    account_id: 0,
     chat_id: 7,
     message_id: 1,
     date: 100,
@@ -324,6 +325,28 @@ describe("tool arguments", () => {
 });
 
 describe("schema upgrade", () => {
+  /** messages and day_marks as schema v1 to v3 made them, before account_id. */
+  const V2_TABLES = `
+    CREATE TABLE messages (
+      chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL, date INTEGER NOT NULL, edited_at INTEGER,
+      thread_id INTEGER, from_id INTEGER, from_name TEXT, from_username TEXT, forwarded_from TEXT,
+      text TEXT NOT NULL DEFAULT '', text_lc TEXT NOT NULL DEFAULT '', reply_to_id INTEGER, quote TEXT,
+      mentions_bot INTEGER NOT NULL DEFAULT 0, outgoing INTEGER NOT NULL DEFAULT 0, file_kind TEXT,
+      file_id TEXT, file_name TEXT, file_mime TEXT, file_size INTEGER, buttons TEXT,
+      mark_choice INTEGER NOT NULL DEFAULT 0, sent_by INTEGER,
+      PRIMARY KEY (chat_id, message_id)
+    ) WITHOUT ROWID;
+    CREATE TABLE day_marks (
+      chat_id INTEGER NOT NULL, day INTEGER NOT NULL, first_id INTEGER NOT NULL,
+      PRIMARY KEY (chat_id, day)
+    ) WITHOUT ROWID;
+    INSERT INTO messages (chat_id, message_id, date, text, text_lc) VALUES (-100, 7, 1000, 'Hello', 'hello');
+    INSERT INTO day_marks VALUES (-100, 0, 7);`;
+
+  const version = (db: { raw: { query(sql: string): { get(): unknown } } }) =>
+    (db.raw.query("SELECT value FROM meta WHERE key = 'schema_version'").get() as { value: string })
+      .value;
+
   it("brings a database made by schema v1 up to date", async () => {
     const { SqliteD1 } = await import("./sqlite-d1");
     const { ensureSchema } = await import("../src/schema");
@@ -332,20 +355,57 @@ describe("schema upgrade", () => {
       INSERT INTO meta VALUES ('schema_version', '1');
       CREATE TABLE users (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, language TEXT,
         token_version INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
-      INSERT INTO users (user_id, created_at) VALUES (1, 1);`);
+      INSERT INTO users (user_id, created_at) VALUES (1, 1);
+      ${V2_TABLES}`);
     await ensureSchema(db.asD1());
     const columns = db.raw.query("PRAGMA table_info(users)").all() as { name: string }[];
     expect(columns.map((c) => c.name)).toContain("connected_at");
-    expect(
-      (
-        db.raw.query("SELECT value FROM meta WHERE key = 'schema_version'").get() as {
-          value: string;
-        }
-      ).value,
-    ).toBe("3");
+    expect(version(db)).toBe("4");
     expect(
       db.raw.query("SELECT name FROM sqlite_master WHERE name = 'refresh_sessions'").get(),
     ).not.toBeNull();
     expect((db.raw.query("SELECT COUNT(*) AS n FROM users").get() as { n: number }).n).toBe(1);
   });
+
+  it("keys older messages by the bot's account and keeps them readable", async () => {
+    const { SqliteD1 } = await import("./sqlite-d1");
+    const { ensureSchema } = await import("../src/schema");
+    const { Store, BOT_ACCOUNT } = await import("../src/store");
+    const db = new SqliteD1();
+    db.raw.exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
+      INSERT INTO meta VALUES ('schema_version', '3');
+      ${V2_TABLES}`);
+    // Two isolates racing on the upgrade: the table must be rebuilt once, not twice.
+    await Promise.all([ensureSchema(db.asD1()), ensureSchema(new SqliteD1Proxy(db).asD1())]);
+    expect(version(db)).toBe("4");
+
+    const store = new Store(db.asD1());
+    const ref = { account_id: BOT_ACCOUNT, chat_id: -100 };
+    expect((await store.getMessage(ref, 7))?.text).toBe("Hello");
+    expect(await store.getMessage({ account_id: 42, chat_id: -100 }, 7)).toBeNull();
+    expect(await store.idFloors([ref], [1])).toEqual([7]);
+    const keys = db.raw.query("PRAGMA table_info(messages)").all() as {
+      name: string;
+      pk: number;
+    }[];
+    expect(keys.filter((c) => c.pk > 0).map((c) => c.name)).toEqual([
+      "account_id",
+      "chat_id",
+      "message_id",
+    ]);
+  });
 });
+
+/** A second handle on the same database, so ensureSchema's per-database cache sees two isolates. */
+class SqliteD1Proxy {
+  constructor(private readonly db: import("./sqlite-d1").SqliteD1) {}
+  prepare(sql: string) {
+    return this.db.prepare(sql);
+  }
+  batch(statements: Parameters<import("./sqlite-d1").SqliteD1["batch"]>[0]) {
+    return this.db.batch(statements);
+  }
+  asD1(): D1Database {
+    return this as unknown as D1Database;
+  }
+}

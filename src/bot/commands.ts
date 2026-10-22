@@ -23,6 +23,7 @@ import {
   type User,
 } from "../telegram/types";
 import { isChatGoneError } from "../access";
+import { BOT_ACCOUNT } from "../store";
 import type { BotContext, WebhookReply } from "./context";
 import { topicOf, type Command } from "./extract";
 import { formatDate, texts } from "./texts";
@@ -320,7 +321,9 @@ export async function handleAssistantButton(
   const message = query.message;
   if (!message) return answer(t.alreadyAnswered);
 
-  const stored = await ctx.store.getMessage(message.chat.id, message.message_id);
+  // Buttons are only ever sent in the bot's own chats, never in a user's personal ones.
+  const chat = { account_id: BOT_ACCOUNT, chat_id: message.chat.id };
+  const stored = await ctx.store.getMessage(chat, message.message_id);
   const buttons = stored?.buttons
     ? (JSON.parse(stored.buttons) as { text: string; data?: string }[][])
     : null;
@@ -349,7 +352,7 @@ export async function handleAssistantButton(
       })
       .catch(() => undefined);
     // The question is answered: forget its buttons, so a later edit cannot bring them back.
-    await ctx.store.updateOutgoing(message.chat.id, message.message_id, {
+    await ctx.store.updateOutgoing(chat, message.message_id, {
       buttons: null,
       markChoice: false,
     });

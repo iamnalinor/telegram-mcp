@@ -6,11 +6,11 @@
 
 import { z } from "zod";
 
-import { AccessError, type Access, type ChatView } from "../access";
+import { AccessError, telegramChat, type Access, type ChatView } from "../access";
 import type { Config } from "../env";
 import { messageLink } from "../links";
 import { markdownToHtml, splitMarkdown, splitPlain, TELEGRAM_CAPTION_LIMIT } from "../markdown";
-import type { StoredButton, Store } from "../store";
+import { BOT_ACCOUNT, type StoredButton, type Store } from "../store";
 import { TelegramError, type TelegramApi } from "../telegram/api";
 import type { InlineKeyboardMarkup, Message } from "../telegram/types";
 import { toStored } from "../bot/extract";
@@ -40,6 +40,13 @@ export function toolError(error: unknown, ctx: Pick<ToolContext, "bot">) {
 function describe(error: unknown, ctx: Pick<ToolContext, "bot">): string {
   if (error instanceof AccessError || error instanceof ToolError) return error.message;
   if (error instanceof TelegramError) {
+    if (/business|BUSINESS_PEER/i.test(error.description)) {
+      return (
+        `Telegram refused: ${error.description}. In a personal chat the bot may act only as the user allowed ` +
+        "in Telegram (Settings → Telegram Business → Chatbots), and only within 24 hours of the other " +
+        "person's last message. Nothing was sent."
+      );
+    }
     if (/bot was blocked|user is deactivated/i.test(error.description)) {
       return `Telegram refused: ${error.description}. The user has to unblock the bot (https://t.me/${ctx.bot.username}) before it can message them.`;
     }
@@ -77,7 +84,7 @@ export const chatArg = z
   .union([z.string(), z.number()])
   .optional()
   .describe(
-    'Where: "me" (default — the user\'s private chat with the bot), or a group id, @username or title from list_chats.',
+    'Where: "me" (default — the user\'s private chat with the bot), or a group or personal chat from list_chats: id, @username or name.',
   );
 
 export const messageIdArg = z.number().int().positive().describe("Message id (the #number).");
@@ -201,24 +208,57 @@ async function resolveTopic(
 ) {
   if (options.topic) return options.topic;
   if (!options.replyTo) return undefined;
-  const target = await ctx.store.getMessage(chat.chat_id, options.replyTo);
+  const target = await ctx.store.getMessage(chat, options.replyTo);
   return target?.thread_id ?? undefined;
 }
 
-/** Persist what the bot just sent, as the bot's own message. */
+/**
+ * Posting to a chat. In a personal chat a message goes out as the user, so it
+ * needs the right they gave in Telegram (and a conversation that is still
+ * open); buttons are refused there, as the other person would be the one
+ * pressing them.
+ */
+export async function mayPost(
+  ctx: ToolContext,
+  chat: ChatView,
+  buttons?: readonly unknown[],
+): Promise<void> {
+  if (chat.kind === "personal" && buttons?.length) {
+    throw new ToolError(
+      "Buttons are not available in personal chats: the other person, not the user, would press them.",
+    );
+  }
+  await ctx.access.allow(chat, "reply");
+}
+
+/** For tools that only make sense in the bot's own chats. */
+export function notPersonal(chat: ChatView, why: string): void {
+  if (chat.kind === "personal") throw new ToolError(`Not available in personal chats: ${why}`);
+}
+
+/** Persist what the bot just sent: its own message, or in a personal chat the user's, sent via Claude. */
 export async function recordSent(
   ctx: ToolContext,
+  chat: ChatView,
   sent: Message,
   extra: { text?: string; buttons?: string | null; markChoice?: boolean } = {},
 ): Promise<void> {
-  const stored = toStored(sent, ctx.bot);
+  const personal = chat.account_id !== BOT_ACCOUNT;
+  const stored = toStored(sent, ctx.bot, personal ? chat.account_id : undefined);
   stored.outgoing = true;
   stored.mentions_bot = false;
   if (extra.text !== undefined) stored.text = extra.text;
   stored.buttons = extra.buttons ?? null;
   stored.mark_choice = extra.markChoice ?? false;
   stored.sent_by = ctx.userId;
-  await ctx.store.insertMessage(stored, "always");
+  await ctx.store.insertMessage(stored, personal ? "personal" : "always");
+}
+
+/** Where a message went, for the model. */
+export function where(chat: ChatView): string {
+  if (chat.kind === "dm") return "the private chat";
+  if (chat.kind === "personal") return `the user's personal chat with "${chat.title}", as the user`;
+  return `"${chat.title}"`;
 }
 
 export function sentLink(ctx: ToolContext, chat: ChatView, message: Message): string | null {
@@ -233,6 +273,7 @@ export async function sendText(
   chat: ChatView,
   options: SendOptions,
 ): Promise<Message[]> {
+  await mayPost(ctx, chat, options.buttons);
   const format = options.format ?? "markdown";
   const parts = format === "markdown" ? splitMarkdown(options.text) : splitPlain(options.text);
   const thread = await resolveTopic(ctx, chat, options);
@@ -242,7 +283,7 @@ export async function sendText(
   for (const [index, part] of parts.entries()) {
     const last = index === parts.length - 1;
     const params: Record<string, unknown> = {
-      chat_id: chat.chat_id,
+      ...telegramChat(chat),
       text: format === "markdown" ? markdownToHtml(part) : part,
       ...(format === "markdown" ? { parse_mode: "HTML" } : {}),
       ...(thread ? { message_thread_id: thread } : {}),
@@ -262,7 +303,7 @@ export async function sendText(
       }
       return ctx.api.call<Message>("sendMessage", params);
     });
-    await recordSent(ctx, message, {
+    await recordSent(ctx, chat, message, {
       text: part,
       buttons: last ? storedButtons(options.buttons) : null,
       markChoice: last ? options.markChoice : false,
@@ -320,14 +361,17 @@ export async function sendUpload(
   filename: string,
   options: FileSendOptions,
 ): Promise<Message> {
+  await mayPost(ctx, chat, options.buttons);
   const kind = options.as ?? "document";
   const method = `send${kind[0].toUpperCase()}${kind.slice(1)}`;
   const caption = options.caption?.slice(0, TELEGRAM_CAPTION_LIMIT);
   const markdown = (options.format ?? "markdown") === "markdown";
   const thread = await resolveTopic(ctx, chat, options);
 
+  const { chat_id, business_connection_id } = telegramChat(chat);
   const params = (plain: boolean): Record<string, unknown> => ({
-    chat_id: String(chat.chat_id),
+    chat_id: String(chat_id),
+    ...(business_connection_id ? { business_connection_id } : {}),
     ...(caption ? { caption: markdown && !plain ? markdownToHtml(caption) : caption } : {}),
     ...(caption && markdown && !plain ? { parse_mode: "HTML" } : {}),
     ...(thread ? { message_thread_id: String(thread) } : {}),
@@ -350,7 +394,7 @@ export async function sendUpload(
           name: filename,
           type: source.type,
         });
-  await recordSent(ctx, message, {
+  await recordSent(ctx, chat, message, {
     text: caption ?? "",
     buttons: storedButtons(options.buttons),
   });

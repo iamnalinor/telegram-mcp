@@ -10,6 +10,8 @@
 import { nowSeconds } from "./crypto";
 
 export interface StoredMessage {
+  /** 0 for the bot's own chats; the user's id for their personal chats (see schema). */
+  account_id: number;
   chat_id: number;
   message_id: number;
   date: number;
@@ -116,10 +118,40 @@ export interface TopicRow {
   name: string;
 }
 
-/** One chat a search may look in, from the moment its reader is allowed to see. */
-export interface Scope {
+/** A chat as seen from one account: the bot's (0), or a user's own via Telegram Business. */
+export interface ChatRef {
+  account_id: number;
   chat_id: number;
+}
+
+/** The bot's own account, which holds its private chats and every group. */
+export const BOT_ACCOUNT = 0;
+
+/** A Map key for a chat. */
+export function refKey(ref: ChatRef): string {
+  return `${ref.account_id}:${ref.chat_id}`;
+}
+
+/** One chat a search may look in, from the moment its reader is allowed to see. */
+export interface Scope extends ChatRef {
   visible_from: number;
+}
+
+export interface BusinessRow {
+  user_id: number;
+  connection_id: string;
+  /** JSON of BusinessBotRights. */
+  rights: string;
+  enabled: number;
+  connected_at: number;
+  updated_at: number;
+}
+
+export interface PersonalChatRow {
+  account_id: number;
+  chat_id: number;
+  title: string | null;
+  username: string | null;
 }
 
 export interface SearchQuery {
@@ -137,8 +169,8 @@ export interface SearchQuery {
   limit: number;
 }
 
-/** D1 refuses more than 100 bound parameters in one statement; a scope takes three. */
-export const MAX_SCOPES = 25;
+/** D1 refuses more than 100 bound parameters in one statement; a scope takes four. */
+export const MAX_SCOPES = 20;
 
 function toMessage(row: MessageRow): StoredMessage {
   return {
@@ -159,6 +191,7 @@ function likePattern(keyword: string): string {
 }
 
 const MESSAGE_COLUMNS = [
+  "account_id",
   "chat_id",
   "message_id",
   "date",
@@ -186,6 +219,7 @@ const MESSAGE_COLUMNS = [
 
 function messageValues(message: StoredMessage): unknown[] {
   return [
+    message.account_id,
     message.chat_id,
     message.message_id,
     message.date,
@@ -214,32 +248,40 @@ function messageValues(message: StoredMessage): unknown[] {
 
 /**
  * When a message may be written: always (the bot's own, sent through the
- * MCP), while a private chat's owner is registered, or while a group has at
- * least one grant.
+ * MCP), while a private chat's owner is registered, while a group has at
+ * least one grant, or while a user's business connection is on.
  */
-export type Guard = "always" | "dm" | "group";
+export type Guard = "always" | "dm" | "group" | "personal";
 
-function guardSql(guard: Guard, chatId: number): [string, ...unknown[]] {
+function guardSql(guard: Guard, message: ChatRef): [string, ...unknown[]] {
   switch (guard) {
     case "always":
       return ["1"];
     case "dm":
-      return ["EXISTS (SELECT 1 FROM users WHERE user_id = ?)", chatId];
+      return ["EXISTS (SELECT 1 FROM users WHERE user_id = ?)", message.chat_id];
     case "group":
-      return ["EXISTS (SELECT 1 FROM grants WHERE chat_id = ?)", chatId];
+      return ["EXISTS (SELECT 1 FROM grants WHERE chat_id = ?)", message.chat_id];
+    case "personal":
+      return [personalOn("?"), message.account_id];
   }
 }
 
-const CHAT_TABLES = [
-  "grants",
-  "messages",
-  "button_presses",
-  "reactions",
-  "topics",
-  "day_marks",
-  "chats",
-];
-const HISTORY_TABLES = ["messages", "button_presses", "reactions", "topics", "day_marks", "chats"];
+/**
+ * A user's personal chats are stored while their business connection is on
+ * and they have signed an assistant in; before that, nobody could read them.
+ */
+function personalOn(userParam: string): string {
+  return `EXISTS (
+    SELECT 1 FROM business_connections b JOIN users u ON u.user_id = b.user_id
+    WHERE b.user_id = ${userParam} AND b.enabled = 1 AND u.connected_at IS NOT NULL
+  )`;
+}
+
+/** Tables of a group's own, keyed by chat id alone. */
+const GROUP_TABLES = ["grants", "button_presses", "reactions", "topics", "chats"];
+/** Tables keyed by account too; a group's rows sit under the bot's account. */
+const ACCOUNT_TABLES = ["messages", "day_marks"];
+const HISTORY_TABLES = ["button_presses", "reactions", "topics", "chats"];
 
 const DAY = 86_400;
 
@@ -367,22 +409,34 @@ export class Store {
     return this.db.prepare("SELECT * FROM chats WHERE chat_id = ?").bind(chatId).first<ChatRow>();
   }
 
-  /** Forget a chat entirely: the bot left, or nobody has access any more. */
+  /** Forget a group entirely: the bot left, or nobody has access any more. */
   async deleteChat(chatId: number): Promise<void> {
-    await this.db.batch(
-      CHAT_TABLES.map((table) =>
+    await this.db.batch([
+      ...GROUP_TABLES.map((table) =>
         this.db.prepare(`DELETE FROM ${table} WHERE chat_id = ?`).bind(chatId),
       ),
-    );
+      ...ACCOUNT_TABLES.map((table) =>
+        this.db
+          .prepare(`DELETE FROM ${table} WHERE account_id = ? AND chat_id = ?`)
+          .bind(BOT_ACCOUNT, chatId),
+      ),
+    ]);
   }
 
   /** A group became a supergroup and got a new id; carry everything over. */
   async migrateChat(from: number, to: number): Promise<void> {
     await this.db.batch([
-      ...["grants", "messages", "button_presses", "reactions", "topics", "day_marks"].map((table) =>
+      ...["grants", "button_presses", "reactions", "topics"].map((table) =>
         this.db
           .prepare(`UPDATE OR IGNORE ${table} SET chat_id = ?2 WHERE chat_id = ?1`)
           .bind(from, to),
+      ),
+      ...ACCOUNT_TABLES.map((table) =>
+        this.db
+          .prepare(
+            `UPDATE OR IGNORE ${table} SET chat_id = ?2 WHERE account_id = ?3 AND chat_id = ?1`,
+          )
+          .bind(from, to, BOT_ACCOUNT),
       ),
       this.db
         .prepare(
@@ -392,8 +446,13 @@ export class Store {
            ON CONFLICT (chat_id) DO NOTHING`,
         )
         .bind(from, to),
-      ...CHAT_TABLES.map((table) =>
+      ...GROUP_TABLES.map((table) =>
         this.db.prepare(`DELETE FROM ${table} WHERE chat_id = ?`).bind(from),
+      ),
+      ...ACCOUNT_TABLES.map((table) =>
+        this.db
+          .prepare(`DELETE FROM ${table} WHERE account_id = ? AND chat_id = ?`)
+          .bind(BOT_ACCOUNT, from),
       ),
     ]);
   }
@@ -461,14 +520,25 @@ export class Store {
   }
 
   private purgeOrphanStatements(chatId: number): D1PreparedStatement[] {
-    return HISTORY_TABLES.map((table) =>
-      this.db
-        .prepare(
-          `DELETE FROM ${table} WHERE chat_id = ?1
-           AND NOT EXISTS (SELECT 1 FROM grants WHERE chat_id = ?1)`,
-        )
-        .bind(chatId),
-    );
+    return [
+      ...ACCOUNT_TABLES.map((table) =>
+        this.db
+          .prepare(
+            `DELETE FROM ${table} WHERE account_id = ?2 AND chat_id = ?1
+             AND NOT EXISTS (SELECT 1 FROM grants WHERE chat_id = ?1)`,
+          )
+          .bind(chatId, BOT_ACCOUNT),
+      ),
+      // `chats` goes last: revokeGrant reads the last statement's changes.
+      ...HISTORY_TABLES.map((table) =>
+        this.db
+          .prepare(
+            `DELETE FROM ${table} WHERE chat_id = ?1
+             AND NOT EXISTS (SELECT 1 FROM grants WHERE chat_id = ?1)`,
+          )
+          .bind(chatId),
+      ),
+    ];
   }
 
   async touchGrant(userId: number, chatId: number): Promise<void> {
@@ -492,13 +562,13 @@ export class Store {
    * changes nothing.
    */
   async insertMessage(message: StoredMessage, guard: Guard): Promise<boolean> {
-    const [condition, ...guardValues] = guardSql(guard, message.chat_id);
+    const [condition, ...guardValues] = guardSql(guard, message);
     const [inserted] = await this.db.batch([
       this.db
         .prepare(
           `INSERT INTO messages (${MESSAGE_COLUMNS.join(", ")})
            SELECT ${MESSAGE_COLUMNS.map(() => "?").join(", ")} WHERE ${condition}
-           ON CONFLICT (chat_id, message_id) DO NOTHING`,
+           ON CONFLICT (account_id, chat_id, message_id) DO NOTHING`,
         )
         .bind(...messageValues(message), ...guardValues),
       this.markDayStatement(message, condition, guardValues),
@@ -508,18 +578,24 @@ export class Store {
 
   /** Costs a write only for a chat's first message of a day (or an earlier one). */
   private markDayStatement(
-    message: Pick<StoredMessage, "chat_id" | "message_id" | "date">,
+    message: Pick<StoredMessage, "account_id" | "chat_id" | "message_id" | "date">,
     condition: string,
     guardValues: unknown[],
   ): D1PreparedStatement {
     return this.db
       .prepare(
-        `INSERT INTO day_marks (chat_id, day, first_id)
-         SELECT ?, ?, ? WHERE ${condition}
-         ON CONFLICT (chat_id, day) DO UPDATE SET first_id = excluded.first_id
+        `INSERT INTO day_marks (account_id, chat_id, day, first_id)
+         SELECT ?, ?, ?, ? WHERE ${condition}
+         ON CONFLICT (account_id, chat_id, day) DO UPDATE SET first_id = excluded.first_id
          WHERE excluded.first_id < first_id`,
       )
-      .bind(message.chat_id, Math.floor(message.date / DAY), message.message_id, ...guardValues);
+      .bind(
+        message.account_id,
+        message.chat_id,
+        Math.floor(message.date / DAY),
+        message.message_id,
+        ...guardValues,
+      );
   }
 
   /**
@@ -527,15 +603,16 @@ export class Store {
    * Ids grow within a chat, so a scan can start there. Chats with nothing
    * since then get +Infinity (MAX_SAFE_INTEGER): nothing to scan.
    */
-  async idFloors(chatIds: number[], since: number[]): Promise<number[]> {
-    if (!chatIds.length) return [];
+  async idFloors(chats: ChatRef[], since: number[]): Promise<number[]> {
+    if (!chats.length) return [];
     const results = await this.db.batch<{ first_id: number }>(
-      chatIds.map((chatId, index) =>
+      chats.map((chat, index) =>
         this.db
           .prepare(
-            "SELECT first_id FROM day_marks WHERE chat_id = ? AND day >= ? ORDER BY day LIMIT 1",
+            `SELECT first_id FROM day_marks WHERE account_id = ? AND chat_id = ? AND day >= ?
+             ORDER BY day LIMIT 1`,
           )
-          .bind(chatId, Math.floor(since[index] / DAY)),
+          .bind(chat.account_id, chat.chat_id, Math.floor(since[index] / DAY)),
       ),
     );
     return results.map((result) => result.results[0]?.first_id ?? Number.MAX_SAFE_INTEGER);
@@ -543,12 +620,12 @@ export class Store {
 
   /** An edit replaces the content; a message we never stored is stored now. */
   async upsertEditedMessage(message: StoredMessage, guard: Guard): Promise<void> {
-    const [condition, ...guardValues] = guardSql(guard, message.chat_id);
+    const [condition, ...guardValues] = guardSql(guard, message);
     await this.db
       .prepare(
         `INSERT INTO messages (${MESSAGE_COLUMNS.join(", ")})
          SELECT ${MESSAGE_COLUMNS.map(() => "?").join(", ")} WHERE ${condition}
-         ON CONFLICT (chat_id, message_id) DO UPDATE SET
+         ON CONFLICT (account_id, chat_id, message_id) DO UPDATE SET
            text = excluded.text,
            text_lc = excluded.text_lc,
            edited_at = excluded.edited_at,
@@ -566,7 +643,7 @@ export class Store {
 
   /** The bot changed one of its own messages through the MCP. */
   async updateOutgoing(
-    chatId: number,
+    chat: ChatRef,
     messageId: number,
     change: { text?: string; buttons?: string | null; markChoice?: boolean },
   ): Promise<void> {
@@ -588,48 +665,62 @@ export class Store {
     sets.push("edited_at = ?");
     values.push(nowSeconds());
     await this.db
-      .prepare(`UPDATE messages SET ${sets.join(", ")} WHERE chat_id = ? AND message_id = ?`)
-      .bind(...values, chatId, messageId)
+      .prepare(
+        `UPDATE messages SET ${sets.join(", ")} WHERE account_id = ? AND chat_id = ? AND message_id = ?`,
+      )
+      .bind(...values, chat.account_id, chat.chat_id, messageId)
       .run();
   }
 
-  async getMessage(chatId: number, messageId: number): Promise<StoredMessage | null> {
+  async getMessage(chat: ChatRef, messageId: number): Promise<StoredMessage | null> {
     const row = await this.db
-      .prepare("SELECT * FROM messages WHERE chat_id = ? AND message_id = ?")
-      .bind(chatId, messageId)
+      .prepare("SELECT * FROM messages WHERE account_id = ? AND chat_id = ? AND message_id = ?")
+      .bind(chat.account_id, chat.chat_id, messageId)
       .first<MessageRow>();
     return row ? toMessage(row) : null;
   }
 
   /** Several messages of one chat by id, in one primary-key query. */
-  async getMessages(chatId: number, messageIds: number[]): Promise<StoredMessage[]> {
+  async getMessages(chat: ChatRef, messageIds: number[]): Promise<StoredMessage[]> {
     const ids = [...new Set(messageIds)].slice(0, 90);
     if (!ids.length) return [];
     const { results } = await this.db
       .prepare(
-        `SELECT * FROM messages WHERE chat_id = ? AND message_id IN (${ids.map(() => "?").join(", ")})`,
+        `SELECT * FROM messages WHERE account_id = ? AND chat_id = ?
+         AND message_id IN (${ids.map(() => "?").join(", ")})`,
       )
-      .bind(chatId, ...ids)
+      .bind(chat.account_id, chat.chat_id, ...ids)
       .all<MessageRow>();
     return results.map(toMessage);
   }
 
-  async deleteMessage(chatId: number, messageId: number): Promise<void> {
-    await this.db.batch(
-      ["messages", "button_presses", "reactions"].map((table) =>
-        this.db
-          .prepare(`DELETE FROM ${table} WHERE chat_id = ? AND message_id = ?`)
-          .bind(chatId, messageId),
-      ),
-    );
+  /** Forget messages, with their presses and reactions (which only the bot's account has). */
+  async deleteMessages(chat: ChatRef, messageIds: number[]): Promise<void> {
+    const ids = [...new Set(messageIds)].slice(0, 90);
+    if (!ids.length) return;
+    const list = ids.map(() => "?").join(", ");
+    await this.db.batch([
+      this.db
+        .prepare(
+          `DELETE FROM messages WHERE account_id = ? AND chat_id = ? AND message_id IN (${list})`,
+        )
+        .bind(chat.account_id, chat.chat_id, ...ids),
+      ...(chat.account_id === BOT_ACCOUNT
+        ? ["button_presses", "reactions"].map((table) =>
+            this.db
+              .prepare(`DELETE FROM ${table} WHERE chat_id = ? AND message_id IN (${list})`)
+              .bind(chat.chat_id, ...ids),
+          )
+        : []),
+    ]);
   }
 
   /** idFloors, skipping the lookup for windows that start at the beginning. */
-  private async windowFloors(chatIds: number[], starts: number[]): Promise<number[]> {
-    const needed = chatIds.map((_, index) => index).filter((index) => starts[index] > 0);
-    const floors = chatIds.map(() => 0);
+  private async windowFloors(chats: ChatRef[], starts: number[]): Promise<number[]> {
+    const needed = chats.map((_, index) => index).filter((index) => starts[index] > 0);
+    const floors = chats.map(() => 0);
     const found = await this.idFloors(
-      needed.map((index) => chatIds[index]),
+      needed.map((index) => chats[index]),
       needed.map((index) => starts[index]),
     );
     needed.forEach((index, position) => (floors[index] = found[position]));
@@ -645,14 +736,15 @@ export class Store {
 
     // Each chat is scanned from the first message of the window's first day.
     const starts = scopes.map((scope) => Math.max(scope.visible_from, query.since ?? 0));
-    const floors = await this.windowFloors(
-      scopes.map((scope) => scope.chat_id),
-      starts,
-    );
+    const floors = await this.windowFloors(scopes, starts);
     where.push(
-      `(${scopes.map(() => "(chat_id = ? AND message_id >= ? AND date >= ?)").join(" OR ")})`,
+      `(${scopes
+        .map(() => "(account_id = ? AND chat_id = ? AND message_id >= ? AND date >= ?)")
+        .join(" OR ")})`,
     );
-    scopes.forEach((scope, index) => values.push(scope.chat_id, floors[index], starts[index]));
+    scopes.forEach((scope, index) =>
+      values.push(scope.account_id, scope.chat_id, floors[index], starts[index]),
+    );
 
     for (const keyword of query.keywords.slice(0, 10)) {
       where.push("text_lc LIKE ? ESCAPE '\\'");
@@ -706,12 +798,12 @@ export class Store {
     options: { limit: number; beforeId?: number; since?: number; threadId?: number },
   ): Promise<StoredMessage[]> {
     const start = Math.max(scope.visible_from, options.since ?? 0);
-    const [floor] = await this.windowFloors([scope.chat_id], [start]);
+    const [floor] = await this.windowFloors([scope], [start]);
     const { results } = await this.db
       .prepare(
         `SELECT * FROM messages
-         WHERE chat_id = ?1 AND message_id < ?2 AND message_id >= ?6 AND date >= ?3
-           AND (?5 IS NULL OR thread_id = ?5)
+         WHERE account_id = ?7 AND chat_id = ?1 AND message_id < ?2 AND message_id >= ?6
+           AND date >= ?3 AND (?5 IS NULL OR thread_id = ?5)
          ORDER BY message_id DESC LIMIT ?4`,
       )
       .bind(
@@ -721,6 +813,7 @@ export class Store {
         options.limit,
         options.threadId ?? null,
         floor,
+        scope.account_id,
       )
       .all<MessageRow>();
     return results.map(toMessage);
@@ -736,10 +829,11 @@ export class Store {
     const { results } = await this.db
       .prepare(
         `SELECT * FROM messages
-         WHERE chat_id = ?1 AND message_id > ?2 AND date >= ?3 AND (?5 IS NULL OR thread_id = ?5)
+         WHERE account_id = ?6 AND chat_id = ?1 AND message_id > ?2 AND date >= ?3
+           AND (?5 IS NULL OR thread_id = ?5)
          ORDER BY message_id ASC LIMIT ?4`,
       )
-      .bind(scope.chat_id, afterId, scope.visible_from, limit, threadId ?? null)
+      .bind(scope.chat_id, afterId, scope.visible_from, limit, threadId ?? null, scope.account_id)
       .all<MessageRow>();
     return results.map(toMessage);
   }
@@ -756,44 +850,63 @@ export class Store {
     const row = await this.db
       .prepare(
         `SELECT * FROM messages
-         WHERE chat_id = ?1 AND message_id > ?2 AND date >= ?3 AND outgoing = 0
+         WHERE account_id = ?5 AND chat_id = ?1 AND message_id > ?2 AND date >= ?3 AND outgoing = 0
            AND (reply_to_id = ?2 OR from_id = ?4)
          ORDER BY message_id ASC LIMIT 1`,
       )
-      .bind(scope.chat_id, messageId, scope.visible_from, fromId ?? 0)
+      .bind(scope.chat_id, messageId, scope.visible_from, fromId ?? 0, scope.account_id)
       .first<MessageRow>();
     return row ? toMessage(row) : null;
   }
 
   /** The bot's latest message in a chat, looking back over the last few days only. */
-  async lastOutgoing(chatId: number): Promise<StoredMessage | null> {
-    const [floor] = await this.idFloors([chatId], [nowSeconds() - 3 * DAY]);
+  async lastOutgoing(chat: ChatRef): Promise<StoredMessage | null> {
+    const [floor] = await this.idFloors([chat], [nowSeconds() - 3 * DAY]);
     const row = await this.db
       .prepare(
-        `SELECT * FROM messages WHERE chat_id = ? AND message_id >= ? AND outgoing = 1
+        `SELECT * FROM messages
+         WHERE account_id = ? AND chat_id = ? AND message_id >= ? AND outgoing = 1
          ORDER BY message_id DESC LIMIT 1`,
       )
-      .bind(chatId, floor)
+      .bind(chat.account_id, chat.chat_id, floor)
       .first<MessageRow>();
     return row ? toMessage(row) : null;
   }
 
-  async lastMessageDates(chatIds: number[]): Promise<Map<number, number>> {
-    const dates = new Map<number, number>();
-    if (!chatIds.length) return dates;
+  /**
+   * When the other side last wrote in a personal chat. Telegram lets a
+   * business bot reply only within 24 hours of that, so this is read before
+   * sending; it walks back from the newest message, so it costs little.
+   */
+  async lastIncoming(chat: ChatRef): Promise<StoredMessage | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT * FROM messages WHERE account_id = ? AND chat_id = ? AND outgoing = 0
+         ORDER BY message_id DESC LIMIT 1`,
+      )
+      .bind(chat.account_id, chat.chat_id)
+      .first<MessageRow>();
+    return row ? toMessage(row) : null;
+  }
+
+  /** Keyed by refKey. */
+  async lastMessageDates(chats: ChatRef[]): Promise<Map<string, number>> {
+    const dates = new Map<string, number>();
+    if (!chats.length) return dates;
     // One query per chat: each is a single primary-key probe from the end.
-    const rows = await this.db.batch<{ chat_id: number; date: number }>(
-      chatIds.map((chatId) =>
+    const rows = await this.db.batch<ChatRef & { date: number }>(
+      chats.map((chat) =>
         this.db
           .prepare(
-            "SELECT chat_id, date FROM messages WHERE chat_id = ? ORDER BY message_id DESC LIMIT 1",
+            `SELECT account_id, chat_id, date FROM messages WHERE account_id = ? AND chat_id = ?
+             ORDER BY message_id DESC LIMIT 1`,
           )
-          .bind(chatId),
+          .bind(chat.account_id, chat.chat_id),
       ),
     );
     for (const result of rows) {
       const row = result.results[0];
-      if (row) dates.set(row.chat_id, row.date);
+      if (row) dates.set(refKey(row), row.date);
     }
     return dates;
   }
@@ -893,6 +1006,87 @@ export class Store {
     return results;
   }
 
+  // --- business connections and personal chats -----------------------------
+
+  getBusinessConnection(userId: number): Promise<BusinessRow | null> {
+    return this.db
+      .prepare("SELECT * FROM business_connections WHERE user_id = ?")
+      .bind(userId)
+      .first<BusinessRow>();
+  }
+
+  businessConnectionById(connectionId: string): Promise<BusinessRow | null> {
+    return this.db
+      .prepare("SELECT * FROM business_connections WHERE connection_id = ?")
+      .bind(connectionId)
+      .first<BusinessRow>();
+  }
+
+  /**
+   * Record a connection as Telegram reports it. A user has one connection
+   * with the bot at a time; a new id (they reconnected) replaces the old one.
+   */
+  async upsertBusinessConnection(row: {
+    user_id: number;
+    connection_id: string;
+    rights: string;
+    enabled: boolean;
+  }): Promise<void> {
+    const now = nowSeconds();
+    await this.db.batch([
+      // A stale row of another user can hold this id only if Telegram reused it; it must go.
+      this.db
+        .prepare("DELETE FROM business_connections WHERE connection_id = ? AND user_id <> ?")
+        .bind(row.connection_id, row.user_id),
+      this.db
+        .prepare(
+          `INSERT INTO business_connections (user_id, connection_id, rights, enabled, connected_at, updated_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?5)
+           ON CONFLICT (user_id) DO UPDATE SET
+             connection_id = excluded.connection_id,
+             rights = excluded.rights,
+             enabled = excluded.enabled,
+             updated_at = excluded.updated_at`,
+        )
+        .bind(row.user_id, row.connection_id, row.rights, row.enabled ? 1 : 0, now),
+    ]);
+  }
+
+  /** The connection is gone: forget it and every personal message it brought, in one go. */
+  async dropPersonal(accountId: number): Promise<void> {
+    if (accountId === BOT_ACCOUNT) return;
+    await this.db.batch([
+      this.db.prepare("DELETE FROM business_connections WHERE user_id = ?").bind(accountId),
+      ...[...ACCOUNT_TABLES, "personal_chats"].map((table) =>
+        this.db.prepare(`DELETE FROM ${table} WHERE account_id = ?`).bind(accountId),
+      ),
+    ]);
+  }
+
+  /** Who a personal chat is with. Costs a write only when the name changed. */
+  async upsertPersonalChat(chat: PersonalChatRow): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO personal_chats (account_id, chat_id, title, username, updated_at)
+         SELECT ?1, ?2, ?3, ?4, ?5 WHERE ${personalOn("?1")}
+         ON CONFLICT (account_id, chat_id) DO UPDATE SET
+           title = excluded.title, username = excluded.username, updated_at = excluded.updated_at
+         WHERE title IS NOT excluded.title OR username IS NOT excluded.username`,
+      )
+      .bind(chat.account_id, chat.chat_id, chat.title, chat.username, nowSeconds())
+      .run();
+  }
+
+  async listPersonalChats(accountId: number): Promise<PersonalChatRow[]> {
+    const { results } = await this.db
+      .prepare(
+        "SELECT account_id, chat_id, title, username FROM personal_chats WHERE account_id = ?",
+      )
+      .bind(accountId)
+      .all<PersonalChatRow>();
+    return results;
+  }
+
   // --- upload nonces -------------------------------------------------------
 
   /** True the first time a nonce is seen; false on any replay. */
@@ -966,6 +1160,13 @@ export class Store {
       // a session with no row would start afresh.
       this.db.prepare("DELETE FROM refresh_sessions WHERE expires_at < ?").bind(nowSeconds() - DAY),
       this.db.prepare("DELETE FROM day_marks WHERE day < ?").bind(Math.floor(cutoff / DAY)),
+      // People nobody has heard from within retention.
+      this.db.prepare(
+        `DELETE FROM personal_chats WHERE NOT EXISTS (
+           SELECT 1 FROM messages m
+           WHERE m.account_id = personal_chats.account_id AND m.chat_id = personal_chats.chat_id
+         )`,
+      ),
     ]);
     return results[0].meta.changes ?? 0;
   }

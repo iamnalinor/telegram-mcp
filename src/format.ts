@@ -22,7 +22,15 @@ import type { ChatView } from "./access";
 import { randomId } from "./crypto";
 import { messageLink } from "./links";
 import { untrustedNote } from "./prompts";
-import type { PressRow, ReactionRow, StoredMessage, TopicRow } from "./store";
+import {
+  BOT_ACCOUNT,
+  refKey,
+  type ChatRef,
+  type PressRow,
+  type ReactionRow,
+  type StoredMessage,
+  type TopicRow,
+} from "./store";
 
 const SNIPPET_LENGTH = 500;
 const REPLY_PREVIEW_LENGTH = 120;
@@ -64,6 +72,11 @@ export function person(
 }
 
 function sender(message: StoredMessage, botUsername: string, userId: number): string {
+  if (message.outgoing && message.account_id !== BOT_ACCOUNT) {
+    // A personal chat: outgoing is the user writing to that person, by hand or through you.
+    const who = person(message.from_name, message.from_username, message.from_id, userId);
+    return message.sent_by !== null ? `${who}, sent by you` : who;
+  }
   if (message.outgoing) return `bot (@${botUsername}, you)`;
   return person(message.from_name, message.from_username, message.from_id, userId);
 }
@@ -116,7 +129,7 @@ export class Fence {
 }
 
 export class Renderer {
-  private readonly chats: Map<number, ChatView>;
+  private readonly chats: Map<string, ChatView>;
   private readonly topics = new Map<string, string>();
   readonly fence: Fence;
 
@@ -125,12 +138,12 @@ export class Renderer {
     private readonly userId: number,
     chats: ChatView[],
     topics: TopicRow[] = [],
-    /** Every message the result shows, keyed `chat:message`, for reply previews. */
+    /** Every message the result shows, keyed `account:chat:message`, for reply previews. */
     private readonly replyTargets = new Map<string, StoredMessage>(),
     /** Other content the result carries inside the fence. */
     extra: string[] = [],
   ) {
-    this.chats = new Map(chats.map((chat) => [chat.chat_id, chat]));
+    this.chats = new Map(chats.map((chat) => [refKey(chat), chat]));
     for (const topic of topics) this.topics.set(`${topic.chat_id}:${topic.thread_id}`, topic.name);
     this.fence = new Fence(userId, [
       ...[...replyTargets.values()].flatMap(authored),
@@ -145,16 +158,23 @@ export class Renderer {
     return this.topics.get(`${chatId}:${threadId}`) ?? `topic ${threadId}`;
   }
 
-  link(message: Pick<StoredMessage, "chat_id" | "message_id" | "thread_id">): string | null {
-    const chat = this.chats.get(message.chat_id);
+  link(
+    message: Pick<StoredMessage, "account_id" | "chat_id" | "message_id" | "thread_id">,
+  ): string | null {
+    const chat = this.chats.get(refKey(message));
     if (!chat) return null;
     return messageLink(chat, message.message_id, message.thread_id, this.botUsername);
   }
 
-  where(chatId: number, threadId: number | null): string {
-    const chat = this.chats.get(chatId);
-    const title = chat?.kind === "dm" ? "DM" : (chat?.title ?? String(chatId));
-    const topic = this.topicName(chatId, threadId);
+  where(ref: ChatRef, threadId: number | null): string {
+    const chat = this.chats.get(refKey(ref));
+    const title =
+      chat?.kind === "dm"
+        ? "DM"
+        : chat?.kind === "personal"
+          ? `personal: ${chat.title}`
+          : (chat?.title ?? String(ref.chat_id));
+    const topic = this.topicName(ref.chat_id, threadId);
     return topic ? `${title} › ${topic}` : title;
   }
 
@@ -166,17 +186,15 @@ export class Renderer {
     const header = [
       `#${message.message_id}`,
       formatTime(message.date) + (message.edited_at ? " (edited)" : ""),
-      ...(options.showChat || message.thread_id
-        ? [this.where(message.chat_id, message.thread_id)]
-        : []),
+      ...(options.showChat || message.thread_id ? [this.where(message, message.thread_id)] : []),
       sender(message, this.botUsername, this.userId) +
-        (message.mentions_bot && !message.outgoing && this.isGroup(message.chat_id) ? " 🔔" : ""),
+        (message.mentions_bot && !message.outgoing && this.isGroup(message) ? " 🔔" : ""),
     ].join(" · ");
 
     const lines = [header];
     if (message.forwarded_from) lines.push(`  ↪ forwarded from ${message.forwarded_from}`);
     if (message.reply_to_id) {
-      const target = this.replyTargets.get(`${message.chat_id}:${message.reply_to_id}`);
+      const target = this.replyTargets.get(`${refKey(message)}:${message.reply_to_id}`);
       lines.push(
         target
           ? `  ↩ #${target.message_id} ${sender(target, this.botUsername, this.userId)}: "${clip(target.text, REPLY_PREVIEW_LENGTH)}"`
@@ -204,12 +222,12 @@ export class Renderer {
       lines.push(`  [buttons: ${labels.join(" | ")}]`);
     }
     const link = this.link(message);
-    if (link && this.isGroup(message.chat_id)) lines.push(`  ${link}`);
+    if (link && this.isGroup(message)) lines.push(`  ${link}`);
     return this.fence.wrap(lines.join("\n"));
   }
 
-  private isGroup(chatId: number): boolean {
-    return this.chats.get(chatId)?.kind === "group";
+  private isGroup(ref: ChatRef): boolean {
+    return this.chats.get(refKey(ref))?.kind === "group";
   }
 }
 

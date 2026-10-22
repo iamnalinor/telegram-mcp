@@ -26,6 +26,7 @@ import {
 import {
   sendUpload,
   sentLink,
+  where,
   type Buttons,
   type FileSendOptions,
   type ToolContext,
@@ -196,10 +197,9 @@ export async function handleUpload(
         silent: link.s,
       },
     );
-    const where = chat.kind === "dm" ? "the private chat" : `"${chat.title}"`;
     const url = sentLink(ctx, chat, message);
     return plain(
-      `Sent ${link.f} (${humanSize(size)}) to ${where} as message #${message.message_id}.${url ? ` ${url}` : ""}`,
+      `Sent ${link.f} (${humanSize(size)}) to ${where(chat)} as message #${message.message_id}.${url ? ` ${url}` : ""}`,
       200,
     );
   } catch (error) {
@@ -215,7 +215,7 @@ export async function handleUpload(
 
 export async function attachment(ctx: ToolContext, chatId: number, messageId: number) {
   const chat = await ctx.access.resolve(chatId);
-  const message = await ctx.store.getMessage(chatId, messageId);
+  const message = await ctx.store.getMessage(chat, messageId);
   if (!message || message.date < chat.visible_from) {
     throw new AccessError(
       `Message #${messageId} is not stored (older than retention, or never seen).`,

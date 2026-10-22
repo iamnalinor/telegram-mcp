@@ -7,7 +7,7 @@
  * forum topic, what is it replying to — are worked out once, here.
  */
 
-import type { StoredMessage } from "../store";
+import { BOT_ACCOUNT, type StoredMessage } from "../store";
 import { displayName, type Message, type MessageEntity, type User } from "../telegram/types";
 
 export interface BotIdentity {
@@ -182,13 +182,20 @@ function senderOf(message: Message): {
   return { id: user.id, name: displayName(user), username: user.username ?? null };
 }
 
-export function toStored(message: Message, bot: BotIdentity): StoredMessage {
+/**
+ * @param owner for a message from a business connection: the user whose
+ *   account it belongs to. Their own messages count as outgoing, and the ones
+ *   the bot sent for them are marked as sent by them.
+ */
+export function toStored(message: Message, bot: BotIdentity, owner?: number): StoredMessage {
   const file = fileOf(message);
   const sender = senderOf(message);
   const body = message.text ?? message.caption ?? "";
   const text = body || describeNonText(message);
+  const viaBot = owner !== undefined && message.sender_business_bot?.id === bot.id;
 
   return {
+    account_id: owner ?? BOT_ACCOUNT,
     chat_id: message.chat.id,
     message_id: message.message_id,
     date: message.date,
@@ -201,8 +208,8 @@ export function toStored(message: Message, bot: BotIdentity): StoredMessage {
     text,
     reply_to_id: realReply(message)?.message_id ?? null,
     quote: quoteOf(message),
-    mentions_bot: mentionsBot(message, bot),
-    outgoing: message.from?.id === bot.id,
+    mentions_bot: owner === undefined && mentionsBot(message, bot),
+    outgoing: message.from?.id === (owner ?? bot.id),
     file_kind: file?.kind ?? null,
     file_id: file?.id ?? null,
     file_name: file?.name ?? null,
@@ -210,7 +217,7 @@ export function toStored(message: Message, bot: BotIdentity): StoredMessage {
     file_size: file?.size ?? null,
     buttons: null,
     mark_choice: false,
-    sent_by: null,
+    sent_by: viaBot ? owner : null,
   };
 }
 

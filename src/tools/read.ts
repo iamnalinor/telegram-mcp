@@ -6,7 +6,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
-import type { ChatView } from "../access";
+import { PERSONAL_REPLY_WINDOW, rightsOf, type ChatView } from "../access";
 import { bytesToBase64, nowSeconds } from "../crypto";
 import {
   attachment,
@@ -18,7 +18,7 @@ import {
 } from "../files";
 import { Fence, formatPresses, formatReactions, formatTime, humanSize, Renderer } from "../format";
 import { retentionNote } from "../prompts";
-import { MAX_SCOPES, type StoredMessage } from "../store";
+import { BOT_ACCOUNT, MAX_SCOPES, refKey, type ChatRef, type StoredMessage } from "../store";
 import {
   chatArg,
   messageIdArg,
@@ -57,6 +57,13 @@ export function keywords(query: string | undefined): string[] {
   return words;
 }
 
+/** How a chat is named in results. */
+function label(chat: ChatView): string {
+  if (chat.kind === "dm") return 'chat "me"';
+  if (chat.kind === "personal") return `personal chat with "${chat.title}"`;
+  return `"${chat.title}"`;
+}
+
 /** A renderer that knows the chats, their topics, and what each message replies to. */
 async function renderer(
   ctx: ToolContext,
@@ -64,21 +71,22 @@ async function renderer(
   messages: StoredMessage[],
   extra: string[] = [],
 ): Promise<Renderer> {
-  const present = new Map(
-    messages.map((message) => [`${message.chat_id}:${message.message_id}`, message]),
-  );
-  const missing = new Map<number, number[]>();
+  const key = (chat: ChatRef, messageId: number) => `${refKey(chat)}:${messageId}`;
+  const present = new Map(messages.map((message) => [key(message, message.message_id), message]));
+  const missing = new Map<string, { chat: ChatRef; ids: number[] }>();
   for (const message of messages) {
-    if (!message.reply_to_id || present.has(`${message.chat_id}:${message.reply_to_id}`)) continue;
-    missing.set(message.chat_id, [...(missing.get(message.chat_id) ?? []), message.reply_to_id]);
+    if (!message.reply_to_id || present.has(key(message, message.reply_to_id))) continue;
+    const entry = missing.get(refKey(message)) ?? { chat: message, ids: [] };
+    entry.ids.push(message.reply_to_id);
+    missing.set(refKey(message), entry);
   }
   const fetched = await Promise.all(
-    [...missing].map(([chatId, ids]) => ctx.store.getMessages(chatId, ids)),
+    [...missing.values()].map(({ chat, ids }) => ctx.store.getMessages(chat, ids)),
   );
-  const visibleFrom = new Map(chats.map((chat) => [chat.chat_id, chat.visible_from]));
+  const visibleFrom = new Map(chats.map((chat) => [refKey(chat), chat.visible_from]));
   for (const message of fetched.flat()) {
-    if (message.date >= (visibleFrom.get(message.chat_id) ?? Infinity)) {
-      present.set(`${message.chat_id}:${message.message_id}`, message);
+    if (message.date >= (visibleFrom.get(refKey(message)) ?? Infinity)) {
+      present.set(key(message, message.message_id), message);
     }
   }
   const topics = await ctx.store.topics(
@@ -90,11 +98,50 @@ async function renderer(
 function nothingFound(ctx: ToolContext, what: string): string {
   return (
     `Nothing found for ${what}. ${retentionNote(ctx.config.retentionDays)} The bot only sees its private chat ` +
-    "with the user and connected groups (list_chats), from when it joined." +
+    "with the user, connected groups and — if the user connected it to their account — the personal chats they " +
+    "gave it (list_chats), from when it joined." +
     (ctx.bot.canReadAll
       ? ""
       : " Privacy mode is on, so in groups it only sees commands, mentions and replies to it.")
   );
+}
+
+/** The personal-chats part of list_chats: what the user allowed, then each chat. */
+function personalChats(
+  chats: ChatView[],
+  rights: ReturnType<typeof rightsOf>,
+  last: Map<string, number>,
+): string {
+  const allowed = [
+    rights.can_reply ? "send and edit messages as the user" : null,
+    rights.can_read_messages ? "mark messages as read" : null,
+    rights.can_delete_sent_messages ? "delete messages sent through you" : null,
+  ].filter(Boolean);
+  const header =
+    "Personal chats — the user's own chats with other people (Telegram Business), from when they connected " +
+    "the bot. You can read them. " +
+    (allowed.length
+      ? `The user also allowed you to: ${allowed.join(", ")} — only within ${PERSONAL_REPLY_WINDOW / 3600} h of ` +
+        "the other person's last message, and only when the user asks you to in this conversation."
+      : "Read only: the user has not allowed you to write or act in them, so don't.");
+  if (!chats.length) return `${header}\nNo messages received yet.`;
+  const lines = chats.map((chat) => {
+    const seen = last.get(refKey(chat));
+    return `- "${chat.title}" — chat ${chat.chat_id}${chat.username ? ` (@${chat.username})` : ""} · ${
+      seen ? `last message ${formatTime(seen)} UTC` : "no messages stored"
+    }`;
+  });
+  return `${header}\n${lines.join("\n")}`;
+}
+
+/** Personal chats can be many; a search across everything keeps the most recently active. */
+async function mostRecent(ctx: ToolContext, chats: ChatView[]): Promise<ChatView[]> {
+  if (chats.length <= MAX_SCOPES) return chats;
+  const own = chats.filter((chat) => chat.kind !== "personal");
+  const personal = chats.filter((chat) => chat.kind === "personal");
+  const last = await ctx.store.lastMessageDates(personal);
+  personal.sort((a, b) => (last.get(refKey(b)) ?? 0) - (last.get(refKey(a)) ?? 0));
+  return [...own, ...personal].slice(0, MAX_SCOPES);
 }
 
 export function registerReadTools(server: McpServer, ctx: ToolContext): void {
@@ -103,20 +150,25 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     {
       title: "Chats the bot can see",
       description:
-        'The user\'s private chat with the bot ("me") and every group they connected: ids, history window, ' +
-        "forum topics, last activity and t.me links. Call this before posting to or searching a group by name.",
+        'The user\'s private chat with the bot ("me"), every group they connected, and their personal chats if ' +
+        "they connected the bot to their account (with what they allowed there): ids, history window, forum " +
+        "topics, last activity and t.me links. Call this before posting to or searching a chat by name.",
       inputSchema: z.object({}),
       annotations: { readOnlyHint: true },
     },
     async () => {
       try {
-        const chats = await ctx.access.all();
-        const [last, topics] = await Promise.all([
-          ctx.store.lastMessageDates(chats.map((chat) => chat.chat_id)),
-          ctx.store.topics(chats.filter((chat) => chat.is_forum).map((chat) => chat.chat_id)),
+        const [all, connection] = await Promise.all([
+          ctx.access.all(),
+          ctx.store.getBusinessConnection(ctx.userId),
         ]);
+        const [last, topics] = await Promise.all([
+          ctx.store.lastMessageDates(all),
+          ctx.store.topics(all.filter((chat) => chat.is_forum).map((chat) => chat.chat_id)),
+        ]);
+        const chats = all.filter((chat) => chat.kind !== "personal");
         const lines = chats.map((chat) => {
-          const seen = last.get(chat.chat_id);
+          const seen = last.get(refKey(chat));
           const parts = [
             chat.kind === "dm"
               ? 'Private chat with the bot — chat "me"'
@@ -136,6 +188,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
             : "";
           return `- ${parts.join(" · ")}${topicLine}`;
         });
+        const personal = all
+          .filter((chat) => chat.kind === "personal")
+          .sort((a, b) => (last.get(refKey(b)) ?? 0) - (last.get(refKey(a)) ?? 0));
         const notes = [
           `Retention: ${ctx.config.retentionDays} days.`,
           ctx.bot.canReadAll
@@ -146,7 +201,11 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
             : null,
           `Bot: https://t.me/${ctx.bot.username}`,
         ].filter(Boolean);
-        return text(`${lines.join("\n")}\n\n${notes.join("\n")}`);
+        const personalSection = connection?.enabled
+          ? personalChats(personal, rightsOf(connection), last)
+          : "Personal chats: not connected. The user can add the bot in Telegram → Settings → Telegram Business → " +
+            "Chatbots to let you read their own chats with other people.";
+        return text(`${lines.join("\n")}\n\n${personalSection}\n\n${notes.join("\n")}`);
       } catch (error) {
         return toolError(error, ctx);
       }
@@ -211,8 +270,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     },
     async (args) => {
       try {
-        const chats =
+        const available =
           args.chat === undefined ? await ctx.access.all() : [await ctx.access.resolve(args.chat)];
+        const chats = await mostRecent(ctx, available);
         const limit = args.limit ?? DEFAULT_LIMIT;
         // Reads grow with the window, not the result, so the window is always
         // bounded — and always reported, so "nothing found" is never mistaken
@@ -222,7 +282,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         const since = Math.max(asked, oldest);
         const until = parseTime(args.until, "until");
         const window =
-          `Searched ${chats.length === 1 ? (chats[0].kind === "dm" ? 'chat "me"' : `"${chats[0].title}"`) : `${Math.min(chats.length, MAX_SCOPES)} chats`} ` +
+          `Searched ${chats.length === 1 ? label(chats[0]) : `${chats.length} chats`} ` +
           `from ${formatTime(since)} to ${until ? formatTime(until) : "now"} UTC` +
           (args.since === undefined
             ? ` (default: last ${DEFAULT_SEARCH_WINDOW}; pass since, e.g. "7d", to look further back).`
@@ -265,7 +325,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
             ? `\n\n(${limit} shown; more may exist — narrow with since/until/chat or raise limit.)`
             : "";
         const truncated =
-          chats.length > MAX_SCOPES ? `\n(Searched the first ${MAX_SCOPES} chats only.)` : "";
+          available.length > chats.length
+            ? `\n(Searched the ${chats.length} most recently active of ${available.length} chats; pass chat to search another.)`
+            : "";
         return text(
           `${window}\n${found.length} message${found.length === 1 ? "" : "s"}, newest first. Times are UTC.\n${render.fence.note()}\n\n${body}${more}${truncated}`,
         );
@@ -327,11 +389,10 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
             })
           ).reverse();
         }
-        if (!messages.length)
-          return text(nothingFound(ctx, `chat ${chat.kind === "dm" ? '"me"' : `"${chat.title}"`}`));
+        if (!messages.length) return text(nothingFound(ctx, label(chat)));
 
         const render = await renderer(ctx, [chat], messages);
-        const heading = `${chat.kind === "dm" ? "Private chat with the bot" : `"${chat.title}"`}${
+        const heading = `${chat.kind === "dm" ? "Private chat with the bot" : chat.kind === "personal" ? `Personal chat with "${chat.title}"` : `"${chat.title}"`}${
           args.topic ? ` › ${render.topicName(chat.chat_id, args.topic)}` : ""
         } — ${messages.length} message${messages.length === 1 ? "" : "s"}, oldest first, UTC.\n${render.fence.note()}`;
         const older = `\n\n(Older: before_message_id ${messages[0].message_id}.)`;
@@ -357,7 +418,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
     async (args) => {
       try {
         const chat = await ctx.access.resolve(args.chat);
-        const message = await ctx.store.getMessage(chat.chat_id, args.message_id);
+        const message = await ctx.store.getMessage(chat, args.message_id);
         if (!message || message.date < chat.visible_from) {
           return text(nothingFound(ctx, `message #${args.message_id} in that chat`));
         }
@@ -365,14 +426,16 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         const chain: StoredMessage[] = [];
         let cursor = message;
         while (cursor.reply_to_id && chain.length < REPLY_CHAIN_DEPTH) {
-          const parent = await ctx.store.getMessage(chat.chat_id, cursor.reply_to_id);
+          const parent = await ctx.store.getMessage(chat, cursor.reply_to_id);
           if (!parent || parent.date < chat.visible_from) break;
           chain.push(parent);
           cursor = parent;
         }
+        // Buttons and reactions are recorded only on the bot's own messages.
+        const own = chat.account_id === BOT_ACCOUNT;
         const [presses, reactions] = await Promise.all([
-          ctx.store.pressesFor(chat.chat_id, message.message_id),
-          ctx.store.reactionsFor(chat.chat_id, message.message_id),
+          own ? ctx.store.pressesFor(chat.chat_id, message.message_id) : [],
+          own ? ctx.store.reactionsFor(chat.chat_id, message.message_id) : [],
         ]);
 
         const presented = formatPresses(presses, ctx.userId);

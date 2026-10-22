@@ -14,7 +14,47 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
+
+const MESSAGES_COLUMNS = `
+    account_id INTEGER NOT NULL DEFAULT 0,
+    chat_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    date INTEGER NOT NULL,
+    edited_at INTEGER,
+    thread_id INTEGER,
+    from_id INTEGER,
+    from_name TEXT,
+    from_username TEXT,
+    forwarded_from TEXT,
+    text TEXT NOT NULL DEFAULT '',
+    text_lc TEXT NOT NULL DEFAULT '',
+    reply_to_id INTEGER,
+    quote TEXT,
+    mentions_bot INTEGER NOT NULL DEFAULT 0,
+    outgoing INTEGER NOT NULL DEFAULT 0,
+    file_kind TEXT,
+    file_id TEXT,
+    file_name TEXT,
+    file_mime TEXT,
+    file_size INTEGER,
+    buttons TEXT,
+    mark_choice INTEGER NOT NULL DEFAULT 0,
+    sent_by INTEGER,
+    PRIMARY KEY (account_id, chat_id, message_id)`;
+
+/** Every column of `messages` but account_id, as they stood before version 4. */
+const V2_MESSAGE_COLUMNS =
+  "chat_id, message_id, date, edited_at, thread_id, from_id, from_name, from_username, " +
+  "forwarded_from, text, text_lc, reply_to_id, quote, mentions_bot, outgoing, file_kind, file_id, " +
+  "file_name, file_mime, file_size, buttons, mark_choice, sent_by";
+
+const DAY_MARKS_COLUMNS = `
+    account_id INTEGER NOT NULL DEFAULT 0,
+    chat_id INTEGER NOT NULL,
+    day INTEGER NOT NULL,
+    first_id INTEGER NOT NULL,
+    PRIMARY KEY (account_id, chat_id, day)`;
 
 const SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS meta (
@@ -55,31 +95,11 @@ const SCHEMA: string[] = [
   ) WITHOUT ROWID`,
   `CREATE INDEX IF NOT EXISTS grants_by_chat ON grants (chat_id)`,
 
-  `CREATE TABLE IF NOT EXISTS messages (
-    chat_id INTEGER NOT NULL,
-    message_id INTEGER NOT NULL,
-    date INTEGER NOT NULL,
-    edited_at INTEGER,
-    thread_id INTEGER,
-    from_id INTEGER,
-    from_name TEXT,
-    from_username TEXT,
-    forwarded_from TEXT,
-    text TEXT NOT NULL DEFAULT '',
-    text_lc TEXT NOT NULL DEFAULT '',
-    reply_to_id INTEGER,
-    quote TEXT,
-    mentions_bot INTEGER NOT NULL DEFAULT 0,
-    outgoing INTEGER NOT NULL DEFAULT 0,
-    file_kind TEXT,
-    file_id TEXT,
-    file_name TEXT,
-    file_mime TEXT,
-    file_size INTEGER,
-    buttons TEXT,
-    mark_choice INTEGER NOT NULL DEFAULT 0,
-    sent_by INTEGER,
-    PRIMARY KEY (chat_id, message_id)
+  // Keyed by the account the message belongs to, as in Telegram itself: message
+  // ids count per account, and a business connection shows a user's private
+  // chats under the other person's id. 0 is the bot's own account (its DM with
+  // each user, and groups); otherwise the user whose personal chat it is.
+  `CREATE TABLE IF NOT EXISTS messages (${MESSAGES_COLUMNS}
   ) WITHOUT ROWID`,
 
   `CREATE TABLE IF NOT EXISTS button_presses (
@@ -118,11 +138,11 @@ const SCHEMA: string[] = [
   // a chat, so this turns "since <date>" into a primary-key range and keeps
   // reads proportional to the window searched, not the whole chat. Written at
   // most once per chat per day.
-  `CREATE TABLE IF NOT EXISTS day_marks (
-    chat_id INTEGER NOT NULL,
-    day INTEGER NOT NULL,
-    first_id INTEGER NOT NULL,
-    PRIMARY KEY (chat_id, day)
+  // The first message id of each chat on each UTC day. Message ids grow within
+  // a chat, so this turns "since <date>" into a primary-key range and keeps
+  // reads proportional to the window searched, not the whole chat. Written at
+  // most once per chat per day.
+  `CREATE TABLE IF NOT EXISTS day_marks (${DAY_MARKS_COLUMNS}
   ) WITHOUT ROWID`,
 
   `CREATE TABLE IF NOT EXISTS upload_nonces (
@@ -139,12 +159,54 @@ const SCHEMA: string[] = [
     rotated_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
     revoked INTEGER NOT NULL DEFAULT 0
+) WITHOUT ROWID`,
+
+  // A user's Telegram Business connection: the bot reads their private chats,
+  // and acts in them only as far as `rights` (set by the user in Telegram) allow.
+  `CREATE TABLE IF NOT EXISTS business_connections (
+    user_id INTEGER PRIMARY KEY,
+    connection_id TEXT NOT NULL UNIQUE,
+    rights TEXT NOT NULL,
+    enabled INTEGER NOT NULL,
+    connected_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
+
+  // Who each personal chat is with, for listings and resolving names.
+  `CREATE TABLE IF NOT EXISTS personal_chats (
+    account_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    title TEXT,
+    username TEXT,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (account_id, chat_id)
   ) WITHOUT ROWID`,
 ];
 
-/** Statements bringing a database from the version before `target` up to it. */
-const UPGRADES: [target: number, statements: string[]][] = [
-  [2, ["ALTER TABLE users ADD COLUMN connected_at INTEGER"]],
+/**
+ * Steps bringing a database from the version before `target` up to it.
+ *
+ * `alter` statements run one by one and tolerate a racing isolate's
+ * "duplicate column". `rebuild` runs as one transaction whose first statement
+ * claims the step in `meta`: a second isolate fails on that claim and rolls
+ * back, so a table is never rebuilt twice.
+ */
+const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
+  { target: 2, alter: ["ALTER TABLE users ADD COLUMN connected_at INTEGER"] },
+  {
+    // account_id joins the primary keys, which SQLite can only do by copying the table.
+    target: 4,
+    rebuild: [
+      `CREATE TABLE messages_v4 (${MESSAGES_COLUMNS}) WITHOUT ROWID`,
+      `INSERT INTO messages_v4 (${V2_MESSAGE_COLUMNS}) SELECT ${V2_MESSAGE_COLUMNS} FROM messages`,
+      "DROP TABLE messages",
+      "ALTER TABLE messages_v4 RENAME TO messages",
+      `CREATE TABLE day_marks_v4 (${DAY_MARKS_COLUMNS}) WITHOUT ROWID`,
+      "INSERT INTO day_marks_v4 (chat_id, day, first_id) SELECT chat_id, day, first_id FROM day_marks",
+      "DROP TABLE day_marks",
+      "ALTER TABLE day_marks_v4 RENAME TO day_marks",
+    ],
+  },
 ];
 
 const ready = new WeakMap<D1Database, Promise<void>>();
@@ -167,16 +229,32 @@ async function migrate(db: D1Database): Promise<void> {
   const version = current ? Number(current.value) : 0;
   if (version >= SCHEMA_VERSION) return;
 
-  // A database made by an older version gets its missing columns. ALTER TABLE
-  // is not idempotent, so a racing isolate's "duplicate column" is fine.
-  for (const [target, statements] of UPGRADES) {
-    if (version === 0 || version >= target) continue;
-    for (const sql of statements) {
+  // A database made by an older version is brought up step by step.
+  for (const step of UPGRADES) {
+    if (version === 0 || version >= step.target) continue;
+    for (const sql of step.alter ?? []) {
       await db
         .prepare(sql)
         .run()
         .catch((error: unknown) => {
           if (!/duplicate column/i.test(String(error))) throw error;
+        });
+    }
+    if (step.rebuild) {
+      await db
+        .batch([
+          db
+            .prepare("INSERT INTO meta (key, value) VALUES (?, '1')")
+            .bind(`upgrade_${step.target}`),
+          ...step.rebuild.map((sql) => db.prepare(sql)),
+        ])
+        .catch(async (error: unknown) => {
+          // Fine only if another isolate claimed this step: its claim commits with its rebuild.
+          const claimed = await db
+            .prepare("SELECT 1 FROM meta WHERE key = ?")
+            .bind(`upgrade_${step.target}`)
+            .first();
+          if (!claimed) throw error;
         });
     }
   }
