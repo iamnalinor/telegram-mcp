@@ -183,13 +183,16 @@ describe("in a group", () => {
     ).toBe(0);
     await press(ALICE, `m:goy:${TEAM.id}`);
 
-    await h.say(TEAM, BOB, `${BOT} what is our deadline?`);
+    const sentBefore = h.telegram.called("sendMessage").length;
+    await h.say(TEAM, BOB, `${BOT} what is our deadline for the release?`);
     expect(h.fires).toHaveLength(1);
     expect(payload()).toContain("by: other");
-    const notice = h.telegram.called("sendMessage").at(-1)!.params;
-    expect(notice.chat_id).toBe(ALICE.id);
-    expect(notice.disable_notification).toBe(true);
-    expect(String(notice.text)).toContain("Claude started in «Team chat» for Bob");
+    // No notice: the start goes into the chat's log.
+    expect(h.telegram.called("sendMessage")).toHaveLength(sentBefore);
+    const log = String((await press(ALICE, `m:gs:${TEAM.id}`))!.text);
+    expect(log).toContain("▶️");
+    expect(log).toContain("Bob: «what is our deadline…»");
+    expect(log).toMatch(/href="https:\/\/claude\.ai\/code\/session_\w+">session</);
 
     for (let i = 0; i < 20; i++) await h.say(TEAM, BOB, `${BOT} again ${i}`);
     expect(h.fires).toHaveLength(20);
@@ -197,6 +200,32 @@ describe("in a group", () => {
     expect(h.telegram.called("setMessageReaction").at(-1)!.params.reaction).toEqual([
       { type: "emoji", emoji: "😴" },
     ]);
+  });
+
+  it("takes a message posted as a channel for someone else's", async () => {
+    const asChannel = {
+      sender_chat: { id: -1009876543210, type: "channel", title: "Bob's channel" },
+    };
+    const CHANNEL_BOT = { id: 136817688, first_name: "Channel", username: "Channel_Bot" };
+    const post = () =>
+      h.update({
+        message: {
+          message_id: 900 + h.fires.length,
+          date: Math.floor(Date.now() / 1000),
+          chat: TEAM,
+          from: { ...CHANNEL_BOT, is_bot: true },
+          text: `${BOT} hello`,
+          ...asChannel,
+        },
+      });
+    await post();
+    expect(h.fires).toHaveLength(0);
+
+    await press(ALICE, `m:goy:${TEAM.id}`);
+    await post();
+    expect(h.fires).toHaveLength(1);
+    expect(payload()).toContain("by: other");
+    expect(String((await press(ALICE, `m:gs:${TEAM.id}`))!.text)).toContain("Bob's channel");
   });
 
   it("keeps the chat for whoever turned it on first, until they leave", async () => {

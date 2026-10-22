@@ -83,6 +83,26 @@ export interface ClaudeChat {
   since: number;
 }
 
+/** A start being claimed: whose routine, and what the log shows of it. */
+export interface FireEntry {
+  chatId: number;
+  messageId: number;
+  userId: number;
+  byOther: boolean;
+  fromName: string | null;
+  /** The first words of the message, keys removed. */
+  excerpt: string;
+}
+
+export interface FireRow {
+  message_id: number;
+  status: "pending" | "started" | "failed" | "limited";
+  session_id: string | null;
+  at: number;
+  from_name: string | null;
+  excerpt: string | null;
+}
+
 export interface MemoryDoc {
   user_id: number;
   chat_id: number;
@@ -1536,14 +1556,14 @@ export class Store {
    * count against the limits.
    */
   async beginFire(
-    fire: { chatId: number; messageId: number; userId: number; byOther: boolean },
+    fire: FireEntry,
     limits: { user: number; others: number },
   ): Promise<"claimed" | "again" | "limit"> {
     const now = nowSeconds();
     const result = await this.db
       .prepare(
-        `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at)
-         SELECT ?1, ?2, ?3, ?4, 'pending', ?5
+        `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at, from_name, excerpt)
+         SELECT ?1, ?2, ?3, ?4, 'pending', ?5, ?9, ?10
          WHERE (SELECT COUNT(*) FROM fires WHERE user_id = ?3 AND at >= ?6 AND status IN ('pending', 'started')) < ?7
            AND (?4 = 0 OR (SELECT COUNT(*) FROM fires
                 WHERE user_id = ?3 AND at >= ?6 AND chat_id = ?1 AND by_other = 1
@@ -1559,6 +1579,8 @@ export class Store {
         now - 3600,
         limits.user,
         limits.others,
+        fire.fromName,
+        fire.excerpt,
       )
       .run();
     if ((result.meta.changes ?? 0) > 0) return "claimed";
@@ -1584,20 +1606,32 @@ export class Store {
    * Record a start held back by the limit. True when it is the first in this
    * chat within the hour: the holder hears about it once, not per message.
    */
-  async noteLimited(chatId: number, messageId: number, userId: number): Promise<boolean> {
+  async noteLimited(fire: FireEntry): Promise<boolean> {
     const now = nowSeconds();
     const [earlier] = await this.db.batch([
       this.db
         .prepare("SELECT 1 FROM fires WHERE chat_id = ? AND status = 'limited' AND at >= ? LIMIT 1")
-        .bind(chatId, now - 3600),
+        .bind(fire.chatId, now - 3600),
       this.db
         .prepare(
-          `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at)
-           VALUES (?, ?, ?, 1, 'limited', ?) ON CONFLICT (chat_id, message_id) DO NOTHING`,
+          `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at, from_name, excerpt)
+           VALUES (?, ?, ?, 1, 'limited', ?, ?, ?) ON CONFLICT (chat_id, message_id) DO NOTHING`,
         )
-        .bind(chatId, messageId, userId, now),
+        .bind(fire.chatId, fire.messageId, fire.userId, now, fire.fromName, fire.excerpt),
     ]);
     return earlier.results.length === 0;
+  }
+
+  /** The holder's latest starts in a chat, newest first: the chat's log. */
+  async firesIn(userId: number, chatId: number, limit: number): Promise<FireRow[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT message_id, status, session_id, at, from_name, excerpt FROM fires
+         WHERE chat_id = ? AND user_id = ? ORDER BY at DESC, message_id DESC LIMIT ?`,
+      )
+      .bind(chatId, userId, limit)
+      .all<FireRow>();
+    return results;
   }
 
   /** Whether other members' starts already failed in this chat since `since`: the holder heard once. */
@@ -1744,7 +1778,7 @@ export class Store {
       // a session with no row would start afresh.
       this.db.prepare("DELETE FROM refresh_sessions WHERE expires_at < ?").bind(nowSeconds() - DAY),
       this.db.prepare("DELETE FROM day_marks WHERE day < ?").bind(Math.floor(cutoff / DAY)),
-      this.db.prepare("DELETE FROM fires WHERE at < ?").bind(nowSeconds() - DAY),
+      this.db.prepare("DELETE FROM fires WHERE at < ?").bind(cutoff),
       // People nobody has heard from within retention.
       this.db.prepare(
         `DELETE FROM personal_chats WHERE NOT EXISTS (

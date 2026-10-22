@@ -26,11 +26,13 @@
  *   m:gc:<id>     Claude in that group: on (taking it over from a holder who left) or off
  *   m:go:<id>     other members too: asks first; m:goy:<id> turns it on
  *   m:gl:<id>     their hourly limit: steps through 5, 10, 20, 50
+ *   m:gs:<id>     the log of starts there
  *
  * Every press is checked again: anyone can send any callback_data.
  */
 
 import { nowSeconds } from "../crypto";
+import { formatTime } from "../format";
 import { isAllowed } from "../env";
 import { routinePrompt, tokenOf } from "../routine";
 import { memoryTitle } from "../tools/memory";
@@ -302,11 +304,38 @@ async function groupScreen(
         ...(on && claim.others === 1
           ? [[button(t.othersLimitButton(claim.others_limit), `gl:${chatId}`)]]
           : []),
+        ...(on ? [[button(t.startsButton, `gs:${chatId}`)]] : []),
         [button(t.buttonChatMemory, `mv:${chatId}`)],
         [button(t.buttonRevoke, `rv:${chatId}`)],
         [button(t.buttonBack, "groups")],
       ],
     },
+  };
+}
+
+const STARTS_SHOWN = 15;
+const STARTS_MARK = { pending: "⏳", started: "▶️", failed: "⚠️", limited: "😴" } as const;
+
+/** The holder's latest starts in a group: who, when, the first words, the session. */
+async function startsScreen(
+  ctx: BotContext,
+  user: User,
+  chatId: number,
+  title: string,
+): Promise<Screen> {
+  const t = texts(user.language_code);
+  const fires = await ctx.store.firesIn(user.id, chatId, STARTS_SHOWN);
+  const lines = fires.map(
+    (fire) =>
+      `${STARTS_MARK[fire.status]} ${formatTime(fire.at).slice(5)} ${escapeHtml(fire.from_name ?? "?")}` +
+      (fire.excerpt ? `: «${escapeHtml(fire.excerpt)}»` : "") +
+      (fire.session_id
+        ? ` — <a href="https://claude.ai/code/${escapeHtml(fire.session_id)}">${t.startsSession}</a>`
+        : ""),
+  );
+  return {
+    text: lines.length ? t.startsScreen(title, lines) : t.startsEmpty(title),
+    reply_markup: { inline_keyboard: [[button(t.buttonBack, `g:${chatId}`)]] },
   };
 }
 
@@ -477,7 +506,7 @@ async function render(
     };
   }
 
-  const group = /^(g|rv|gc|go|goy|gl):(-?\d+)$/.exec(name);
+  const group = /^(g|rv|gc|go|goy|gl|gs):(-?\d+)$/.exec(name);
   if (group) {
     const chatId = Number(group[2]);
     const grant = (await ctx.store.listGrants(user.id)).find((g) => g.chat_id === chatId);
@@ -491,6 +520,7 @@ async function render(
     let note: string | undefined;
     const claim = await ctx.store.getClaudeChat(chatId);
     const mine = claim?.user_id === user.id;
+    if (group[1] === "gs" && mine) return startsScreen(ctx, user, chatId, title);
     if (group[1] === "gc") note = await toggleClaude(ctx, user, chatId, claim);
     if (group[1] === "go" && mine) {
       if (!claim.others) {
