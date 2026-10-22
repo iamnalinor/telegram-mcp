@@ -22,6 +22,7 @@ export function createServer(ctx: ToolContext): McpServer {
       instructions: instructions({
         retentionDays: ctx.config.retentionDays,
         botUsername: ctx.bot.username,
+        user: ctx.user,
       }),
     },
   );

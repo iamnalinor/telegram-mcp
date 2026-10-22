@@ -12,6 +12,7 @@ import { messageLink } from "../links";
 import { markdownToHtml, splitMarkdown, splitPlain, TELEGRAM_CAPTION_LIMIT } from "../markdown";
 import { BOT_ACCOUNT, type StoredButton, type Store } from "../store";
 import { TelegramError, type TelegramApi } from "../telegram/api";
+import type { UserRef } from "../prompts";
 import type { InlineKeyboardMarkup, Message } from "../telegram/types";
 import { toStored } from "../bot/extract";
 
@@ -21,6 +22,8 @@ export interface ToolContext {
   api: TelegramApi;
   access: Access;
   userId: number;
+  /** The same user, with how Telegram names them — for the head of results. */
+  user: UserRef;
   /** Public origin of the Worker, for upload and download links. */
   origin: string;
   bot: { id: number; username: string; canReadAll: boolean };

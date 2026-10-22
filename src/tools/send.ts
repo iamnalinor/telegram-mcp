@@ -9,7 +9,7 @@ import { z } from "zod";
 import { telegramChat, type ChatView } from "../access";
 import { uploadLink } from "../files";
 import { Fence, formatTime, person } from "../format";
-import { GROUP_NOTE, PERSONAL_NOTE } from "../prompts";
+import { GROUP_NOTE, PERSONAL_NOTE, type UserRef } from "../prompts";
 import type { PressRow, StoredMessage } from "../store";
 import type { Message } from "../telegram/types";
 import {
@@ -81,7 +81,7 @@ function describeAnswer(
   answer: Answer | null,
   messageId: number,
   seconds: number,
-  userId: number,
+  user: UserRef,
 ): string {
   if (!answer) {
     return (
@@ -92,18 +92,18 @@ function describeAnswer(
   if (answer.kind === "press") {
     const { press } = answer;
     const value = press.data !== press.label ? ` (value: ${press.data})` : "";
-    const who = person(press.user_name, null, press.user_id, userId);
+    const who = person(press.user_name, null, press.user_id, user.id);
     const body = `${who} pressed "${press.label}"${value} at ${formatTime(press.date)} UTC.`;
-    const fence = new Fence(userId, [body]);
+    const fence = new Fence(user, [body]);
     return `${fence.note()}\n${fence.wrap(body)}`;
   }
   const message = answer.message;
-  const who = person(message.from_name, message.from_username, message.from_id, userId);
+  const who = person(message.from_name, message.from_username, message.from_id, user.id);
   const file = message.file_id
     ? `\n[attachment: ${message.file_name ?? message.file_kind} — get_file chat ${message.chat_id} message ${message.message_id}]`
     : "";
   const body = `${who}: ${message.text}${file}`;
-  const fence = new Fence(userId, [body]);
+  const fence = new Fence(user, [body]);
   return (
     `Answer #${message.message_id}, ${formatTime(message.date)} UTC. ${fence.note()}\n` +
     fence.wrap(body)
@@ -210,7 +210,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
           );
         const answer = await waitForAnswer(ctx, chat, message.message_id, seconds);
         return text(
-          `${sentNote}\n${describeAnswer(answer, message.message_id, seconds, ctx.userId)}`,
+          `${sentNote}\n${describeAnswer(answer, message.message_id, seconds, ctx.user)}`,
         );
       } catch (error) {
         return toolError(error, ctx);
@@ -248,7 +248,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
             await waitForAnswer(ctx, chat, messageId, seconds),
             messageId,
             seconds,
-            ctx.userId,
+            ctx.user,
           ),
         );
       } catch (error) {

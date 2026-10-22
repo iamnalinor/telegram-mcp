@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -41,6 +41,8 @@ const MESSAGES_COLUMNS = `
     buttons TEXT,
     mark_choice INTEGER NOT NULL DEFAULT 0,
     sent_by INTEGER,
+    via_bot TEXT,
+    as_chat INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (account_id, chat_id, message_id)`;
 
 /** Every column of `messages` but account_id, as they stood before version 4. */
@@ -205,6 +207,13 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
       "INSERT INTO day_marks_v4 (chat_id, day, first_id) SELECT chat_id, day, first_id FROM day_marks",
       "DROP TABLE day_marks",
       "ALTER TABLE day_marks_v4 RENAME TO day_marks",
+    ],
+  },
+  {
+    target: 5,
+    alter: [
+      "ALTER TABLE messages ADD COLUMN via_bot TEXT",
+      "ALTER TABLE messages ADD COLUMN as_chat INTEGER NOT NULL DEFAULT 0",
     ],
   },
 ];

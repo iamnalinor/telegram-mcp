@@ -92,7 +92,7 @@ async function renderer(
   const topics = await ctx.store.topics(
     chats.filter((chat) => chat.is_forum).map((chat) => chat.chat_id),
   );
-  return new Renderer(ctx.bot.username, ctx.userId, chats, topics, present, extra);
+  return new Renderer(ctx.bot.username, ctx.user, chats, topics, present, extra);
 }
 
 function nothingFound(ctx: ToolContext, what: string): string {
@@ -488,7 +488,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         const name = message.file_name ?? message.file_kind ?? "file";
         const bytes = await inlineBytes(ctx, message).catch(() => null);
         const content = bytes && isTextual(message) ? new TextDecoder().decode(bytes) : null;
-        const fence = new Fence(ctx.userId, [name, message.file_mime ?? "", content ?? ""]);
+        const fence = new Fence(ctx.user, [name, message.file_mime ?? "", content ?? ""]);
         const info =
           `${fence.note()}\n` +
           fence.wrap(
