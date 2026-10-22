@@ -1425,7 +1425,7 @@ export class Store {
         `INSERT INTO routines (user_id, trigger_id, token_enc, updated_at) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT (user_id) DO UPDATE SET
            trigger_id = excluded.trigger_id, token_enc = excluded.token_enc,
-           updated_at = excluded.updated_at`,
+           updated_at = excluded.updated_at, test_session = NULL, test_at = NULL`,
       )
       .bind(userId, triggerId, tokenEnc, nowSeconds())
       .run();

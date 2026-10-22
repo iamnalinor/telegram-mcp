@@ -29,6 +29,7 @@
  * Every press is checked again: anyone can send any callback_data.
  */
 
+import { nowSeconds } from "../crypto";
 import { isAllowed } from "../env";
 import { routinePrompt, tokenOf } from "../routine";
 import { memoryTitle } from "../tools/memory";
@@ -222,7 +223,8 @@ async function routineScreen(ctx: BotContext, user: User): Promise<Screen> {
       : "set";
   const here = (await ctx.store.getClaudeChat(user.id))?.user_id === user.id;
   let test = "";
-  if (state === "set" && row?.test_session && row.test_at) {
+  // A day on, the test says nothing new — and its answer may be purged with the messages.
+  if (state === "set" && row?.test_session && row.test_at && nowSeconds() - row.test_at < 86_400) {
     const answered = await ctx.store.sessionSpokeIn(user.id, row.test_session, row.test_at);
     const at = formatDate(row.test_at);
     test = `\n\n${answered ? t.testPassed(at) : t.testWaiting(at)}`;

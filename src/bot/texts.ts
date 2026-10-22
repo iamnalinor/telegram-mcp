@@ -127,8 +127,8 @@ const en = {
       : ""),
   noGroups: "No groups connected. Add me to a group, or send /connect in a group I'm already in.",
   groupsHeader: "<b>Connected groups</b>",
-  groupLine: (p: { mark: string; title: string; full: boolean; since: string }) =>
-    `• ${p.mark}<b>${escapeHtml(p.title)}</b> — ${p.full ? "full stored history" : `from ${p.since}`}`,
+  groupLine: (p: { mark?: string; title: string; full: boolean; since: string }) =>
+    `• ${p.mark ?? ""}<b>${escapeHtml(p.title)}</b> — ${p.full ? "full stored history" : `from ${p.since}`}`,
   revokeButton: (title: string) => `Revoke ${title}`,
   revoked: "Access revoked.",
   notYours: "Nothing to revoke.",
@@ -375,7 +375,7 @@ const ru: Texts = {
     "Нет подключённых групп. Добавь меня в группу или отправь /connect в группе, где я уже есть.",
   groupsHeader: "<b>Подключённые группы</b>",
   groupLine: (p) =>
-    `• ${p.mark}<b>${escapeHtml(p.title)}</b> — ${p.full ? "вся сохранённая история" : `с ${p.since}`}`,
+    `• ${p.mark ?? ""}<b>${escapeHtml(p.title)}</b> — ${p.full ? "вся сохранённая история" : `с ${p.since}`}`,
   revokeButton: (title) => `Отозвать ${title}`,
   revoked: "Доступ отозван.",
   notYours: "Нечего отзывать.",

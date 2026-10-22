@@ -142,6 +142,15 @@ describe("the routine screen", () => {
     screen = await press(ALICE, "m:cl");
     expect(String(screen!.text)).toContain("it works");
   });
+
+  it("forgets the old test when the routine is set again", async () => {
+    await h.tool(alice, "send_message", { text: "ok", session: "cse_01TestSession0000000001" });
+    // Within the minute, the new routine's test start is held back: no status rather than a stale one.
+    await h.say(dm(ALICE), ALICE, `${TRIGGER} ${TOKEN}`);
+    const screen = await press(ALICE, "m:cl");
+    expect(String(screen!.text)).not.toContain("it works");
+    expect(String(screen!.text)).not.toContain("no answer yet");
+  });
 });
 
 describe("in a group", () => {
