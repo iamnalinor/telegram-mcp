@@ -20,6 +20,7 @@
 import { rightsOf } from "../access";
 import { nowSeconds, timingSafeEqual } from "../crypto";
 import { isAllowed } from "../env";
+import { holdsSecret } from "../secrets";
 import { TelegramError } from "../telegram/api";
 import { isTelegramIp } from "../telegram/ip";
 import {
@@ -40,7 +41,6 @@ import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { handleAssistantButton, handleChatShared, handleCommand, handleRevoke } from "./commands";
 import { handleMemoryUndo, handleMenu } from "./menu";
 import { handleSecret } from "./routine";
-import { holdsSecret } from "../routine";
 import { parseCommand, realReply, toStored, topicName, topicOf } from "./extract";
 import { texts } from "./texts";
 

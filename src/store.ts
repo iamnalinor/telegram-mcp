@@ -8,6 +8,7 @@
  */
 
 import { nowSeconds } from "./crypto";
+import { redactSecrets } from "./secrets";
 
 export interface StoredMessage {
   /** 0 for the bot's own chats; the user's id for their personal chats (see schema). */
@@ -282,6 +283,7 @@ const MESSAGE_COLUMNS = [
 ] as const;
 
 function messageValues(message: StoredMessage): unknown[] {
+  const text = redactSecrets(message.text);
   return [
     message.account_id,
     message.chat_id,
@@ -293,10 +295,10 @@ function messageValues(message: StoredMessage): unknown[] {
     message.from_name,
     message.from_username,
     message.forwarded_from,
-    message.text,
-    normalize(message.text),
+    text,
+    normalize(text),
     message.reply_to_id,
-    message.quote,
+    redactSecrets(message.quote),
     message.mentions_bot ? 1 : 0,
     message.outgoing ? 1 : 0,
     message.file_kind,
@@ -735,8 +737,9 @@ export class Store {
     const sets: string[] = [];
     const values: unknown[] = [];
     if (change.text !== undefined) {
+      const text = redactSecrets(change.text);
       sets.push("text = ?", "text_lc = ?");
-      values.push(change.text, normalize(change.text));
+      values.push(text, normalize(text));
     }
     if (change.buttons !== undefined) {
       sets.push("buttons = ?");
@@ -1362,7 +1365,6 @@ export class Store {
       .run();
   }
 
-  /** Users with any memory, for dropping those no longer allowed. */
   // --- routines ------------------------------------------------------------
 
   getRoutine(userId: number): Promise<Routine | null> {
@@ -1395,6 +1397,7 @@ export class Store {
     return results.map((row) => row.user_id);
   }
 
+  /** Users with any memory, for dropping those no longer allowed. */
   async memoryUsers(): Promise<number[]> {
     const { results } = await this.db
       .prepare("SELECT DISTINCT user_id FROM memory_docs")

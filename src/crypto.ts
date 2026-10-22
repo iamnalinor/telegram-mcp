@@ -63,11 +63,19 @@ export function aesKey(raw: Uint8Array): Promise<CryptoKey> {
   return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
 }
 
-/** A secret to keep at rest: base64url of a random IV followed by the AES-GCM ciphertext. */
-export async function encrypt(key: CryptoKey, plaintext: string): Promise<string> {
+/**
+ * A secret to keep at rest: base64url of a random IV followed by the AES-GCM
+ * ciphertext. `context` (whose secret it is) is authenticated too, so a
+ * sealed value moved to another row no longer opens.
+ */
+export async function encrypt(key: CryptoKey, plaintext: string, context: string): Promise<string> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const sealed = new Uint8Array(
-    await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoder.encode(plaintext)),
+    await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv, additionalData: encoder.encode(context) },
+      key,
+      encoder.encode(plaintext),
+    ),
   );
   const out = new Uint8Array(iv.length + sealed.length);
   out.set(iv);
@@ -76,11 +84,15 @@ export async function encrypt(key: CryptoKey, plaintext: string): Promise<string
 }
 
 /** The secret, or null when it was sealed with another key (the bot token changed) or is damaged. */
-export async function decrypt(key: CryptoKey, sealed: string): Promise<string | null> {
+export async function decrypt(
+  key: CryptoKey,
+  sealed: string,
+  context: string,
+): Promise<string | null> {
   try {
     const bytes = base64UrlToBytes(sealed);
     const plain = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv: bytes.subarray(0, 12) },
+      { name: "AES-GCM", iv: bytes.subarray(0, 12), additionalData: encoder.encode(context) },
       key,
       bytes.subarray(12),
     );

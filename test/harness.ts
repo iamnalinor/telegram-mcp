@@ -6,6 +6,7 @@
 
 import { resetBotIdentity } from "../src/telegram/api";
 import { resetWebhookCache } from "../src/bot/setup";
+import { resetTestStarts } from "../src/bot/routine";
 import {
   bytesToHex,
   hmac,
@@ -252,6 +253,7 @@ export class Harness {
     this.env = { BOT_TOKEN, DB: this.db.asD1(), RETENTION_DAYS: "14", ...vars };
     resetBotIdentity();
     resetWebhookCache();
+    resetTestStarts();
     globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
       const host = new URL(request.url).hostname;

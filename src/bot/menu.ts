@@ -26,9 +26,8 @@
  * Every press is checked again: anyone can send any callback_data.
  */
 
-import { decrypt } from "../crypto";
 import { isAllowed } from "../env";
-import { routinePrompt } from "../routine";
+import { routinePrompt, tokenOf } from "../routine";
 import { memoryTitle } from "../tools/memory";
 import { TelegramError } from "../telegram/api";
 import type { CallbackQuery, InlineKeyboardMarkup, User } from "../telegram/types";
@@ -201,7 +200,7 @@ async function routineScreen(ctx: BotContext, user: User): Promise<Screen> {
   const row = await ctx.store.getRoutine(user.id);
   const state = !row
     ? "none"
-    : (await decrypt(ctx.config.secretKey, row.token_enc)) === null
+    : (await tokenOf(ctx.config.secretKey, row)) === null
       ? "broken"
       : "set";
   return {

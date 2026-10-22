@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import { aesKey, decrypt, encrypt } from "../src/crypto";
 import { parseRoutine } from "../src/routine";
-import { Harness } from "./harness";
+import { Harness, TgError } from "./harness";
 
 const ALICE = { id: 111, first_name: "Alice", username: "alice", language_code: "en" };
 const dm = (user: { id: number }) => ({ id: user.id, type: "private" });
@@ -95,6 +95,31 @@ describe("setting the routine", () => {
   });
 });
 
+describe("keys never reach storage", () => {
+  it("in a group, a quote or a reply to a message that kept one", async () => {
+    const TEAM = { id: -1001234567890, title: "Team chat", type: "supergroup" };
+    await h.addBot(TEAM, ALICE);
+    const leaked = await h.say(TEAM, ALICE, `oops ${TOKEN}`);
+    await h.say(TEAM, ALICE, "that was a key", {
+      reply_to_message: leaked,
+      quote: { text: TOKEN, position: 5 },
+    });
+    // The private chat's message survives when Telegram refuses to delete it.
+    h.telegram.handlers.set("deleteMessage", () => {
+      throw new TgError(400, "Bad Request: message can't be deleted");
+    });
+    const kept = await h.say(dm(ALICE), ALICE, `${TRIGGER} ${TOKEN}`);
+    await h.say(dm(ALICE), ALICE, "see above", { reply_to_message: kept });
+    const stored = h.db.raw.query("SELECT text, quote FROM messages").all() as {
+      text: string;
+      quote: string | null;
+    }[];
+    expect(JSON.stringify(stored)).not.toContain("sk-ant");
+    expect(JSON.stringify(stored)).toContain("[key removed]");
+    expect(sentTexts().join("\n")).toContain("could not delete your message");
+  });
+});
+
 describe("the menu", () => {
   it("guides, sends the prompt, asks for the routine, tests and removes it", async () => {
     let screen = await press("m:cl");
@@ -119,7 +144,8 @@ describe("the menu", () => {
     expect(String(screen!.text)).toContain(TRIGGER);
 
     await press("m:cltest");
-    expect(h.fires).toHaveLength(2);
+    expect(h.fires).toHaveLength(1);
+    expect(sentTexts().at(-1)).toContain("less than a minute ago");
 
     await press("m:cldel");
     await press("m:cldely");
@@ -141,10 +167,11 @@ describe("pieces", () => {
   it("encrypts and decrypts, and another key reads nothing", async () => {
     const key = await aesKey(new Uint8Array(32).fill(1));
     const other = await aesKey(new Uint8Array(32).fill(2));
-    const sealed = await encrypt(key, TOKEN);
-    expect(await decrypt(key, sealed)).toBe(TOKEN);
-    expect(await decrypt(other, sealed)).toBeNull();
-    expect(await decrypt(key, "not base64!")).toBeNull();
+    const sealed = await encrypt(key, TOKEN, "routine:1");
+    expect(await decrypt(key, sealed, "routine:1")).toBe(TOKEN);
+    expect(await decrypt(key, sealed, "routine:2")).toBeNull();
+    expect(await decrypt(other, sealed, "routine:1")).toBeNull();
+    expect(await decrypt(key, "not base64!", "routine:1")).toBeNull();
   });
 
   it("finds the trigger and the token anywhere in the message", () => {

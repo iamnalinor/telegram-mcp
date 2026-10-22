@@ -23,6 +23,18 @@ function say(ctx: BotContext, chatId: number, text: string): Promise<unknown> {
     .catch(() => undefined);
 }
 
+/**
+ * When each user's last test start went out, in this isolate. Every start is
+ * a billed cloud session, and a retried webhook or a double tap must not make
+ * two; this costs no write, and a different isolate is rare enough.
+ */
+const lastTest = new Map<number, number>();
+const TEST_COOLDOWN_MS = 60_000;
+
+export function resetTestStarts(): void {
+  lastTest.clear();
+}
+
 /** Start the routine once, as a check: the session answers "ok" in the private chat. */
 export async function testRoutine(ctx: BotContext, user: User, messageId: number): Promise<void> {
   const t = texts(user.language_code);
@@ -31,6 +43,12 @@ export async function testRoutine(ctx: BotContext, user: User, messageId: number
     await say(ctx, user.id, t.fireFailed(routine));
     return;
   }
+  const last = lastTest.get(user.id);
+  if (last !== undefined && Date.now() - last < TEST_COOLDOWN_MS) {
+    await say(ctx, user.id, t.testTooSoon);
+    return;
+  }
+  lastTest.set(user.id, Date.now());
   const result = await fire(
     routine.triggerId,
     routine.token,
@@ -40,6 +58,7 @@ export async function testRoutine(ctx: BotContext, user: User, messageId: number
     await say(ctx, user.id, t.testStarted(result.sessionUrl));
     return;
   }
+  lastTest.delete(user.id); // Nothing started: trying again at once is fine.
   console.error(
     JSON.stringify({ event: "routine_fire_failed", user: user.id, detail: result.detail }),
   );
@@ -57,16 +76,27 @@ export async function handleSecret(
 ): Promise<WebhookReply | null> {
   const user = message.from;
   const t = texts(user.language_code);
-  await ctx.api
+  const deleted = await ctx.api
     .call("deleteMessage", { chat_id: message.chat.id, message_id: message.message_id })
-    .catch(() => undefined);
+    .then(() => true)
+    .catch(() => false);
+  // If it stays in the chat, the key is exposed there: the user has to know.
+  const after = deleted ? "" : `\n\n${t.deleteYourself}`;
   const routine = parseRoutine(message.text ?? message.caption ?? "");
   if (!routine || !isAllowed(ctx.config, user.id) || !(await hasConnected(ctx, user.id))) {
-    await say(ctx, message.chat.id, t.secretDropped);
+    await say(ctx, message.chat.id, t.secretDropped(deleted) + after);
     return null;
   }
-  await saveRoutine(ctx.store, ctx.config.secretKey, user.id, routine);
-  await say(ctx, message.chat.id, t.routineSaved(routine.triggerId));
+  try {
+    await saveRoutine(ctx.store, ctx.config.secretKey, user.id, routine);
+  } catch (error) {
+    console.error(
+      JSON.stringify({ event: "routine_save_failed", user: user.id, error: String(error) }),
+    );
+    await say(ctx, message.chat.id, t.routineNotSaved + after);
+    return null;
+  }
+  await say(ctx, message.chat.id, t.routineSaved(routine.triggerId, deleted) + after);
   await testRoutine(ctx, user, message.message_id);
   return null;
 }

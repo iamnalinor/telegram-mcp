@@ -183,8 +183,14 @@ const en = {
     "Remove the routine here? I will stop starting it. It stays on claude.ai — revoke its token there too.",
   buttonConfirmRemove: "Remove",
   routineDeleted: "Removed.",
-  routineSaved: (trigger: string) =>
-    `✅ Saved routine <code>${escapeHtml(trigger)}</code>. I deleted your message: the token is kept only encrypted.`,
+  routineSaved: (trigger: string, deleted: boolean) =>
+    `✅ Saved routine <code>${escapeHtml(trigger)}</code>. The token is kept only encrypted` +
+    (deleted ? ", and I deleted your message." : "."),
+  routineNotSaved: "⚠️ Could not save the routine. Send it again in a minute.",
+  deleteYourself:
+    "⚠️ I could not delete your message: delete it yourself, and if others can see this chat, generate a new token.",
+  testTooSoon:
+    "A test session was started less than a minute ago. Wait for its «ok», or try again shortly.",
   testStarted: (url: string) =>
     `▶️ Started a test session (<a href="${escapeHtml(url)}">open</a>). If everything is set up, it writes «ok» here within a minute or two.`,
   fireFailed: (reason: FireFailure, retryMinutes?: number) =>
@@ -199,8 +205,11 @@ const en = {
       none: "none is set up.",
       broken: "I can no longer read its token. Send the routine again.",
     }[reason],
-  secretDropped:
-    "That looked like an API key, so I deleted the message and kept nothing. To set the routine, send its trig_… id and the token together, in one message.",
+  secretDropped: (deleted: boolean) =>
+    (deleted
+      ? "That looked like an API key, so I deleted the message and kept nothing."
+      : "That looked like an API key, so I kept nothing.") +
+    " To set the routine, send its trig_… id and the token together, in one message.",
 };
 
 type FireFailure = "token" | "missing" | "paused" | "limit" | "other" | "none" | "broken";
@@ -387,8 +396,14 @@ const ru: Texts = {
     "Удалить рутину отсюда? Я перестану её запускать. На claude.ai она останется — отзови там и её токен.",
   buttonConfirmRemove: "Удалить",
   routineDeleted: "Удалено.",
-  routineSaved: (trigger) =>
-    `✅ Рутина <code>${escapeHtml(trigger)}</code> сохранена. Твоё сообщение я удалил: токен хранится только зашифрованным.`,
+  routineSaved: (trigger, deleted) =>
+    `✅ Рутина <code>${escapeHtml(trigger)}</code> сохранена. Токен хранится только зашифрованным` +
+    (deleted ? ", а твоё сообщение я удалил." : "."),
+  routineNotSaved: "⚠️ Не получилось сохранить рутину. Пришли её ещё раз через минуту.",
+  deleteYourself:
+    "⚠️ Не получилось удалить твоё сообщение: удали его сам, а если этот чат видят другие — сгенерируй новый токен.",
+  testTooSoon:
+    "Тестовая сессия уже запущена меньше минуты назад. Дождись её «ok» или попробуй чуть позже.",
   testStarted: (url) =>
     `▶️ Запустил тестовую сессию (<a href="${escapeHtml(url)}">открыть</a>). Если всё настроено, через минуту-две она напишет сюда «ok».`,
   fireFailed: (reason, retryMinutes) =>
@@ -402,8 +417,11 @@ const ru: Texts = {
       none: "она не задана.",
       broken: "я больше не могу прочитать её токен. Пришли рутину заново.",
     }[reason],
-  secretDropped:
-    "Это похоже на API-ключ, так что я удалил сообщение и ничего не сохранил. Чтобы задать рутину, пришли id trig_… и токен вместе, одним сообщением.",
+  secretDropped: (deleted) =>
+    (deleted
+      ? "Это похоже на API-ключ, так что я удалил сообщение и ничего не сохранил."
+      : "Это похоже на API-ключ, так что я ничего не сохранил.") +
+    " Чтобы задать рутину, пришли id trig_… и токен вместе, одним сообщением.",
 };
 
 export function texts(languageCode: string | null | undefined): Texts {
