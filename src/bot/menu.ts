@@ -101,7 +101,12 @@ async function signInsScreen(ctx: BotContext, user: User): Promise<Screen> {
     reply_markup: {
       inline_keyboard: [
         ...signIns.map((row) => [
-          button(t.signOutButton(name(row.client_name)).slice(0, 60), `sx:${row.id}`),
+          button(
+            Array.from(t.signOutButton(name(row.client_name)))
+              .slice(0, 60)
+              .join(""),
+            `sx:${row.id}`,
+          ),
         ]),
         ...(signIns.length ? [[button(t.buttonSignOutAll, "out")]] : []),
         [button(t.buttonBack, "main")],
@@ -151,7 +156,8 @@ async function render(
     await ctx.store.bumpTokenVersion(user.id);
     return { ...(await signInsScreen(ctx, user)), note: t.disconnected };
   }
-  const signOut = /^sx:([\w-]{1,32})$/.exec(name);
+  // Ids are 16 characters, or 43 for sign-ins from before rotation (a token hash).
+  const signOut = /^sx:([\w-]{1,43})$/.exec(name);
   if (signOut) {
     const done = await ctx.store.revokeSignIn(user.id, signOut[1]);
     return {

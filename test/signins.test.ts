@@ -105,4 +105,23 @@ describe("sign-ins", () => {
     const { screen } = await press("m:si");
     expect(String(screen!.text)).toContain("Unknown client");
   });
+
+  it("signs out a sign-in from before rotation, whose id is a token hash", async () => {
+    const tokens = await h.connect(ALICE);
+    const long = "a".repeat(43);
+    h.db.raw.exec(`UPDATE refresh_sessions SET id = '${long}'`);
+    expect(await works(tokens.access_token)).toBe(false); // its row now has another id
+    const { answer } = await press(`m:sx:${long}`);
+    expect(answer.text).toBe("Signed out.");
+    const row = h.db.raw.query("SELECT revoked FROM refresh_sessions").get() as { revoked: number };
+    expect(row.revoked).toBe(1);
+  });
+
+  it("keeps the client name and sign-in date through refreshes", async () => {
+    const tokens = await h.connect(ALICE);
+    const before = h.db.raw.query("SELECT client_name, created_at FROM refresh_sessions").get();
+    expect((await h.refresh(tokens.refresh_token)).status).toBe(200);
+    const after = h.db.raw.query("SELECT client_name, created_at FROM refresh_sessions").get();
+    expect(after).toEqual(before);
+  });
 });

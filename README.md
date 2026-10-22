@@ -275,7 +275,7 @@ Increasing `RETENTION_DAYS` costs storage, not writes.
   has to reconnect.
 - **Sign-ins** in the bot's menu lists where an assistant is signed in with your account (Claude,
   ChatGPT, an app on your computer), with when it signed in and was last seen. Signing one out stops
-  its tokens on the next call. Upload and download links it already made keep working until they
+  its tokens on the next call (tokens issued before this list existed run out within a day instead). Upload and download links it already made keep working until they
   expire (10 to 15 minutes); signing out everywhere stops those too.
 - **`/disconnect`** (or **Sign out everywhere**) revokes every token you issued. Removing an ID from
   `ALLOWED_USER_IDS` cuts access on the next call.

@@ -192,9 +192,9 @@ const SCHEMA: string[] = [
  *
  * `alter` statements run one by one and tolerate a racing isolate's
  * "duplicate column", and a table an older version never had: SCHEMA creates
- * it afterwards, already with the column. `rebuild` runs as one transaction whose first statement
- * claims the step in `meta`: a second isolate fails on that claim and rolls
- * back, so a table is never rebuilt twice.
+ * it afterwards, already with the column. `rebuild` runs as one transaction
+ * whose first statement claims the step in `meta`: a second isolate fails on
+ * that claim and rolls back, so a table is never rebuilt twice.
  */
 const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
   { target: 2, alter: ["ALTER TABLE users ADD COLUMN connected_at INTEGER"] },

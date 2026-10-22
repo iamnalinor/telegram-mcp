@@ -1152,13 +1152,12 @@ export class Store {
   ): Promise<boolean> {
     const row = await this.db
       .prepare(
-        `INSERT INTO refresh_sessions (id, user_id, generation, rotated_at, expires_at, created_at)
-         VALUES (?1, ?2, ?3 + 1, ?4, ?5, ?4)
+        `INSERT INTO refresh_sessions (id, user_id, generation, rotated_at, expires_at)
+         VALUES (?1, ?2, ?3 + 1, ?4, ?5)
          ON CONFLICT (id) DO UPDATE SET
            generation = excluded.generation,
            rotated_at = excluded.rotated_at,
-           expires_at = excluded.expires_at,
-           created_at = COALESCE(refresh_sessions.created_at, excluded.created_at)
+           expires_at = excluded.expires_at
          WHERE refresh_sessions.generation = ?3
            AND refresh_sessions.user_id = ?2
            AND refresh_sessions.revoked = 0
