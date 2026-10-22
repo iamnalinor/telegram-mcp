@@ -1,0 +1,127 @@
+/**
+ * What the bot says, in English and Russian, picked by the sender's Telegram
+ * language. Telegram HTML: only <b>, <i>, <code>, <a> are used, and every
+ * interpolated value goes through `escapeHtml`.
+ */
+
+export function escapeHtml(text: string): string {
+  return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+const en = {
+  notAllowed: (id: number) =>
+    `This bot is private. Your Telegram ID is <code>${id}</code> — ask its owner to add it to <code>ALLOWED_USER_IDS</code>.`,
+  start: (p: { id: number; connector: string; retention: number; privacyOn: boolean }) =>
+    [
+      "Hi! I connect your AI assistant (Claude, ChatGPT, Codex) to Telegram: it can message you here, send files, ask you questions with buttons, and read what you send me or what is said in groups you connect.",
+      "",
+      `Your Telegram ID: <code>${p.id}</code>`,
+      `Connector URL: <code>${escapeHtml(p.connector)}</code>`,
+      "",
+      "<b>Commands</b>",
+      "/connect — give your assistant access to a group (or send /connect in the group itself)",
+      "/groups — see and revoke group access",
+      "/disconnect — sign out every connected assistant",
+      "",
+      `I keep messages for ${p.retention} days and only see chats I am in.` +
+        (p.privacyOn
+          ? " Privacy mode is on, so in groups I only see commands, mentions and replies to me — turn it off in @BotFather (/setprivacy) and re-add me to see everything."
+          : ""),
+    ].join("\n"),
+  pickGroup: "Pick the group to connect. I must already be a member there.",
+  pickButton: "Choose a group",
+  cannotResolve: (what: string) =>
+    `I can't find ${escapeHtml(what)}. Use the button, or send a public @username. Invite links can't be resolved by bots.`,
+  notInGroup:
+    "I'm not in that group. Add me there first — whoever adds me gets access automatically.",
+  notMember: "You don't seem to be a member of that group, so I can't give you access to it.",
+  notAGroup: "That isn't a group.",
+  connected: (p: { title: string; full: boolean; retention: number; name?: string }) =>
+    `✅ ${p.name ? `${escapeHtml(p.name)}: ` : ""}<b>${escapeHtml(p.title)}</b> is connected. ` +
+    (p.full
+      ? `Your assistant sees everything I have stored here (up to ${p.retention} days).`
+      : "Your assistant sees messages from now on. Older ones stay hidden because this group hides history from new members, or I'm not an admin and can't check — make me an admin with visible history to change that."),
+  addedGreeting: (p: { name: string; retention: number; privacyOn: boolean; admin: boolean }) =>
+    `👋 Hi! ${escapeHtml(p.name)} added me so their AI assistant can read and post here. ` +
+    `I keep messages for ${p.retention} days. Anyone else can send /connect to link their own assistant.` +
+    (p.privacyOn && !p.admin
+      ? "\n\n⚠️ Privacy mode is on: I only see commands, mentions and replies. Make me an admin, or turn privacy off in @BotFather and re-add me."
+      : ""),
+  noGroups:
+    "No groups connected. Add me to a group, or send /connect here or in a group I'm already in.",
+  groupsHeader: "<b>Connected groups</b>",
+  groupLine: (p: { title: string; full: boolean; since: string }) =>
+    `• <b>${escapeHtml(p.title)}</b> — ${p.full ? "full stored history" : `from ${p.since}`}`,
+  revokeButton: (title: string) => `Revoke ${title}`,
+  revoked: "Access revoked.",
+  notYours: "Nothing to revoke.",
+  disconnected:
+    "Done — every assistant signed in with your account is disconnected. Connect again from your assistant's settings when you want.",
+  pressed: (label: string) => `✓ ${label}`,
+  alreadyAnswered: "Already answered.",
+  unknownCommand: "Unknown command. Try /start.",
+};
+
+type Texts = typeof en;
+
+const ru: Texts = {
+  notAllowed: (id) =>
+    `Это приватный бот. Твой Telegram ID: <code>${id}</code> — попроси владельца добавить его в <code>ALLOWED_USER_IDS</code>.`,
+  start: (p) =>
+    [
+      "Привет! Я связываю твоего AI-ассистента (Claude, ChatGPT, Codex) с Telegram: он может писать тебе сюда, присылать файлы, задавать вопросы с кнопками и читать, что ты мне пишешь или что пишут в подключённых группах.",
+      "",
+      `Твой Telegram ID: <code>${p.id}</code>`,
+      `URL коннектора: <code>${escapeHtml(p.connector)}</code>`,
+      "",
+      "<b>Команды</b>",
+      "/connect — дать ассистенту доступ к группе (или отправь /connect в самой группе)",
+      "/groups — посмотреть и отозвать доступ к группам",
+      "/disconnect — отключить все подключённые ассистенты",
+      "",
+      `Храню сообщения ${p.retention} дней и вижу только чаты, где я есть.` +
+        (p.privacyOn
+          ? " Включён privacy mode: в группах я вижу только команды, упоминания и ответы мне — выключи его в @BotFather (/setprivacy) и добавь меня заново, чтобы видеть всё."
+          : ""),
+    ].join("\n"),
+  pickGroup: "Выбери группу. Я уже должен в ней состоять.",
+  pickButton: "Выбрать группу",
+  cannotResolve: (what) =>
+    `Не нахожу ${escapeHtml(what)}. Нажми кнопку или пришли публичный @username — инвайт-ссылки боты открыть не могут.`,
+  notInGroup:
+    "Меня нет в этой группе. Сначала добавь меня — тот, кто добавляет, получает доступ сразу.",
+  notMember: "Похоже, ты не участник этой группы, поэтому доступ дать не могу.",
+  notAGroup: "Это не группа.",
+  connected: (p) =>
+    `✅ ${p.name ? `${escapeHtml(p.name)}: ` : ""}<b>${escapeHtml(p.title)}</b> подключена. ` +
+    (p.full
+      ? `Ассистенту видно всё, что я здесь сохранил (до ${p.retention} дней).`
+      : "Ассистенту видны сообщения с этого момента. Старые скрыты: в группе история скрыта от новых участников, или я не админ и не могу это проверить — сделай меня админом с видимой историей, чтобы это изменить."),
+  addedGreeting: (p) =>
+    `👋 Привет! ${escapeHtml(p.name)} добавил(а) меня, чтобы AI-ассистент мог читать и писать здесь. ` +
+    `Храню сообщения ${p.retention} дней. Любой может отправить /connect, чтобы подключить своего ассистента.` +
+    (p.privacyOn && !p.admin
+      ? "\n\n⚠️ Включён privacy mode: я вижу только команды, упоминания и ответы. Сделай меня админом или выключи privacy в @BotFather и добавь меня заново."
+      : ""),
+  noGroups:
+    "Нет подключённых групп. Добавь меня в группу или отправь /connect здесь или в группе, где я уже есть.",
+  groupsHeader: "<b>Подключённые группы</b>",
+  groupLine: (p) =>
+    `• <b>${escapeHtml(p.title)}</b> — ${p.full ? "вся сохранённая история" : `с ${p.since}`}`,
+  revokeButton: (title) => `Отозвать ${title}`,
+  revoked: "Доступ отозван.",
+  notYours: "Нечего отзывать.",
+  disconnected:
+    "Готово — все ассистенты, подключённые под твоим аккаунтом, отключены. Подключиться снова можно в настройках ассистента.",
+  pressed: (label) => `✓ ${label}`,
+  alreadyAnswered: "Уже отвечено.",
+  unknownCommand: "Не знаю такой команды. Попробуй /start.",
+};
+
+export function texts(languageCode: string | null | undefined): Texts {
+  return languageCode?.toLowerCase().startsWith("ru") ? ru : en;
+}
+
+export function formatDate(epochSeconds: number): string {
+  return new Date(epochSeconds * 1000).toISOString().slice(0, 16).replace("T", " ") + " UTC";
+}

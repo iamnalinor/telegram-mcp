@@ -1,0 +1,358 @@
+/**
+ * Shared pieces of the tool surface: the per-request context, argument
+ * schemas every tool reuses, error translation, and the send path every
+ * writing tool goes through (so each sent message is stored the same way).
+ */
+
+import { z } from "zod";
+
+import { AccessError, type Access, type ChatView } from "../access";
+import type { Config } from "../env";
+import { messageLink } from "../links";
+import { markdownToHtml, splitMarkdown, splitPlain, TELEGRAM_CAPTION_LIMIT } from "../markdown";
+import type { StoredButton, Store } from "../store";
+import { TelegramError, type TelegramApi } from "../telegram/api";
+import type { InlineKeyboardMarkup, Message } from "../telegram/types";
+import { toStored } from "../bot/extract";
+
+export interface ToolContext {
+  config: Config;
+  store: Store;
+  api: TelegramApi;
+  access: Access;
+  userId: number;
+  /** Public origin of the Worker, for upload and download links. */
+  origin: string;
+  bot: { id: number; username: string; canReadAll: boolean };
+}
+
+export function text(body: string) {
+  return { content: [{ type: "text" as const, text: body }] };
+}
+
+/** A failure the model should read and act on, rather than a crash. */
+export class ToolError extends Error {}
+
+export function toolError(error: unknown, ctx: Pick<ToolContext, "bot">) {
+  return { content: [{ type: "text" as const, text: describe(error, ctx) }], isError: true };
+}
+
+function describe(error: unknown, ctx: Pick<ToolContext, "bot">): string {
+  if (error instanceof AccessError || error instanceof ToolError) return error.message;
+  if (error instanceof TelegramError) {
+    if (/bot was blocked|user is deactivated/i.test(error.description)) {
+      return `Telegram refused: ${error.description}. The user has to unblock the bot (https://t.me/${ctx.bot.username}) before it can message them.`;
+    }
+    if (/chat not found/i.test(error.description) || error.code === 403) {
+      return (
+        `Telegram refused: ${error.description}. If this is the private chat, the user has to open ` +
+        `https://t.me/${ctx.bot.username} and press Start once. If it is a group, the bot may have been removed.`
+      );
+    }
+    if (error.code === 429) {
+      return `Telegram is rate-limiting the bot. Retry in ${error.retryAfter ?? 30} s, and send fewer messages.`;
+    }
+    if (
+      /not enough rights|need administrator rights|CHAT_ADMIN_REQUIRED/i.test(error.description)
+    ) {
+      return `Telegram refused: ${error.description}. The bot needs to be a group admin with that right.`;
+    }
+    if (/message is not modified/i.test(error.description))
+      return "Nothing changed: the message already looks like that.";
+    if (
+      /message to edit not found|message can't be edited|message to delete not found|message can't be deleted/i.test(
+        error.description,
+      )
+    ) {
+      return `Telegram refused: ${error.description}. Bots can edit only their own messages, and delete only within 48 hours.`;
+    }
+    return `Telegram refused: ${error.description} (${error.code}).`;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+// --- argument schemas -------------------------------------------------------
+
+export const chatArg = z
+  .union([z.string(), z.number()])
+  .optional()
+  .describe(
+    'Where: "me" (default — the user\'s private chat with the bot), or a group id, @username or title from list_chats.',
+  );
+
+export const messageIdArg = z.number().int().positive().describe("Message id (the #number).");
+
+export const topicArg = z
+  .number()
+  .int()
+  .positive()
+  .optional()
+  .describe(
+    "Forum topic (thread) id, from list_chats or a message's header. Omit for General / non-forum chats.",
+  );
+
+export const formatArg = z
+  .enum(["markdown", "plain"])
+  .optional()
+  .describe(
+    "markdown (default): **bold**, _italic_, `code`, ```blocks```, [links](url), > quotes. plain: sent as is.",
+  );
+
+const buttonSchema = z
+  .object({
+    text: z.string().min(1).max(64).describe("Label on the button."),
+    data: z
+      .string()
+      .max(200)
+      .optional()
+      .describe("Value reported back when pressed (default: the label). Omit when using url."),
+    url: z
+      .string()
+      .url()
+      .optional()
+      .describe("Makes it a link button instead; presses are not reported."),
+  })
+  .refine((button) => !(button.url && button.data), "A button has either url or data, not both.");
+
+export const buttonsArg = z
+  .array(z.array(buttonSchema).min(1).max(8))
+  .max(8)
+  .optional()
+  .describe(
+    "Inline buttons under the message, as rows: [[{text:'Yes'},{text:'No'}]]. Presses are recorded — read them with wait_for_reply or get_message.",
+  );
+
+export type Buttons = z.infer<typeof buttonsArg>;
+
+export function keyboard(buttons: Buttons): InlineKeyboardMarkup | undefined {
+  if (!buttons?.length) return undefined;
+  return {
+    inline_keyboard: buttons.map((row, r) =>
+      row.map((button, c) =>
+        button.url
+          ? { text: button.text, url: button.url }
+          : { text: button.text, callback_data: `cb:${r}.${c}` },
+      ),
+    ),
+  };
+}
+
+export function storedButtons(buttons: Buttons): string | null {
+  if (!buttons?.length) return null;
+  const rows: StoredButton[][] = buttons.map((row) =>
+    row.map((button) =>
+      button.url
+        ? { text: button.text, url: button.url }
+        : { text: button.text, data: button.data ?? button.text },
+    ),
+  );
+  return JSON.stringify(rows);
+}
+
+// --- time ------------------------------------------------------------------
+
+/**
+ * "2h", "3d", "45m", "1w", "today", "yesterday", or anything Date can parse
+ * (ISO dates and date-times; no zone means UTC). Epoch seconds.
+ */
+export function parseTime(value: string | undefined, field: string): number | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const raw = value.trim().toLowerCase();
+  const now = Date.now();
+  const relative = /^(\d+(?:\.\d+)?)\s*(m|min|h|d|w)$/.exec(raw);
+  if (relative) {
+    const unit = { m: 60, min: 60, h: 3600, d: 86400, w: 604800 }[relative[2]]!;
+    return Math.floor(now / 1000 - Number(relative[1]) * unit);
+  }
+  const startOfToday = Math.floor(now / 86_400_000) * 86_400;
+  if (raw === "today") return startOfToday;
+  if (raw === "yesterday") return startOfToday - 86_400;
+
+  const iso = /^\d{4}-\d{2}-\d{2}(?:[t ]\d{2}:\d{2}(?::\d{2})?)?$/.test(raw)
+    ? `${raw.replace(" ", "t")}${raw.length > 10 ? "z" : ""}`
+    : raw;
+  const parsed = Date.parse(iso.toUpperCase());
+  if (Number.isNaN(parsed)) {
+    throw new ToolError(
+      `${field}: "${value}" is not a time. Use "2h", "3d", "today", or an ISO date like 2026-10-20.`,
+    );
+  }
+  return Math.floor(parsed / 1000);
+}
+
+// --- sending ---------------------------------------------------------------
+
+export interface SendOptions {
+  text: string;
+  format?: "markdown" | "plain";
+  buttons?: Buttons;
+  replyTo?: number;
+  silent?: boolean;
+  linkPreview?: boolean;
+  topic?: number;
+  markChoice?: boolean;
+}
+
+/** The forum topic to post in: given, or the one of the message being replied to. */
+async function resolveTopic(
+  ctx: ToolContext,
+  chat: ChatView,
+  options: { topic?: number; replyTo?: number },
+) {
+  if (options.topic) return options.topic;
+  if (!options.replyTo) return undefined;
+  const target = await ctx.store.getMessage(chat.chat_id, options.replyTo);
+  return target?.thread_id ?? undefined;
+}
+
+/** Persist what the bot just sent, as the bot's own message. */
+export async function recordSent(
+  ctx: ToolContext,
+  sent: Message,
+  extra: { text?: string; buttons?: string | null; markChoice?: boolean } = {},
+): Promise<void> {
+  const stored = toStored(sent, ctx.bot);
+  stored.outgoing = true;
+  stored.mentions_bot = false;
+  if (extra.text !== undefined) stored.text = extra.text;
+  stored.buttons = extra.buttons ?? null;
+  stored.mark_choice = extra.markChoice ?? false;
+  stored.sent_by = ctx.userId;
+  await ctx.store.insertMessage(stored, "always");
+}
+
+export function sentLink(ctx: ToolContext, chat: ChatView, message: Message): string | null {
+  // Outside forums message_thread_id marks a reply thread, which t.me links do not take.
+  const topic = message.is_topic_message ? message.message_thread_id : undefined;
+  return messageLink(chat, message.message_id, topic, ctx.bot.username);
+}
+
+/** Send text, split if long, buttons on the last part. Every part is stored. */
+export async function sendText(
+  ctx: ToolContext,
+  chat: ChatView,
+  options: SendOptions,
+): Promise<Message[]> {
+  const format = options.format ?? "markdown";
+  const parts = format === "markdown" ? splitMarkdown(options.text) : splitPlain(options.text);
+  const thread = await resolveTopic(ctx, chat, options);
+  const markup = keyboard(options.buttons);
+  const sent: Message[] = [];
+
+  for (const [index, part] of parts.entries()) {
+    const last = index === parts.length - 1;
+    const params: Record<string, unknown> = {
+      chat_id: chat.chat_id,
+      text: format === "markdown" ? markdownToHtml(part) : part,
+      ...(format === "markdown" ? { parse_mode: "HTML" } : {}),
+      ...(thread ? { message_thread_id: thread } : {}),
+      ...(index === 0 && options.replyTo
+        ? { reply_parameters: { message_id: options.replyTo, allow_sending_without_reply: true } }
+        : {}),
+      ...(options.silent ? { disable_notification: true } : {}),
+      link_preview_options: { is_disabled: options.linkPreview !== true },
+      ...(last && markup ? { reply_markup: markup } : {}),
+    };
+
+    const message = await withPlainFallback((plain) => {
+      if (plain) {
+        // Markup Telegram cannot parse should not lose the message: send it as written.
+        delete params.parse_mode;
+        params.text = part;
+      }
+      return ctx.api.call<Message>("sendMessage", params);
+    });
+    await recordSent(ctx, message, {
+      text: part,
+      buttons: last ? storedButtons(options.buttons) : null,
+      markChoice: last ? options.markChoice : false,
+    });
+    sent.push(message);
+  }
+  return sent;
+}
+
+export type UploadKind = "document" | "photo" | "video" | "audio" | "voice" | "animation";
+
+export const UPLOAD_KINDS: [UploadKind, ...UploadKind[]] = [
+  "document",
+  "photo",
+  "video",
+  "audio",
+  "voice",
+  "animation",
+];
+
+export interface FileSendOptions {
+  as?: UploadKind;
+  caption?: string;
+  format?: "markdown" | "plain";
+  buttons?: Buttons;
+  replyTo?: number;
+  topic?: number;
+  silent?: boolean;
+}
+
+/** A file to send: bytes in hand, or a stream of known size straight from the uploader. */
+export type UploadSource =
+  { blob: Blob } | { stream: ReadableStream<Uint8Array>; size: number; type: string };
+
+/**
+ * Retry once as plain text when Telegram refuses the markup. The converter
+ * always nests tags properly, so this is a backstop, not a path.
+ */
+export async function withPlainFallback<T>(send: (plain: boolean) => Promise<T>): Promise<T> {
+  try {
+    return await send(false);
+  } catch (error) {
+    if (error instanceof TelegramError && /can't parse entities/i.test(error.description)) {
+      return send(true);
+    }
+    throw error;
+  }
+}
+
+/** Upload a file message and store it. */
+export async function sendUpload(
+  ctx: ToolContext,
+  chat: ChatView,
+  source: UploadSource,
+  filename: string,
+  options: FileSendOptions,
+): Promise<Message> {
+  const kind = options.as ?? "document";
+  const method = `send${kind[0].toUpperCase()}${kind.slice(1)}`;
+  const caption = options.caption?.slice(0, TELEGRAM_CAPTION_LIMIT);
+  const markdown = (options.format ?? "markdown") === "markdown";
+  const thread = await resolveTopic(ctx, chat, options);
+
+  const params = (plain: boolean): Record<string, unknown> => ({
+    chat_id: String(chat.chat_id),
+    ...(caption ? { caption: markdown && !plain ? markdownToHtml(caption) : caption } : {}),
+    ...(caption && markdown && !plain ? { parse_mode: "HTML" } : {}),
+    ...(thread ? { message_thread_id: String(thread) } : {}),
+    ...(options.replyTo
+      ? { reply_parameters: { message_id: options.replyTo, allow_sending_without_reply: true } }
+      : {}),
+    ...(options.silent ? { disable_notification: "true" } : {}),
+    ...(keyboard(options.buttons) ? { reply_markup: keyboard(options.buttons) } : {}),
+  });
+
+  // A stream can be read only once, so it gets no plain-text retry.
+  const message =
+    "blob" in source
+      ? await withPlainFallback((plain) =>
+          ctx.api.upload<Message>(method, params(plain), kind, source.blob, filename),
+        )
+      : await ctx.api.uploadStream<Message>(method, params(false), kind, {
+          body: source.stream,
+          size: source.size,
+          name: filename,
+          type: source.type,
+        });
+  await recordSent(ctx, message, {
+    text: caption ?? "",
+    buttons: storedButtons(options.buttons),
+  });
+  return message;
+}
