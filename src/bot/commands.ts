@@ -180,6 +180,7 @@ async function groupsMessage(
 
   const lines = grants.map((grant) =>
     t.groupLine({
+      mark: "",
       title: grant.title ?? String(grant.chat_id),
       full: grant.visible_from === 0,
       since: formatDate(grant.visible_from),

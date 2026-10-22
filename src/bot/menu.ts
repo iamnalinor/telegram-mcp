@@ -76,6 +76,12 @@ async function groupsScreen(ctx: BotContext, user: User): Promise<Screen> {
   const t = texts(user.language_code);
   const back = [button(t.buttonBack, "main")];
   const grants = await ctx.store.listGrants(user.id);
+  const claude = grants.length
+    ? await ctx.store.claudeChatsOf(user.id)
+    : new Map<number, boolean>();
+  // 🤖 Claude answers there for this user; ⚠️ for the other members too.
+  const mark = (chatId: number) =>
+    claude.has(chatId) ? (claude.get(chatId) ? "🤖⚠️ " : "🤖 ") : "";
   if (!grants.length) {
     return {
       text: t.noGroupsMenu,
@@ -84,6 +90,7 @@ async function groupsScreen(ctx: BotContext, user: User): Promise<Screen> {
   }
   const lines = grants.map((grant) =>
     t.groupLine({
+      mark: mark(grant.chat_id),
       title: grant.title ?? String(grant.chat_id),
       full: grant.visible_from === 0,
       since: formatDate(grant.visible_from),
@@ -94,7 +101,13 @@ async function groupsScreen(ctx: BotContext, user: User): Promise<Screen> {
     reply_markup: {
       inline_keyboard: [
         ...grants.map((grant) => [
-          button((grant.title ?? String(grant.chat_id)).slice(0, 60), `g:${grant.chat_id}`),
+          button(
+            mark(grant.chat_id) +
+              Array.from(grant.title ?? String(grant.chat_id))
+                .slice(0, 60)
+                .join(""),
+            `g:${grant.chat_id}`,
+          ),
         ]),
         back,
       ],
@@ -208,13 +221,21 @@ async function routineScreen(ctx: BotContext, user: User): Promise<Screen> {
       ? "broken"
       : "set";
   const here = (await ctx.store.getClaudeChat(user.id))?.user_id === user.id;
+  let test = "";
+  if (state === "set" && row?.test_session && row.test_at) {
+    const answered = await ctx.store.sessionSpokeIn(user.id, row.test_session, row.test_at);
+    const at = formatDate(row.test_at);
+    test = `\n\n${answered ? t.testPassed(at) : t.testWaiting(at)}`;
+  }
   return {
     text:
       t.routineScreen({
         state,
         trigger: row?.trigger_id,
         since: row ? formatDate(row.updated_at) : undefined,
-      }) + (state === "set" ? `\n\n${t.claudeHereHint}` : ""),
+      }) +
+      test +
+      (state === "set" ? `\n\n${t.claudeHereHint}` : ""),
     reply_markup: {
       inline_keyboard: [
         [button(t.buttonGuide, "clh"), button(t.buttonSetRoutine, "clset")],
@@ -252,13 +273,17 @@ async function groupScreen(
   const claim = await ctx.store.getClaudeChat(chatId);
   const on = claim?.user_id === user.id;
   const heldBy = claim && !on ? await holderName(ctx, claim.user_id) : null;
+  // With privacy mode on, a group where the bot is no admin shows it only mentions and replies.
+  const blind = on && !ctx.bot.canReadAll && !(await ctx.store.getChat(chatId))?.bot_is_admin;
   return {
     text:
       t.groupScreen({
         title: grant.title ?? String(chatId),
         full: grant.visible_from === 0,
         since: formatDate(grant.visible_from),
-      }) + t.groupClaude({ on, others: on && claim.others === 1, heldBy }),
+      }) +
+      t.groupClaude({ on, others: on && claim.others === 1, heldBy }) +
+      (blind ? `\n${t.privacyHint}` : ""),
     reply_markup: {
       inline_keyboard: [
         [button(t.claudeToggle(on), `gc:${chatId}`)],
