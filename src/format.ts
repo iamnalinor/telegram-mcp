@@ -83,7 +83,11 @@ function sender(message: StoredMessage, botUsername: string, userId: number): st
   if (message.outgoing) return `bot (@${botUsername}, you)`;
   const marks = [
     message.forwarded_from ? "forwarding" : null,
-    message.via_bot ? `via @${message.via_bot}` : null,
+    message.via_bot === null
+      ? null
+      : /^\w{1,64}$/.test(message.via_bot)
+        ? `via @${message.via_bot}`
+        : "via an inline bot",
     message.as_chat ? "posting as the chat" : null,
   ].filter((mark): mark is string => mark !== null);
   return person(message.from_name, message.from_username, message.from_id, userId, marks);
@@ -204,7 +208,9 @@ export class Renderer {
 
     const lines = [header];
     if (message.forwarded_from) {
-      lines.push(`  ↪ from ${message.forwarded_from} — forwarded, not the sender's words`);
+      lines.push(
+        `  ↪ from ${JSON.stringify(message.forwarded_from)} — forwarded, not the sender's words`,
+      );
     }
     if (message.reply_to_id) {
       const target = this.replyTargets.get(`${refKey(message)}:${message.reply_to_id}`);

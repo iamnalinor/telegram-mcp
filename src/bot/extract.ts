@@ -164,6 +164,11 @@ export function mentionsBot(message: Message, bot: BotIdentity): boolean {
   return realReply(message)?.from?.id === bot.id;
 }
 
+/** A bot's @username when it is a well-formed one, else "" — "some inline bot". */
+function botHandle(bot: User): string {
+  return bot.username && /^\w{1,64}$/.test(bot.username) ? bot.username : "";
+}
+
 function senderOf(message: Message): {
   id: number | null;
   name: string | null;
@@ -219,7 +224,8 @@ export function toStored(message: Message, bot: BotIdentity, owner?: number): St
     buttons: null,
     mark_choice: false,
     sent_by: viaBot ? owner : null,
-    via_bot: message.via_bot ? (message.via_bot.username ?? displayName(message.via_bot)) : null,
+    // Only a real handle is kept: a bot's display name is free text and could pose as a marker.
+    via_bot: message.via_bot ? botHandle(message.via_bot) : null,
     as_chat: message.sender_chat !== undefined,
   };
 }
