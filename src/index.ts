@@ -9,8 +9,10 @@
  *   PUT  /upload/<signed>  one-time file upload, see src/files.ts
  *   GET  /file/<signed>    attachment download
  *   GET  /health           liveness
+ *   /relay/…               the user's relay to Claude Code sessions, see src/relay.ts
  *
- * Scheduled (daily): delete messages past retention, re-check the webhook.
+ * Scheduled: daily, delete messages past retention and re-check the webhook;
+ * every few minutes, fail relay jobs nobody picked up (src/relay.ts).
  */
 
 import { createMcpHandler, type McpHttpHandler } from "@modelcontextprotocol/server";
@@ -24,6 +26,7 @@ import { isAllowed, type Env } from "./env";
 import { handleDownload, handleUpload } from "./files";
 import { allow, tokenKey, tooManyRequests } from "./limits";
 import { createServer } from "./mcp";
+import { handleRelay, sweepRelays } from "./relay";
 import {
   authorizeMcpRequest,
   handleOAuthRequest,
@@ -110,6 +113,9 @@ async function handleMcp(request: Request, env: Env, core: Base): Promise<Respon
   });
 }
 
+/** Must match the second cron in wrangler.jsonc. */
+const RELAY_SWEEP = "*/5 * * * *";
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -148,6 +154,13 @@ export default {
       if (response) return response;
     }
 
+    if (pathname.startsWith("/relay/")) {
+      const response = await handleRelay(request, pathname, core.store, publicOrigin(request), () =>
+        botContext(core, publicOrigin(request)),
+      );
+      if (response) return response;
+    }
+
     const contextFor = (userId: number) => toolContext(core, publicOrigin(request), userId);
     if (pathname.startsWith("/upload/")) {
       return handleUpload(request, env.FILE_LIMIT, contextFor, core.config.signingKey);
@@ -168,8 +181,13 @@ export default {
     return new Response(null, { status: 404 });
   },
 
-  async scheduled(_event, env) {
+  async scheduled(event, env) {
     const core = await base(env);
+    if (event.cron === RELAY_SWEEP) {
+      const origin = (await core.store.getMeta("public_origin")) ?? "";
+      await sweepRelays(await botContext(core, origin));
+      return;
+    }
     const cutoff = nowSeconds() - core.config.retentionDays * 86_400;
     const purged = await core.store.purge(cutoff);
     console.log(JSON.stringify({ event: "retention_purge", purged, cutoff }));
