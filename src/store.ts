@@ -66,6 +66,19 @@ export interface RefreshSessionRow {
   rotated_at: number;
   expires_at: number;
   revoked: number;
+  /** Who the sign-in went to: "Claude", "ChatGPT", an app on this computer. Null before it was kept. */
+  client_name: string | null;
+  created_at: number | null;
+}
+
+/** What checking a token needs, in one read: the user, and the sign-in it belongs to. */
+export interface TokenState {
+  token_version: number;
+  connected_at: number | null;
+  username: string | null;
+  first_name: string | null;
+  /** Null when the token names no sign-in, or that sign-in has no row. */
+  session_revoked: number | null;
 }
 
 export interface UserRow {
@@ -364,11 +377,16 @@ export class Store {
       .run();
   }
 
+  /** Every token of the user stops working, and their sign-ins leave the list. */
   async bumpTokenVersion(userId: number): Promise<void> {
-    await this.db
-      .prepare("UPDATE users SET token_version = token_version + 1 WHERE user_id = ?")
-      .bind(userId)
-      .run();
+    await this.db.batch([
+      this.db
+        .prepare("UPDATE users SET token_version = token_version + 1 WHERE user_id = ?")
+        .bind(userId),
+      this.db
+        .prepare("UPDATE refresh_sessions SET revoked = 1 WHERE user_id = ? AND revoked = 0")
+        .bind(userId),
+    ]);
   }
 
   // --- chats ---------------------------------------------------------------
@@ -1148,6 +1166,60 @@ export class Store {
       .bind(id, userId, generation, nowSeconds(), expiresAt)
       .first<{ generation: number }>();
     return row !== null;
+  }
+
+  /** A new sign-in, at generation 0: what the code exchange hands out. */
+  async createSignIn(
+    id: string,
+    userId: number,
+    clientName: string | null,
+    expiresAt: number,
+  ): Promise<void> {
+    const now = nowSeconds();
+    await this.db
+      .prepare(
+        `INSERT INTO refresh_sessions (id, user_id, generation, rotated_at, expires_at, client_name, created_at)
+         VALUES (?1, ?2, 0, ?3, ?4, ?5, ?3)`,
+      )
+      .bind(id, userId, now, expiresAt, clientName)
+      .run();
+  }
+
+  /** The user's row and, when `sessionId` is given, whether that sign-in is revoked. */
+  tokenState(userId: number, sessionId: string | null): Promise<TokenState | null> {
+    return this.db
+      .prepare(
+        `SELECT u.token_version, u.connected_at, u.username, u.first_name, s.revoked AS session_revoked
+         FROM users u
+         LEFT JOIN refresh_sessions s ON s.id = ?2 AND s.user_id = u.user_id
+         WHERE u.user_id = ?1`,
+      )
+      .bind(userId, sessionId)
+      .first<TokenState>();
+  }
+
+  /** Sign-ins still standing, the most recently used first. */
+  async listSignIns(userId: number): Promise<RefreshSessionRow[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT * FROM refresh_sessions
+         WHERE user_id = ? AND revoked = 0 AND expires_at > ?
+         ORDER BY rotated_at DESC`,
+      )
+      .bind(userId, nowSeconds())
+      .all<RefreshSessionRow>();
+    return results;
+  }
+
+  /** Ends one of the user's own sign-ins. False when it is not theirs or already ended. */
+  async revokeSignIn(userId: number, id: string): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        "UPDATE refresh_sessions SET revoked = 1 WHERE id = ? AND user_id = ? AND revoked = 0",
+      )
+      .bind(id, userId)
+      .run();
+    return (result.meta.changes ?? 0) > 0;
   }
 
   getRefreshSession(id: string): Promise<RefreshSessionRow | null> {

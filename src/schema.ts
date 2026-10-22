@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -160,7 +160,9 @@ const SCHEMA: string[] = [
     generation INTEGER NOT NULL,
     rotated_at INTEGER NOT NULL,
     expires_at INTEGER NOT NULL,
-    revoked INTEGER NOT NULL DEFAULT 0
+    revoked INTEGER NOT NULL DEFAULT 0,
+    client_name TEXT,
+    created_at INTEGER
 ) WITHOUT ROWID`,
 
   // A user's Telegram Business connection: the bot reads their private chats,
@@ -189,9 +191,10 @@ const SCHEMA: string[] = [
  * Steps bringing a database from the version before `target` up to it.
  *
  * `alter` statements run one by one and tolerate a racing isolate's
- * "duplicate column". `rebuild` runs as one transaction whose first statement
- * claims the step in `meta`: a second isolate fails on that claim and rolls
- * back, so a table is never rebuilt twice.
+ * "duplicate column", and a table an older version never had: SCHEMA creates
+ * it afterwards, already with the column. `rebuild` runs as one transaction
+ * whose first statement claims the step in `meta`: a second isolate fails on
+ * that claim and rolls back, so a table is never rebuilt twice.
  */
 const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
   { target: 2, alter: ["ALTER TABLE users ADD COLUMN connected_at INTEGER"] },
@@ -214,6 +217,13 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
     alter: [
       "ALTER TABLE messages ADD COLUMN via_bot TEXT",
       "ALTER TABLE messages ADD COLUMN as_chat INTEGER NOT NULL DEFAULT 0",
+    ],
+  },
+  {
+    target: 6,
+    alter: [
+      "ALTER TABLE refresh_sessions ADD COLUMN client_name TEXT",
+      "ALTER TABLE refresh_sessions ADD COLUMN created_at INTEGER",
     ],
   },
 ];
@@ -251,7 +261,7 @@ async function migrate(db: D1Database): Promise<void> {
         .prepare(sql)
         .run()
         .catch((error: unknown) => {
-          if (!/duplicate column/i.test(String(error))) throw error;
+          if (!/duplicate column|no such table/i.test(String(error))) throw error;
         });
     }
     if (step.rebuild) {

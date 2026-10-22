@@ -261,7 +261,7 @@ async function onCallback(ctx: BotContext, query: CallbackQuery): Promise<Webhoo
     return handleRevoke(ctx, query, Number(revoke[1]));
   }
 
-  const menu = /^m:([\w:-]{1,40})$/.exec(data);
+  const menu = /^m:([\w:-]{1,60})$/.exec(data);
   if (menu) return handleMenu(ctx, query, menu[1]);
 
   const press = /^cb:(\d+)\.(\d+)$/.exec(data);

@@ -88,6 +88,8 @@ interface StateBlob {
   cid: string;
   /** Names the cookie the consent page set, so only that browser can finish the flow. */
   n: string;
+  /** Who the sign-in goes to, for the user's list of sign-ins. */
+  cn?: string;
 }
 interface CodeBlob extends StateBlob {
   u: number;
@@ -95,10 +97,11 @@ interface CodeBlob extends StateBlob {
 interface TokenBlob {
   u: number;
   v: number;
+  /** The sign-in (session) id, so ending one sign-in stops its access tokens at once. */
+  s?: string;
 }
 interface RefreshBlob extends TokenBlob {
-  /** Session id. Absent on tokens from before rotation: the token's hash stands in. */
-  s?: string;
+  /** Absent on refresh tokens from before rotation: the token's hash stands in. */
   /** Generation within the session; absent means 0. */
   g?: number;
 }
@@ -140,6 +143,21 @@ function redirectOwner(target: string): string | null {
       : null;
   }
   return Object.hasOwn(CALLBACKS, target) ? CALLBACKS[target] : null;
+}
+
+/**
+ * How the sign-in is listed: the verified callback's owner, or for an app on
+ * this computer the name it registered with — its own claim, but only the
+ * user's machine can receive that code anyway.
+ */
+async function clientName(
+  deps: OAuthDeps,
+  clientId: string,
+  redirectUri: string,
+): Promise<string | undefined> {
+  if (Object.hasOwn(CALLBACKS, redirectUri)) return CALLBACKS[redirectUri];
+  const client = await verify<ClientBlob>(deps.config.signingKey, "client", clientId);
+  return client?.n ? `${client.n} (on this computer)` : "An app on this computer";
 }
 
 /** Codes may only go to Claude's or ChatGPT's own callback, or to loopback. */
@@ -343,6 +361,7 @@ async function handleAuthorize(request: Request, deps: OAuthDeps): Promise<Respo
       c: challenge,
       cid: await sha256Base64Url(clientId),
       n: nonce,
+      cn: await clientName(deps, clientId, redirectUri),
     },
     STATE_TTL,
   );
@@ -575,7 +594,12 @@ async function issueTokens(
   const session = await resolveSession();
   if (!session) return null;
   return {
-    access_token: await sign<TokenBlob>(deps.config.signingKey, "access", payload, ACCESS_TTL),
+    access_token: await sign<TokenBlob>(
+      deps.config.signingKey,
+      "access",
+      { ...payload, s: session.id },
+      ACCESS_TTL,
+    ),
     token_type: "Bearer",
     expires_in: ACCESS_TTL,
     scope: SCOPE,
@@ -621,18 +645,24 @@ async function rotate(
 
 /**
  * Whether a token minted for `blob` still stands — user still allowed,
- * version not bumped — and if so, how the user is named in Telegram.
+ * version not bumped, its sign-in not ended — and if so, how the user is
+ * named in Telegram. One read. An access token's sign-in must exist (it is
+ * recorded before the token is issued); a refresh token's may not yet, for
+ * sign-ins from before they were recorded.
  */
 async function stillValid(
   deps: OAuthDeps,
   blob: TokenBlob,
+  kind: "access" | "refresh",
 ): Promise<{ username: string | null; name: string | null } | null> {
   if (!isAllowed(deps.config, blob.u)) return null;
-  const user = await deps.store.getUser(blob.u);
+  const state = await deps.store.tokenState(blob.u, blob.s ?? null);
   // Sessions from before connected_at existed get it on their first call.
-  if (user && user.connected_at === null) await deps.store.markConnected(blob.u);
-  if ((user?.token_version ?? 0) !== blob.v) return null;
-  return { username: user?.username ?? null, name: user?.first_name ?? null };
+  if (state && state.connected_at === null) await deps.store.markConnected(blob.u);
+  if ((state?.token_version ?? 0) !== blob.v) return null;
+  if (blob.s && state?.session_revoked === 1) return null;
+  if (blob.s && kind === "access" && state?.session_revoked !== 0) return null;
+  return { username: state?.username ?? null, name: state?.first_name ?? null };
 }
 
 async function handleToken(request: Request, deps: OAuthDeps): Promise<Response> {
@@ -656,7 +686,7 @@ async function handleToken(request: Request, deps: OAuthDeps): Promise<Response>
     const blob = await verify<RefreshBlob>(deps.config.signingKey, "refresh", presented);
     const tokens =
       blob &&
-      (await stillValid(deps, blob)) &&
+      (await stillValid(deps, blob, "refresh")) &&
       (await issueTokens(deps, blob.u, () => rotate(deps, presented, blob)));
     if (!tokens) {
       return oauthError("invalid_grant", "The refresh token is not valid any more. Connect again.");
@@ -693,7 +723,10 @@ async function handleToken(request: Request, deps: OAuthDeps): Promise<Response>
   }
 
   const fresh = { id: randomId(), generation: 0 };
-  const tokens = await issueTokens(deps, code.u, () => Promise.resolve(fresh));
+  const tokens = await issueTokens(deps, code.u, async () => {
+    await deps.store.createSignIn(fresh.id, code.u, code.cn ?? null, nowSeconds() + REFRESH_TTL);
+    return fresh;
+  });
   return jsonResponse(tokens);
 }
 
@@ -764,7 +797,7 @@ export function authorizeMcpRequest(
     verifier: {
       async verifyAccessToken(token: string): Promise<AuthInfo> {
         const blob = await verify<TokenBlob>(deps.config.signingKey, "access", token);
-        const profile = blob && (await stillValid(deps, blob));
+        const profile = blob && (await stillValid(deps, blob, "access"));
         if (!blob || !profile) {
           throw new OAuthError(
             OAuthErrorCode.InvalidToken,

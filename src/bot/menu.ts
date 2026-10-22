@@ -6,6 +6,10 @@
  *   m:groups      connected groups, a button each
  *   m:g:<id>      one group: what the assistant sees there, revoke
  *   m:rv:<id>     revoke that group, back to the list
+ *   m:si          sign-ins, a sign-out button each
+ *   m:sx:<id>     sign that one out
+ *   m:out         sign out everywhere: asks first
+ *   m:outyes      …and does it
  *   m:add         how to connect a group
  *   m:personal    personal chats through Telegram Business
  *   m:help        how it works, retention, commands
@@ -44,7 +48,8 @@ export async function mainScreen(ctx: BotContext, user: User): Promise<Screen> {
     reply_markup: {
       inline_keyboard: [
         [button(t.buttonGroups, "groups"), button(t.buttonAdd, "add")],
-        [button(t.buttonPersonal, "personal"), button(t.buttonHelp, "help")],
+        [button(t.buttonSignIns, "si"), button(t.buttonPersonal, "personal")],
+        [button(t.buttonHelp, "help")],
       ],
     },
   };
@@ -80,6 +85,36 @@ async function groupsScreen(ctx: BotContext, user: User): Promise<Screen> {
   };
 }
 
+async function signInsScreen(ctx: BotContext, user: User): Promise<Screen> {
+  const t = texts(user.language_code);
+  const signIns = await ctx.store.listSignIns(user.id);
+  const name = (client: string | null) => client ?? t.unknownClient;
+  const lines = signIns.map((row) =>
+    t.signInLine({
+      client: name(row.client_name),
+      since: row.created_at ? formatDate(row.created_at) : null,
+      seen: formatDate(row.rotated_at),
+    }),
+  );
+  return {
+    text: t.signInsScreen(lines),
+    reply_markup: {
+      inline_keyboard: [
+        ...signIns.map((row) => [
+          button(
+            Array.from(t.signOutButton(name(row.client_name)))
+              .slice(0, 60)
+              .join(""),
+            `sx:${row.id}`,
+          ),
+        ]),
+        ...(signIns.length ? [[button(t.buttonSignOutAll, "out")]] : []),
+        [button(t.buttonBack, "main")],
+      ],
+    },
+  };
+}
+
 function staticScreen(text: string, back: string, user: User): Screen {
   return {
     text,
@@ -105,6 +140,31 @@ async function render(
   if (!connected) return mainScreen(ctx, user);
 
   if (name === "groups") return groupsScreen(ctx, user);
+  if (name === "si") return signInsScreen(ctx, user);
+  if (name === "out") {
+    return {
+      text: t.confirmSignOutAll,
+      reply_markup: {
+        inline_keyboard: [
+          [button(t.buttonConfirmSignOut, "outyes")],
+          [button(t.buttonCancel, "si")],
+        ],
+      },
+    };
+  }
+  if (name === "outyes") {
+    await ctx.store.bumpTokenVersion(user.id);
+    return { ...(await signInsScreen(ctx, user)), note: t.disconnected };
+  }
+  // Ids are 16 characters, or 43 for sign-ins from before rotation (a token hash).
+  const signOut = /^sx:([\w-]{1,43})$/.exec(name);
+  if (signOut) {
+    const done = await ctx.store.revokeSignIn(user.id, signOut[1]);
+    return {
+      ...(await signInsScreen(ctx, user)),
+      note: done ? t.signedOut : t.alreadySignedOut,
+    };
+  }
   if (name === "personal") return staticScreen(t.personalScreen, "main", user);
   if (name === "add") {
     return {
