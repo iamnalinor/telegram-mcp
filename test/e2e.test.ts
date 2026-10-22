@@ -143,7 +143,7 @@ describe("groups", () => {
     const alice = (await h.connect(ALICE)).access_token;
     const found = await h.tool(alice, "search_messages", { mentions_only: true });
     expect(found.text).toContain("what happened here?");
-    expect(found.text).toContain('↩ #9001 Bob: "the migration failed on step 3"');
+    expect(found.text).toContain(`↩ #9001 Bob (id ${BOB.id}): "the migration failed on step 3"`);
   });
 
   it("files topic messages under their topic, without treating the topic root as a reply", async () => {
