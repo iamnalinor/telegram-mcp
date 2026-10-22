@@ -8,6 +8,7 @@
  */
 
 import { nowSeconds } from "./crypto";
+import { redactSecrets } from "./secrets";
 
 export interface StoredMessage {
   /** 0 for the bot's own chats; the user's id for their personal chats (see schema). */
@@ -59,6 +60,13 @@ interface MessageRow extends Omit<
   outgoing: number;
   mark_choice: number;
   as_chat: number;
+}
+
+export interface Routine {
+  user_id: number;
+  trigger_id: string;
+  token_enc: string;
+  updated_at: number;
 }
 
 export interface MemoryDoc {
@@ -275,6 +283,7 @@ const MESSAGE_COLUMNS = [
 ] as const;
 
 function messageValues(message: StoredMessage): unknown[] {
+  const text = redactSecrets(message.text);
   return [
     message.account_id,
     message.chat_id,
@@ -286,10 +295,10 @@ function messageValues(message: StoredMessage): unknown[] {
     message.from_name,
     message.from_username,
     message.forwarded_from,
-    message.text,
-    normalize(message.text),
+    text,
+    normalize(text),
     message.reply_to_id,
-    message.quote,
+    redactSecrets(message.quote),
     message.mentions_bot ? 1 : 0,
     message.outgoing ? 1 : 0,
     message.file_kind,
@@ -728,8 +737,9 @@ export class Store {
     const sets: string[] = [];
     const values: unknown[] = [];
     if (change.text !== undefined) {
+      const text = redactSecrets(change.text);
       sets.push("text = ?", "text_lc = ?");
-      values.push(change.text, normalize(change.text));
+      values.push(text, normalize(text));
     }
     if (change.buttons !== undefined) {
       sets.push("buttons = ?");
@@ -1353,6 +1363,38 @@ export class Store {
       .prepare("DELETE FROM memory_notices WHERE user_id = ? AND message_id = ?")
       .bind(userId, messageId)
       .run();
+  }
+
+  // --- routines ------------------------------------------------------------
+
+  getRoutine(userId: number): Promise<Routine | null> {
+    return this.db
+      .prepare("SELECT * FROM routines WHERE user_id = ?")
+      .bind(userId)
+      .first<Routine>();
+  }
+
+  async setRoutine(userId: number, triggerId: string, tokenEnc: string): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO routines (user_id, trigger_id, token_enc, updated_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (user_id) DO UPDATE SET
+           trigger_id = excluded.trigger_id, token_enc = excluded.token_enc,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(userId, triggerId, tokenEnc, nowSeconds())
+      .run();
+  }
+
+  async deleteRoutine(userId: number): Promise<void> {
+    await this.db.prepare("DELETE FROM routines WHERE user_id = ?").bind(userId).run();
+  }
+
+  async routineUsers(): Promise<number[]> {
+    const { results } = await this.db
+      .prepare("SELECT user_id FROM routines")
+      .all<{ user_id: number }>();
+    return results.map((row) => row.user_id);
   }
 
   /** Users with any memory, for dropping those no longer allowed. */

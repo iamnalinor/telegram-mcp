@@ -6,6 +6,7 @@
 
 import { resetBotIdentity } from "../src/telegram/api";
 import { resetWebhookCache } from "../src/bot/setup";
+import { resetTestStarts } from "../src/bot/routine";
 import {
   bytesToHex,
   hmac,
@@ -237,6 +238,13 @@ export class Harness {
   telegram = new FakeTelegram();
   env: Env;
   waits: Promise<unknown>[] = [];
+  /** Routine starts the Worker made, and how the fake API answers the next one. */
+  fires: { url: string; headers: Headers; body: { text: string } }[] = [];
+  fireAnswer: () => Response = () =>
+    Response.json({
+      claude_code_session_id: "cse_01TestSession0000000001",
+      claude_code_session_url: "https://claude.ai/code/session_01TestSession0000000001",
+    });
   private updateId = 1;
   private messageIds = new Map<number, number>();
   private realFetch = globalThis.fetch;
@@ -245,10 +253,21 @@ export class Harness {
     this.env = { BOT_TOKEN, DB: this.db.asD1(), RETENTION_DAYS: "14", ...vars };
     resetBotIdentity();
     resetWebhookCache();
+    resetTestStarts();
     globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
-      if (new URL(request.url).hostname === "api.telegram.org")
-        return this.telegram.handle(request);
+      const host = new URL(request.url).hostname;
+      if (host === "api.telegram.org") return this.telegram.handle(request);
+      if (host === "api.anthropic.com") {
+        return request.json().then((body) => {
+          this.fires.push({
+            url: request.url,
+            headers: request.headers,
+            body: body as { text: string },
+          });
+          return this.fireAnswer();
+        });
+      }
       throw new Error(`Unexpected fetch to ${request.url}`);
     }) as typeof fetch;
   }

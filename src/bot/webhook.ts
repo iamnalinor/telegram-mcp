@@ -20,6 +20,7 @@
 import { rightsOf } from "../access";
 import { nowSeconds, timingSafeEqual } from "../crypto";
 import { isAllowed } from "../env";
+import { holdsSecret } from "../secrets";
 import { TelegramError } from "../telegram/api";
 import { isTelegramIp } from "../telegram/ip";
 import {
@@ -39,6 +40,7 @@ import { BOT_ACCOUNT, type Guard } from "../store";
 import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { handleAssistantButton, handleChatShared, handleCommand, handleRevoke } from "./commands";
 import { handleMemoryUndo, handleMenu } from "./menu";
+import { handleSecret } from "./routine";
 import { parseCommand, realReply, toStored, topicName, topicOf } from "./extract";
 import { texts } from "./texts";
 
@@ -94,6 +96,15 @@ async function onMessage(
   if (message.migrate_to_chat_id) {
     await ctx.store.migrateChat(message.chat.id, message.migrate_to_chat_id);
     return null;
+  }
+
+  // A key in the private chat is never stored, edited in or not: it can start sessions on the account.
+  if (
+    message.chat.type === "private" &&
+    message.from &&
+    holdsSecret(message.text ?? message.caption)
+  ) {
+    return handleSecret(ctx, { ...message, from: message.from });
   }
 
   const guard = guardFor(ctx, message);

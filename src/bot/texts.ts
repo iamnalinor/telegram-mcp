@@ -154,7 +154,65 @@ const en = {
     ].join("\n"),
   businessOff:
     "🔗 You disconnected me from your account. Everything I stored from your personal chats is deleted.",
+  buttonRoutine: "🤖 Claude on tag",
+  routineScreen: (p: { state: "none" | "set" | "broken"; trigger?: string; since?: string }) =>
+    "<b>Claude on tag</b>\n\nA Claude Code cloud session that I start for you: it does the work and answers in Telegram. It is your routine on claude.ai and runs on your account.\n\n" +
+    (p.state === "set"
+      ? `✅ Routine <code>${escapeHtml(p.trigger ?? "")}</code>, set ${p.since}.`
+      : p.state === "broken"
+        ? "⚠️ I can no longer read the saved token: the bot's token changed. Send the routine again."
+        : "Not set up yet: follow the guide, then send me the routine's trigger and token."),
+  routineGuide:
+    "<b>Setting it up</b>\n\n" +
+    "1. Open routines on claude.ai → New routine.\n" +
+    "2. Paste the prompt from «Send the prompt». Model: Sonnet. Attach the repositories Claude may work in, if any. Keep the connectors: Telegram must be among them.\n" +
+    "3. Add trigger → API → Generate token. Copy the trigger id (trig_…) and the token.\n" +
+    "4. Send me both in one message. I delete it right away, keep the token encrypted, and start a test session that writes «ok» here.",
+  buttonOpenRoutines: "Open routines",
+  buttonSendPrompt: "📋 Send the prompt",
+  buttonSetRoutine: "🔑 Set the routine",
+  buttonGuide: "📖 Guide",
+  buttonTestRoutine: "▶️ Test start",
+  buttonDeleteRoutine: "🗑 Remove",
+  routinePromptIntro: "The routine's prompt — tap the block to copy it:",
+  promptSent: "Sent below.",
+  setRoutineAsk:
+    "Send the trigger id and the token in one message:\n<code>trig_… sk-ant-oat01-…</code>",
+  setRoutineNote: "Waiting for the trigger and the token.",
+  confirmDeleteRoutine:
+    "Remove the routine here? I will stop starting it. It stays on claude.ai — revoke its token there too.",
+  buttonConfirmRemove: "Remove",
+  routineDeleted: "Removed.",
+  routineSaved: (trigger: string, deleted: boolean) =>
+    `✅ Saved routine <code>${escapeHtml(trigger)}</code>. The token is kept only encrypted` +
+    (deleted ? ", and I deleted your message." : "."),
+  routineNotSaved: "⚠️ Could not save the routine. Send it again in a minute.",
+  deleteYourself:
+    "⚠️ I could not delete your message: delete it yourself, and if others can see this chat, generate a new token.",
+  testTooSoon:
+    "A test session was started less than a minute ago. Wait for its «ok», or try again shortly.",
+  testStarted: (url: string) =>
+    `▶️ Started a test session (<a href="${escapeHtml(url)}">open</a>). If everything is set up, it writes «ok» here within a minute or two.`,
+  fireFailed: (reason: FireFailure, retryMinutes?: number) =>
+    "⚠️ Could not start the routine: " +
+    {
+      token:
+        "its token was refused. Generate a new one in the routine's trigger and send it again.",
+      missing: "there is no such trigger. Check the trig_… id.",
+      paused: "it is paused on claude.ai.",
+      limit: `its start limit is reached. Try again in ${retryMinutes ?? 60} min.`,
+      other: "Anthropic's API did not accept the start. Try again later.",
+      none: "none is set up.",
+      broken: "I can no longer read its token. Send the routine again.",
+    }[reason],
+  secretDropped: (deleted: boolean) =>
+    (deleted
+      ? "That looked like an API key, so I deleted the message and kept nothing."
+      : "That looked like an API key, so I kept nothing.") +
+    " To set the routine, send its trig_… id and the token together, in one message.",
 };
+
+type FireFailure = "token" | "missing" | "paused" | "limit" | "other" | "none" | "broken";
 
 interface BusinessStatus {
   changed: boolean;
@@ -310,6 +368,60 @@ const ru: Texts = {
     ].join("\n"),
   businessOff:
     "🔗 Ты отключил(а) меня от своего аккаунта. Всё, что я сохранил из личных переписок, удалено.",
+  buttonRoutine: "🤖 Claude по тегу",
+  routineScreen: (p) =>
+    "<b>Claude по тегу</b>\n\nОблачная сессия Claude Code, которую я запускаю для тебя: она делает работу и отвечает в Telegram. Это твоя рутина на claude.ai, она работает от твоего аккаунта.\n\n" +
+    (p.state === "set"
+      ? `✅ Рутина <code>${escapeHtml(p.trigger ?? "")}</code>, задана ${p.since}.`
+      : p.state === "broken"
+        ? "⚠️ Я больше не могу прочитать сохранённый токен: сменился токен бота. Пришли рутину заново."
+        : "Ещё не настроено: пройди инструкцию и пришли мне триггер и токен рутины."),
+  routineGuide:
+    "<b>Настройка</b>\n\n" +
+    "1. Открой рутины на claude.ai → New routine.\n" +
+    "2. Вставь промпт из «Прислать промпт». Модель — Sonnet. Подключи репозитории, в которых Claude может работать, если нужны. Коннекторы оставь: среди них должен быть Telegram.\n" +
+    "3. Add trigger → API → Generate token. Скопируй id триггера (trig_…) и токен.\n" +
+    "4. Пришли мне оба одним сообщением. Я сразу его удалю, токен сохраню только в зашифрованном виде и запущу тестовую сессию — она напишет сюда «ok».",
+  buttonOpenRoutines: "Открыть рутины",
+  buttonSendPrompt: "📋 Прислать промпт",
+  buttonSetRoutine: "🔑 Задать рутину",
+  buttonGuide: "📖 Инструкция",
+  buttonTestRoutine: "▶️ Тестовый запуск",
+  buttonDeleteRoutine: "🗑 Удалить",
+  routinePromptIntro: "Промпт рутины — нажми на блок, чтобы скопировать:",
+  promptSent: "Прислал ниже.",
+  setRoutineAsk: "Пришли id триггера и токен одним сообщением:\n<code>trig_… sk-ant-oat01-…</code>",
+  setRoutineNote: "Жду триггер и токен.",
+  confirmDeleteRoutine:
+    "Удалить рутину отсюда? Я перестану её запускать. На claude.ai она останется — отзови там и её токен.",
+  buttonConfirmRemove: "Удалить",
+  routineDeleted: "Удалено.",
+  routineSaved: (trigger, deleted) =>
+    `✅ Рутина <code>${escapeHtml(trigger)}</code> сохранена. Токен хранится только зашифрованным` +
+    (deleted ? ", а твоё сообщение я удалил." : "."),
+  routineNotSaved: "⚠️ Не получилось сохранить рутину. Пришли её ещё раз через минуту.",
+  deleteYourself:
+    "⚠️ Не получилось удалить твоё сообщение: удали его сам, а если этот чат видят другие — сгенерируй новый токен.",
+  testTooSoon:
+    "Тестовая сессия уже запущена меньше минуты назад. Дождись её «ok» или попробуй чуть позже.",
+  testStarted: (url) =>
+    `▶️ Запустил тестовую сессию (<a href="${escapeHtml(url)}">открыть</a>). Если всё настроено, через минуту-две она напишет сюда «ok».`,
+  fireFailed: (reason, retryMinutes) =>
+    "⚠️ Не получилось запустить рутину: " +
+    {
+      token: "её токен не принят. Сгенерируй новый в триггере рутины и пришли заново.",
+      missing: "такого триггера нет. Проверь id trig_….",
+      paused: "она на паузе на claude.ai.",
+      limit: `исчерпан лимит запусков. Попробуй через ${retryMinutes ?? 60} мин.`,
+      other: "API Anthropic не принял запуск. Попробуй позже.",
+      none: "она не задана.",
+      broken: "я больше не могу прочитать её токен. Пришли рутину заново.",
+    }[reason],
+  secretDropped: (deleted) =>
+    (deleted
+      ? "Это похоже на API-ключ, так что я удалил сообщение и ничего не сохранил."
+      : "Это похоже на API-ключ, так что я ничего не сохранил.") +
+    " Чтобы задать рутину, пришли id trig_… и токен вместе, одним сообщением.",
 };
 
 export function texts(languageCode: string | null | undefined): Texts {
