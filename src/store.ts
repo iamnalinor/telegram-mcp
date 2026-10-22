@@ -123,6 +123,8 @@ export interface RelayJob {
   thread_id: number | null;
   status: "queued" | "taken" | "done" | "failed";
   error: string | null;
+  /** 1 when the sender waits for answer_session; a notice expects none. */
+  wants_answer: number;
   answer: string | null;
   answered_at: number | null;
   created_at: number;
@@ -1846,13 +1848,14 @@ export class Store {
       | "chat_id"
       | "message_id"
       | "thread_id"
+      | "wants_answer"
     >,
   ): Promise<void> {
     await this.db
       .prepare(
         `INSERT INTO relay_jobs (id, user_id, target_session, body, origin, from_session,
-           chat_id, message_id, thread_id, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
+           chat_id, message_id, thread_id, wants_answer, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
       )
       .bind(
         job.id,
@@ -1864,6 +1867,7 @@ export class Store {
         job.chat_id,
         job.message_id,
         job.thread_id,
+        job.wants_answer,
         nowSeconds(),
       )
       .run();
@@ -1917,12 +1921,12 @@ export class Store {
       .first<RelayJob>();
   }
 
-  /** The first answer stands. False when there is no such question or it was answered. */
+  /** The first answer stands. False when there is no such question, it wants none, or it was answered. */
   async answerJob(userId: number, id: string, answer: string): Promise<boolean> {
     const result = await this.db
       .prepare(
         `UPDATE relay_jobs SET answer = ?, answered_at = ?
-         WHERE id = ? AND user_id = ? AND answer IS NULL`,
+         WHERE id = ? AND user_id = ? AND answer IS NULL AND wants_answer = 1`,
       )
       .bind(redactSecrets(answer), nowSeconds(), id, userId)
       .run();

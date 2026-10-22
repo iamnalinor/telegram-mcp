@@ -266,6 +266,7 @@ const SCHEMA: string[] = [
     thread_id INTEGER,
     status TEXT NOT NULL,
     error TEXT,
+    wants_answer INTEGER NOT NULL DEFAULT 0,
     answer TEXT,
     answered_at INTEGER,
     created_at INTEGER NOT NULL,

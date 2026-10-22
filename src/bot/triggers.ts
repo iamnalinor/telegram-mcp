@@ -128,6 +128,7 @@ export async function maybeStart(
           chat_id: chat.id,
           message_id: message.message_id,
           thread_id: topic,
+          wants_answer: 0,
         },
         () =>
           replyEnvelope({

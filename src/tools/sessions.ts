@@ -90,7 +90,9 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
         "Send a message to another of the user's Claude Code cloud sessions, by its id or claude.ai/code link — " +
         "to ask how its work is going, or to hand it a request that belongs there. It arrives as a message in " +
         "that session, marked as data and with who stands behind it; that session answers with answer_session. " +
-        "Waits for the answer up to wait_seconds; if none comes, call wait_for_session later. Needs the user's " +
+        "With expect_answer (default), waits for the answer up to wait_seconds; if none comes, call " +
+        'wait_for_session later. expect_answer false sends a notice that needs no answer ("done, the PR is ' +
+        "merged\") and returns once queued. Needs the user's " +
         "relay: if it is down, the result says so — tell whoever asked. Only for the user, or for others as far " +
         "as the chat's memory Trust allows.",
       inputSchema: z.object({
@@ -103,6 +105,12 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
           .min(1)
           .max(TEXT_LIMIT)
           .describe("The message. Say who asks and what you need."),
+        expect_answer: z
+          .boolean()
+          .optional()
+          .describe(
+            "Default true: a question, answered with answer_session. false: a notice, no answer.",
+          ),
         on_behalf_of: z
           .enum(["user", "third_party"])
           .optional()
@@ -132,6 +140,7 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
         const from = sessionId(args.session);
         if (from === target) throw new ToolError("That is this session.");
         const origin = await originOf(ctx, from, args.on_behalf_of);
+        const expectAnswer = args.expect_answer ?? true;
         const ask = await enqueue(
           ctx.store,
           {
@@ -142,6 +151,7 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
             chat_id: null,
             message_id: null,
             thread_id: null,
+            wants_answer: expectAnswer ? 1 : 0,
           },
           (id) =>
             sessionEnvelope({
@@ -150,10 +160,12 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
               origin,
               fromSession: from,
               text: args.text,
+              expectAnswer,
             }),
         );
-        const seconds = args.wait_seconds ?? WAIT_MAX_SECONDS;
         const sent = `Queued for ${link(target)} as ${ask}.`;
+        if (!expectAnswer) return text(`${sent} A notice: no answer will come.`);
+        const seconds = args.wait_seconds ?? WAIT_MAX_SECONDS;
         if (seconds === 0)
           return text(`${sent} Call wait_for_session with ask "${ask}" for the answer.`);
         return text(`${sent}\n${await waitAnswer(ctx, ask, seconds)}`);
@@ -202,7 +214,7 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
       try {
         if (!(await ctx.store.answerJob(ctx.userId, args.ask, args.text))) {
           throw new ToolError(
-            `There is no open ask "${args.ask}": it was answered already, or never existed.`,
+            `There is no open ask "${args.ask}": it was answered already, it was a notice that needs no answer, or it never existed.`,
           );
         }
         return text("Answered. The asking session gets it when it waits for it.");
@@ -253,6 +265,7 @@ async function waitAnswer(ctx: ToolContext, ask: string, seconds: number): Promi
   for (;;) {
     const job = await ctx.store.getJob(ctx.userId, ask);
     if (!job) throw new ToolError(`There is no ask "${ask}".`);
+    if (!job.wants_answer) return `${ask} was a notice: no answer will come.`;
     if (job.answer !== null) {
       const fence = new Fence(ctx.user, [job.answer]);
       return (

@@ -248,3 +248,20 @@ describe("the session tools", () => {
     expect(job.text).toContain("acting for a third party");
   });
 });
+
+describe("a notice", () => {
+  it("needs no answer: the sender does not wait, and answer_session refuses it", async () => {
+    const token = await relayToken();
+    await poll(token);
+    const sent = await h.tool(alice, "message_session", {
+      to: `session_${OTHER}`,
+      text: "The PR is merged.",
+      expect_answer: false,
+    });
+    expect(sent.text).toContain("no answer will come");
+    const [job] = await jobs(token);
+    expect(job.text).toContain("no answer is expected");
+    expect(job.text).not.toContain("answer_session (ask");
+    expect((await h.tool(alice, "answer_session", { ask: job.id, text: "ok" })).isError).toBe(true);
+  });
+});
