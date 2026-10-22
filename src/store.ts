@@ -98,9 +98,57 @@ export interface FireEntry {
   album: string | null;
 }
 
+export interface RelayRow {
+  user_id: number;
+  token_hash: string;
+  created_at: number;
+  last_seen: number | null;
+  login_failed_at: number | null;
+  offline_noticed_at: number | null;
+}
+
+/** Who stands behind a message to a session, by the bot's records. */
+export type RelayOrigin = "user" | "other" | "unknown";
+
+export interface RelayJob {
+  id: string;
+  user_id: number;
+  target_session: string;
+  body: string;
+  origin: RelayOrigin;
+  from_session: string | null;
+  /** For a Telegram reply passed on: where it was, so a failure can start a session instead. */
+  chat_id: number | null;
+  message_id: number | null;
+  thread_id: number | null;
+  status: "queued" | "taken" | "done" | "failed";
+  error: string | null;
+  /** 1 when the sender waits for answer_session; a notice expects none. */
+  wants_answer: number;
+  answer: string | null;
+  answered_at: number | null;
+  created_at: number;
+  taken_at: number | null;
+}
+
+/** A session the bot knows of: started by a tag, wrote through the bot, or was written to. */
+export interface KnownSession {
+  session_id: string;
+  started?: {
+    chat_id: number;
+    at: number;
+    from_name: string | null;
+    excerpt: string | null;
+    by_other: boolean;
+  };
+  wrote?: { chat_id: number; at: number; text: string };
+  asked_at?: number;
+}
+
 export interface FireRow {
   message_id: number;
-  status: "pending" | "started" | "failed";
+  /** relayed: passed on to the session it replies to, instead of a new one. */
+  status: "pending" | "started" | "relayed" | "failed";
   session_id: string | null;
   at: number;
   from_name: string | null;
@@ -1593,10 +1641,10 @@ export class Store {
       .prepare(
         `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at, from_name, excerpt, album)
          SELECT ?1, ?2, ?3, ?4, 'pending', ?5, ?9, ?10, ?11
-         WHERE (SELECT COUNT(*) FROM fires WHERE user_id = ?3 AND at >= ?6 AND status IN ('pending', 'started')) < ?7
+         WHERE (SELECT COUNT(*) FROM fires WHERE user_id = ?3 AND at >= ?6 AND status IN ('pending', 'started', 'relayed')) < ?7
            AND (?4 = 0 OR (SELECT COUNT(*) FROM fires
                 WHERE user_id = ?3 AND at >= ?6 AND chat_id = ?1 AND by_other = 1
-                  AND status IN ('pending', 'started')) < ?8)
+                  AND status IN ('pending', 'started', 'relayed')) < ?8)
            AND (?11 IS NULL OR NOT EXISTS (SELECT 1 FROM fires WHERE chat_id = ?1 AND album = ?11))
          ON CONFLICT (chat_id, message_id) DO NOTHING`,
       )
@@ -1625,7 +1673,7 @@ export class Store {
   async endFire(
     chatId: number,
     messageId: number,
-    outcome: { status: "started"; sessionId: string } | { status: "failed" },
+    outcome: { status: "started" | "relayed"; sessionId: string } | { status: "failed" },
   ): Promise<void> {
     await this.db
       .prepare("UPDATE fires SET status = ?, session_id = ? WHERE chat_id = ? AND message_id = ?")
@@ -1720,6 +1768,253 @@ export class Store {
       .prepare("SELECT DISTINCT user_id FROM memory_docs")
       .all<{ user_id: number }>();
     return results.map((row) => row.user_id);
+  }
+
+  // --- relay ---------------------------------------------------------------
+
+  async getRelay(userId: number): Promise<RelayRow | null> {
+    return this.db.prepare("SELECT * FROM relays WHERE user_id = ?").bind(userId).first<RelayRow>();
+  }
+
+  async relayByToken(tokenHash: string): Promise<RelayRow | null> {
+    return this.db
+      .prepare("SELECT * FROM relays WHERE token_hash = ?")
+      .bind(tokenHash)
+      .first<RelayRow>();
+  }
+
+  /** A new token: the old one stops working at once. */
+  async setRelay(userId: number, tokenHash: string): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO relays (user_id, token_hash, created_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT (user_id) DO UPDATE SET token_hash = excluded.token_hash,
+           created_at = excluded.created_at, last_seen = NULL, login_failed_at = NULL,
+           offline_noticed_at = NULL`,
+      )
+      .bind(userId, tokenHash, nowSeconds())
+      .run();
+  }
+
+  /** Removes the relay; the jobs it had not done fail and are returned. */
+  async deleteRelay(userId: number): Promise<RelayJob[]> {
+    const [, failed] = await this.db.batch([
+      this.db.prepare("DELETE FROM relays WHERE user_id = ?").bind(userId),
+      this.db
+        .prepare(
+          `UPDATE relay_jobs SET status = 'failed', error = 'the relay was turned off'
+           WHERE user_id = ? AND status IN ('queued', 'taken') RETURNING *`,
+        )
+        .bind(userId),
+    ]);
+    return failed.results as RelayJob[];
+  }
+
+  /** The relay asked for work: it is alive. Written at most every 30 s. */
+  async touchRelay(userId: number, now: number): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE relays SET last_seen = ?1, offline_noticed_at = NULL
+         WHERE user_id = ?2 AND (last_seen IS NULL OR last_seen < ?1 - 30)`,
+      )
+      .bind(now, userId)
+      .run();
+  }
+
+  async setRelayLogin(userId: number, failedAt: number | null): Promise<void> {
+    await this.db
+      .prepare("UPDATE relays SET login_failed_at = ? WHERE user_id = ?")
+      .bind(failedAt, userId)
+      .run();
+  }
+
+  /** True when this call marked the relay as gone quiet: the user hears once per outage. */
+  async noteRelayOffline(userId: number, now: number): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        "UPDATE relays SET offline_noticed_at = ? WHERE user_id = ? AND offline_noticed_at IS NULL",
+      )
+      .bind(now, userId)
+      .run();
+    return (result.meta.changes ?? 0) > 0;
+  }
+
+  async enqueueJob(
+    job: Pick<
+      RelayJob,
+      | "id"
+      | "user_id"
+      | "target_session"
+      | "body"
+      | "origin"
+      | "from_session"
+      | "chat_id"
+      | "message_id"
+      | "thread_id"
+      | "wants_answer"
+    >,
+  ): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO relay_jobs (id, user_id, target_session, body, origin, from_session,
+           chat_id, message_id, thread_id, wants_answer, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
+      )
+      .bind(
+        job.id,
+        job.user_id,
+        job.target_session,
+        job.body,
+        job.origin,
+        job.from_session,
+        job.chat_id,
+        job.message_id,
+        job.thread_id,
+        job.wants_answer,
+        nowSeconds(),
+      )
+      .run();
+  }
+
+  /** Hand the oldest queued jobs to the relay, each once. */
+  async takeJobs(userId: number, limit: number): Promise<RelayJob[]> {
+    const { results } = await this.db
+      .prepare(
+        `UPDATE relay_jobs SET status = 'taken', taken_at = ?1
+         WHERE id IN (SELECT id FROM relay_jobs WHERE user_id = ?2 AND status = 'queued'
+                      ORDER BY created_at LIMIT ?3)
+         RETURNING *`,
+      )
+      .bind(nowSeconds(), userId, limit)
+      .all<RelayJob>();
+    return results.sort((a, b) => a.created_at - b.created_at);
+  }
+
+  /** The relay's report on a job it took; null when it was not that relay's or not taken. */
+  async finishJob(
+    userId: number,
+    id: string,
+    outcome: { ok: boolean; error: string | null },
+  ): Promise<RelayJob | null> {
+    return this.db
+      .prepare(
+        `UPDATE relay_jobs SET status = ?, error = ?
+         WHERE id = ? AND user_id = ? AND status = 'taken' RETURNING *`,
+      )
+      .bind(outcome.ok ? "done" : "failed", outcome.ok ? null : outcome.error, id, userId)
+      .first<RelayJob>();
+  }
+
+  /**
+   * Jobs gone stale fail now: queued ones nobody took since `queuedBefore`
+   * (the relay is gone), and taken ones never reported since `takenBefore`
+   * (it restarted or lost the report).
+   */
+  async expireJobs(queuedBefore: number, takenBefore: number): Promise<RelayJob[]> {
+    const { results } = await this.db
+      .prepare(
+        `UPDATE relay_jobs SET status = 'failed', error = CASE status
+           WHEN 'queued' THEN 'the relay did not pick it up' ELSE 'the relay did not report back' END
+         WHERE (status = 'queued' AND created_at < ?) OR (status = 'taken' AND taken_at < ?)
+         RETURNING *`,
+      )
+      .bind(queuedBefore, takenBefore)
+      .all<RelayJob>();
+    return results;
+  }
+
+  async getJob(userId: number, id: string): Promise<RelayJob | null> {
+    return this.db
+      .prepare("SELECT * FROM relay_jobs WHERE id = ? AND user_id = ?")
+      .bind(id, userId)
+      .first<RelayJob>();
+  }
+
+  /** The first answer stands. False when there is no such question, it wants none, or it was answered. */
+  async answerJob(userId: number, id: string, answer: string): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE relay_jobs SET answer = ?, answered_at = ?
+         WHERE id = ? AND user_id = ? AND answer IS NULL AND wants_answer = 1`,
+      )
+      .bind(redactSecrets(answer), nowSeconds(), id, userId)
+      .run();
+    return (result.meta.changes ?? 0) > 0;
+  }
+
+  /** Whether the user's routine started this session, and for whom. Null: not by a tag. */
+  async sessionStart(userId: number, sessionId: string): Promise<{ by_other: boolean } | null> {
+    const row = await this.db
+      .prepare(
+        "SELECT by_other FROM fires WHERE user_id = ? AND session_id = ? AND status = 'started' LIMIT 1",
+      )
+      .bind(userId, sessionId)
+      .first<{ by_other: number }>();
+    return row ? { by_other: row.by_other === 1 } : null;
+  }
+
+  /** Whether anyone but the user has had messages relayed into this session. */
+  async sessionHeardOthers(userId: number, sessionId: string): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        "SELECT 1 FROM relay_jobs WHERE user_id = ? AND target_session = ? AND origin != 'user' LIMIT 1",
+      )
+      .bind(userId, sessionId)
+      .first();
+    return row !== null;
+  }
+
+  /** Sessions the bot knows of for this user, most recently heard of first. */
+  async knownSessions(userId: number, limit: number): Promise<KnownSession[]> {
+    const [started, wrote, asked] = await this.db.batch([
+      this.db
+        .prepare(
+          `SELECT session_id, chat_id, at, from_name, excerpt, by_other FROM fires
+           WHERE user_id = ? AND status = 'started' AND session_id IS NOT NULL
+           ORDER BY at DESC LIMIT 200`,
+        )
+        .bind(userId),
+      this.db
+        .prepare(
+          `SELECT session_id, chat_id, MAX(date) AS at, text FROM messages
+           WHERE account_id = ? AND sent_by = ? AND session_id IS NOT NULL
+           GROUP BY session_id ORDER BY at DESC LIMIT 200`,
+        )
+        .bind(BOT_ACCOUNT, userId),
+      this.db
+        .prepare(
+          `SELECT target_session AS session_id, MAX(created_at) AS at FROM relay_jobs
+           WHERE user_id = ? GROUP BY target_session ORDER BY at DESC LIMIT 200`,
+        )
+        .bind(userId),
+    ]);
+    const known = new Map<string, KnownSession>();
+    const entry = (id: string) => known.get(id) ?? known.set(id, { session_id: id }).get(id)!;
+    for (const row of started.results as {
+      session_id: string;
+      chat_id: number;
+      at: number;
+      from_name: string | null;
+      excerpt: string | null;
+      by_other: number;
+    }[]) {
+      const session = entry(row.session_id);
+      session.started ??= { ...row, by_other: row.by_other === 1 };
+    }
+    for (const row of wrote.results as {
+      session_id: string;
+      chat_id: number;
+      at: number;
+      text: string;
+    }[]) {
+      entry(row.session_id).wrote = { chat_id: row.chat_id, at: row.at, text: row.text };
+    }
+    for (const row of asked.results as { session_id: string; at: number }[]) {
+      entry(row.session_id).asked_at = row.at;
+    }
+    const last = (s: KnownSession) =>
+      Math.max(s.started?.at ?? 0, s.wrote?.at ?? 0, s.asked_at ?? 0);
+    return [...known.values()].sort((a, b) => last(b) - last(a)).slice(0, limit);
   }
 
   // --- refresh sessions ----------------------------------------------------
@@ -1840,6 +2135,7 @@ export class Store {
       this.db.prepare("DELETE FROM refresh_sessions WHERE expires_at < ?").bind(nowSeconds() - DAY),
       this.db.prepare("DELETE FROM day_marks WHERE day < ?").bind(Math.floor(cutoff / DAY)),
       this.db.prepare("DELETE FROM fires WHERE at < ?").bind(cutoff),
+      this.db.prepare("DELETE FROM relay_jobs WHERE created_at < ?").bind(cutoff),
       // People nobody has heard from within retention.
       this.db.prepare(
         `DELETE FROM personal_chats WHERE NOT EXISTS (

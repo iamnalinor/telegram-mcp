@@ -16,6 +16,7 @@ import { registerMemoryTools } from "./tools/memory";
 import { registerPersonalTools } from "./tools/personal";
 import { registerReadTools } from "./tools/read";
 import { registerSendTools } from "./tools/send";
+import { registerSessionTools } from "./tools/sessions";
 
 export function createServer(ctx: ToolContext): McpServer {
   const server = new McpServer(
@@ -33,5 +34,6 @@ export function createServer(ctx: ToolContext): McpServer {
   registerPersonalTools(server, ctx);
   registerReadTools(server, ctx);
   registerMemoryTools(server, ctx);
+  registerSessionTools(server, ctx);
   return server;
 }

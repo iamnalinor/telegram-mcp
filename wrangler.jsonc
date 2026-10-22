@@ -31,8 +31,9 @@
   ],
 
   // Daily: delete messages past retention, and re-register the webhook if it drifted.
+  // Every 5 minutes: fail relay jobs nobody picked up (src/relay.ts).
   "triggers": {
-    "crons": ["17 3 * * *"],
+    "crons": ["17 3 * * *", "*/5 * * * *"],
   },
 
   // Branch builds on Cloudflare run `wrangler preview`, which inherits no

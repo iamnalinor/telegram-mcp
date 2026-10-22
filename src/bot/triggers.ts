@@ -16,6 +16,8 @@
 
 import { nowSeconds } from "../crypto";
 import { isAllowed } from "../env";
+import { messageLink } from "../links";
+import { enqueue, relayState, replyEnvelope } from "../relay";
 import { fire, firePayload, loadRoutine } from "../routine";
 import { redactSecrets } from "../secrets";
 import { BOT_ACCOUNT } from "../store";
@@ -84,24 +86,6 @@ export async function maybeStart(
     return;
   if (chat.type === "private" && (await ctx.store.awaitedIn(chat.id, now - AWAIT_GRACE))) return;
 
-  const owner = (await ctx.store.getUser(holder)) ?? null;
-  const ot = texts(owner?.language ?? from.language_code);
-  const tell = (text: string, replyTo?: number) =>
-    ctx.api
-      .call("sendMessage", {
-        chat_id: holder,
-        text,
-        ...silent,
-        ...(replyTo
-          ? { reply_parameters: { message_id: replyTo, allow_sending_without_reply: true } }
-          : {}),
-      })
-      .catch(() => undefined);
-  const where = chat.type === "private" ? "" : `${ot.inChat(chat.title ?? String(chat.id))} `;
-
-  // Others' failures reach the holder once an hour per chat: a broken routine
-  // must not turn every member's message into a notice.
-  const quiet = byOther && (await ctx.store.othersFailedSince(holder, chat.id, now - 3600));
   const entry = {
     chatId: chat.id,
     messageId: message.message_id,
@@ -120,15 +104,111 @@ export async function maybeStart(
     // Not silence: the sender sees the bot is resting, and the holder hears once an hour.
     await react(ctx, chat.id, message.message_id, "😴");
     if (await ctx.store.noteLimited(entry)) {
+      const { tell, where, t: ot } = await holderVoice(ctx, holder, chat.id, chat.title ?? null);
       await tell(where + (byOther ? ot.othersLimited(claim.others_limit) : ot.tooManyStarts));
     }
     return;
   }
 
-  const routine = await loadRoutine(ctx.store, ctx.config.secretKey, holder);
+  const topic = message.is_topic_message ? (message.message_thread_id ?? null) : null;
+  const continues = replyToHolder ? answered.session_id : null;
+  let relay: "login" | "offline" | null = null;
+  if (continues) {
+    // A reply to a session goes to that session, when the relay can take it there.
+    const state = relayState(await ctx.store.getRelay(holder));
+    if (state === "online") {
+      const owner = await ctx.store.getUser(holder);
+      await enqueue(
+        ctx.store,
+        {
+          user_id: holder,
+          target_session: continues,
+          origin: byOther ? "other" : "user",
+          from_session: null,
+          chat_id: chat.id,
+          message_id: message.message_id,
+          thread_id: topic,
+          wants_answer: 0,
+        },
+        () =>
+          replyEnvelope({
+            user: {
+              id: holder,
+              username: owner?.username ?? null,
+              name: owner?.first_name ?? null,
+            },
+            chat: { id: chat.id, title: chat.title ?? null },
+            messageId: message.message_id,
+            link: messageLink(
+              { type: chat.type, chat_id: chat.id, username: chat.username ?? null },
+              message.message_id,
+              topic,
+              ctx.bot.username,
+            ),
+            sender: asChat
+              ? { id: null, name: asChat.title ?? null }
+              : { id: from.id, name: displayName(from) },
+            byUser: !byOther,
+          }),
+      );
+      await ctx.store.endFire(chat.id, message.message_id, {
+        status: "relayed",
+        sessionId: continues,
+      });
+      await react(ctx, chat.id, message.message_id, "👀");
+      return;
+    }
+    if (state === "login" || state === "offline") relay = state;
+  }
+
+  await launch(ctx, {
+    holder,
+    chat: { id: chat.id, title: chat.title ?? null, private: chat.type === "private" },
+    messageId: message.message_id,
+    topic,
+    byOther,
+    continues,
+    relay,
+  });
+}
+
+/** Messages to the holder's private chat, in their language, naming the chat when it is a group. */
+async function holderVoice(ctx: BotContext, holder: number, chatId: number, title: string | null) {
+  const owner = await ctx.store.getUser(holder);
+  const t = texts(owner?.language);
+  const tell = (text: string) =>
+    ctx.api.call("sendMessage", { chat_id: holder, text, ...silent }).catch(() => undefined);
+  const where = chatId > 0 ? "" : `${t.inChat(title ?? String(chatId))} `;
+  return { t, tell, where };
+}
+
+/**
+ * Start the holder's routine on a message already claimed in `fires`: the
+ * usual way, and the fallback when the relay could not pass a reply on.
+ * `relay` tells the session why the reply did not reach the session it answers.
+ */
+export async function launch(
+  ctx: BotContext,
+  p: {
+    holder: number;
+    chat: { id: number; title: string | null; private: boolean };
+    messageId: number;
+    topic: number | null;
+    byOther: boolean;
+    continues: string | null;
+    relay?: "login" | "offline" | "failed" | null;
+  },
+): Promise<void> {
+  const { tell, where, t } = await holderVoice(ctx, p.holder, p.chat.id, p.chat.title);
+  // Others' failures reach the holder once an hour per chat: a broken routine
+  // must not turn every member's message into a notice.
+  const quiet =
+    p.byOther && (await ctx.store.othersFailedSince(p.holder, p.chat.id, nowSeconds() - 3600));
+
+  const routine = await loadRoutine(ctx.store, ctx.config.secretKey, p.holder);
   if (typeof routine === "string") {
-    await ctx.store.endFire(chat.id, message.message_id, { status: "failed" });
-    if (!quiet) await tell(where + ot.fireFailed(routine));
+    await ctx.store.endFire(p.chat.id, p.messageId, { status: "failed" });
+    if (!quiet) await tell(where + t.fireFailed(routine));
     return;
   }
 
@@ -136,28 +216,29 @@ export async function maybeStart(
     routine.triggerId,
     routine.token,
     firePayload({
-      chat: chat.id,
-      topic: message.is_topic_message ? (message.message_thread_id ?? null) : null,
-      message: message.message_id,
-      by: byOther ? "other" : "user",
-      continues: replyToHolder ? answered.session_id : null,
+      chat: p.chat.id,
+      topic: p.topic,
+      message: p.messageId,
+      by: p.byOther ? "other" : "user",
+      continues: p.continues,
+      relay: p.relay ?? null,
     }),
   );
   if (!result.ok) {
-    await ctx.store.endFire(chat.id, message.message_id, { status: "failed" });
+    await ctx.store.endFire(p.chat.id, p.messageId, { status: "failed" });
     console.error(
-      JSON.stringify({ event: "routine_fire_failed", user: holder, detail: result.detail }),
+      JSON.stringify({ event: "routine_fire_failed", user: p.holder, detail: result.detail }),
     );
     const minutes = result.retryAfter ? Math.ceil(result.retryAfter / 60) : undefined;
-    if (!quiet) await tell(where + ot.fireFailed(result.reason, minutes));
+    if (!quiet) await tell(where + t.fireFailed(result.reason, minutes));
     return;
   }
-  await ctx.store.endFire(chat.id, message.message_id, {
+  await ctx.store.endFire(p.chat.id, p.messageId, {
     status: "started",
     sessionId: result.sessionId,
   });
   // No notice: 👀 says it started, and the chat's log in the menu has the session.
-  await react(ctx, chat.id, message.message_id, "👀");
+  await react(ctx, p.chat.id, p.messageId, "👀");
 }
 
 /** The first words, without the mention that called the bot. */

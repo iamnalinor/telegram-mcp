@@ -23,6 +23,8 @@
  *   m:cltest      starts the routine once, as a check
  *   m:cldel       remove the routine: asks first; m:cldely does it
  *   m:cldm        Claude in the private chat: on or off
+ *   m:rl          the relay that carries messages to sessions; m:rlnew sends a new
+ *                 install command (new token), m:rloff turns it off
  *   m:gc:<id>     Claude in that group: on (taking it over from a holder who left) or off
  *   m:go:<id>     other members too: asks first; m:goy:<id> turns it on
  *   m:gl:<id>     their hourly limit: steps through 5, 10, 20, 50
@@ -34,6 +36,7 @@
 import { nowSeconds } from "../crypto";
 import { formatTime } from "../format";
 import { isAllowed } from "../env";
+import { fallBack, relayState, relayToken, tokenHash } from "../relay";
 import { routinePrompt, tokenOf } from "../routine";
 import { memoryTitle } from "../tools/memory";
 import { TelegramError } from "../telegram/api";
@@ -247,8 +250,29 @@ async function routineScreen(ctx: BotContext, user: User): Promise<Screen> {
         ...(state === "set"
           ? [[button(t.claudeHere(here), "cldm"), button(t.buttonTestRoutine, "cltest")]]
           : []),
+        ...(state === "set"
+          ? [[button(t.buttonRelay(relayState(await ctx.store.getRelay(user.id))), "rl")]]
+          : []),
         ...(row ? [[button(t.buttonDeleteRoutine, "cldel")]] : []),
         [button(t.buttonBack, "main")],
+      ],
+    },
+  };
+}
+
+async function relayScreen(ctx: BotContext, user: User): Promise<Screen> {
+  const t = texts(user.language_code);
+  const row = await ctx.store.getRelay(user.id);
+  return {
+    text: t.relayScreen({
+      state: relayState(row),
+      seen: row?.last_seen ? formatDate(row.last_seen) : null,
+    }),
+    reply_markup: {
+      inline_keyboard: [
+        [button(t.buttonRelayInstall, "rlnew")],
+        ...(row ? [[button(t.buttonRelayOff, "rloff")]] : []),
+        [button(t.buttonBack, "cl")],
       ],
     },
   };
@@ -314,7 +338,7 @@ async function groupScreen(
 }
 
 const STARTS_SHOWN = 15;
-const STARTS_MARK = { pending: "⏳", started: "▶️", failed: "⚠️" } as const;
+const STARTS_MARK = { pending: "⏳", started: "▶️", relayed: "↪️", failed: "⚠️" } as const;
 
 /** The holder's latest starts in a group: who, when, the first words, the session. */
 async function startsScreen(
@@ -479,6 +503,22 @@ async function render(
     if (claim) await ctx.store.releaseClaudeChat(user.id, user.id);
     else if (await ctx.store.getRoutine(user.id)) await ctx.store.claimClaudeChat(user.id, user.id);
     return routineScreen(ctx, user);
+  }
+  if (name === "rl") return relayScreen(ctx, user);
+  if (name === "rlnew") {
+    const token = relayToken();
+    await ctx.store.setRelay(user.id, await tokenHash(token));
+    await ctx.api.call("sendMessage", {
+      chat_id: user.id,
+      text: t.relayInstall(`curl -fsSL ${ctx.origin}/relay/install.sh | RELAY_TOKEN=${token} bash`),
+      parse_mode: "HTML",
+    });
+    return relayScreen(ctx, user);
+  }
+  if (name === "rloff") {
+    // Replies it had not passed on yet start sessions instead of getting lost.
+    for (const job of await ctx.store.deleteRelay(user.id)) await fallBack(ctx, job, "failed");
+    return { ...(await relayScreen(ctx, user)), note: t.relayOff };
   }
   if (name === "cltest") {
     await testRoutine(ctx, user, 0);

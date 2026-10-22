@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -240,6 +240,40 @@ const SCHEMA: string[] = [
     PRIMARY KEY (chat_id, message_id)
   ) WITHOUT ROWID`,
   `CREATE INDEX IF NOT EXISTS fires_by_user ON fires (user_id, at)`,
+
+  // The user's relay: a machine signed in to Claude Code that passes messages
+  // into cloud sessions (`claude -p --cloud`). Only a hash of its token is kept.
+  `CREATE TABLE IF NOT EXISTS relays (
+    user_id INTEGER PRIMARY KEY,
+    token_hash TEXT NOT NULL UNIQUE,
+    created_at INTEGER NOT NULL,
+    last_seen INTEGER,
+    login_failed_at INTEGER,
+    offline_noticed_at INTEGER
+  )`,
+
+  // Messages for the relay to pass on, and answers to them. `origin` is who
+  // stands behind the message by the bot's own records, never by the sender's word.
+  `CREATE TABLE IF NOT EXISTS relay_jobs (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    target_session TEXT NOT NULL,
+    body TEXT NOT NULL,
+    origin TEXT NOT NULL,
+    from_session TEXT,
+    chat_id INTEGER,
+    message_id INTEGER,
+    thread_id INTEGER,
+    status TEXT NOT NULL,
+    error TEXT,
+    wants_answer INTEGER NOT NULL DEFAULT 0,
+    answer TEXT,
+    answered_at INTEGER,
+    created_at INTEGER NOT NULL,
+    taken_at INTEGER
+  ) WITHOUT ROWID`,
+  `CREATE INDEX IF NOT EXISTS relay_jobs_by_user ON relay_jobs (user_id, status, created_at)`,
+  `CREATE INDEX IF NOT EXISTS relay_jobs_by_status ON relay_jobs (status, created_at)`,
 
   // A user's Telegram Business connection: the bot reads their private chats,
   // and acts in them only as far as `rights` (set by the user in Telegram) allow.

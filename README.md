@@ -223,6 +223,10 @@ allowlist.
 | `get_message`         | One message in full, with its reply chain, button presses and reactions    |
 | `get_file`            | Download link for an attachment, and the content when small                |
 | `memory`              | Read and edit what your assistants keep about each chat (see Memory)       |
+| `list_sessions`       | Claude Code sessions the bot knows of, and whether the relay is up         |
+| `message_session`     | Ask another session something, or hand it a request (needs the relay)      |
+| `wait_for_session`    | Keep waiting for that session's answer                                     |
+| `answer_session`      | Answer a session that asked you                                            |
 
 Every send returns a `t.me` link Claude can hand you. Buttons are recorded when pressed;
 reactions on the bot's messages are recorded too (in groups, that needs the bot to be an admin).
@@ -280,6 +284,46 @@ reply that a waiting `ask_user` will pick up. Each message starts one session at
 Telegram retries it. The bot reacts 👀 to the message; sessions answer by replying to it rather than
 tagging anyone. Failures go to your private chat, never to the group. Each start is a billed session that counts toward the
 routine's own limits.
+
+### Talking to other sessions
+
+Sessions cannot write to one another by themselves: only a full Claude Code sign-in can put a
+message into a cloud session. A **relay** can — any always-on Linux machine of yours (an Oracle free
+VM will do) signed in to Claude Code. The bot queues messages; the relay asks for them every 10
+seconds — about 8,600 Worker requests a day, under a tenth of the free plan — and passes each one on
+with `claude -p --cloud <session>`. It needs no open port or domain.
+
+Set it up in the menu: 🤖 Claude → 🛰 Relay → 📋 Install command, and run what it sends on the
+machine:
+
+```sh
+curl -fsSL https://<your worker>/relay/install.sh | RELAY_TOKEN=relay_… bash
+```
+
+It installs curl, jq and Claude Code if missing and runs the relay as a systemd service. Then sign
+Claude Code in there once (`claude`, then `/login`) and `sudo systemctl restart tg-relay`.
+
+With the relay:
+
+- A reply to a session's message goes into **that** session instead of starting a new one.
+- `list_sessions` shows the sessions the bot knows of (started by a tag, wrote through the bot, or
+  were messaged). `message_session` asks one of them something — "how is the migration going?" —
+  or hands it a request, by id or link; the session answers with `answer_session`. A session the
+  bot does not know of is reached by its link.
+- A session started by a tag first looks for a session already on the request, and asks it or
+  hands the request over instead of doing the work twice.
+
+Everything passed on arrives marked as data, with who stands behind it by the bot's own records:
+you, a third party, or unknown (a session the bot did not start). A session started by someone
+else's tag, or one their replies were passed into, counts as theirs. The receiving session acts for
+you; for anyone else it gives a short status answer, and more only where the chat's memory Trust
+allows that person. The label rests on the session id the sender gives: every assistant of yours
+signs in the same way, so a session talked round can name another's id. It narrows what a message
+can claim; it is not proof — keep "Others too" where you trust people.
+
+Without a relay, or while it is down, everything works as before: a reply starts a new session that
+carries on, and the session tools say why another session cannot be reached. If the relay's Claude
+sign-in expires or it goes quiet, you hear once, and the session that answers instead says so too.
 
 ## Limits
 

@@ -4,6 +4,8 @@
  * interpolated value goes through `escapeHtml`.
  */
 
+import type { RelayState } from "../relay";
+
 export function escapeHtml(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
@@ -216,6 +218,32 @@ const en = {
   startsEmpty: (title: string) => `<b>${escapeHtml(title)}</b>: no starts yet.`,
   startsSession: "session",
   startsLimited: (n: number) => `😴 ${n} more held back by the limit in the last 24 hours.`,
+  buttonRelay: (state: RelayState) =>
+    `🛰 Relay: ${{ none: "off", online: "online ✅", offline: "offline ⚠️", login: "sign-in needed ⚠️" }[state]}`,
+  relayScreen: (p: { state: RelayState; seen: string | null }) =>
+    "🛰 <b>Relay</b>\n\nSessions cannot write to one another by themselves. A relay can: a machine of yours " +
+    "signed in to Claude Code that I hand messages to. With it, a reply to a session's message goes to that " +
+    "session instead of starting a new one, and sessions can ask each other how things are going. Without it " +
+    "everything works as before.\n\n" +
+    {
+      none: "Not set up. Any always-on Linux machine will do (an Oracle free VM, for one): get the install command and run it there.",
+      online: "✅ Online.",
+      offline: `⚠️ Offline${p.seen ? ` since ${p.seen}` : " — it has not called in yet"}. Check the machine: <code>systemctl status tg-relay</code>.`,
+      login:
+        "⚠️ Its Claude sign-in expired. On the machine: <code>claude</code>, then /login, then <code>sudo systemctl restart tg-relay</code>.",
+    }[p.state],
+  buttonRelayInstall: "📋 Install command",
+  buttonRelayOff: "Turn off",
+  relayInstall: (command: string) =>
+    "Run this on the machine (Linux with systemd; it asks for sudo). It installs Claude Code if needed and " +
+    `starts the relay as a service:\n<pre>${escapeHtml(command)}</pre>\nThen sign Claude Code in there once: ` +
+    "<code>claude</code>, then /login, then <code>sudo systemctl restart tg-relay</code>. This command holds the " +
+    "relay's token — getting a new one turns the old one off.",
+  relayOff: "Relay turned off.",
+  relayLoginLost:
+    "⚠️ The relay's Claude sign-in expired, so replies to sessions start new sessions instead. On the machine: <code>claude</code>, then /login, then <code>sudo systemctl restart tg-relay</code>.",
+  relayWentOffline:
+    "⚠️ The relay has gone quiet: messages to sessions are not getting through, and replies start new sessions instead. Check the machine: <code>systemctl status tg-relay</code>.",
   claudeHere: (on: boolean): string => (on ? "💬 Here: on ✅" : "💬 Here: off"),
   claudeHereHint:
     "Here: /run &lt;task&gt;, a mention, or a reply to a message your assistant sent. In groups, turn it on in 👥 Groups.",
@@ -464,6 +492,32 @@ const ru: Texts = {
   startsEmpty: (title) => `<b>${escapeHtml(title)}</b>: запусков пока не было.`,
   startsSession: "сессия",
   startsLimited: (n) => `😴 Ещё ${n} — придержаны лимитом за последние 24 часа.`,
+  buttonRelay: (state) =>
+    `🛰 Ретранслятор: ${{ none: "выкл", online: "онлайн ✅", offline: "офлайн ⚠️", login: "нужен вход ⚠️" }[state]}`,
+  relayScreen: (p) =>
+    "🛰 <b>Ретранслятор</b>\n\nСессии не умеют сами писать друг другу. Ретранслятор умеет: это твоя машина " +
+    "с залогиненным Claude Code, которой я передаю сообщения. С ним реплай на сообщение сессии уходит в эту " +
+    "сессию, а не запускает новую, и сессии могут спрашивать друг у друга, как дела. Без него всё работает " +
+    "как раньше.\n\n" +
+    {
+      none: "Не настроен. Подойдёт любая всегда включённая машина с Linux (например, бесплатная ВМ Oracle): получи команду установки и выполни её там.",
+      online: "✅ Онлайн.",
+      offline: `⚠️ Офлайн${p.seen ? ` с ${p.seen}` : " — ещё ни разу не выходил на связь"}. Проверь машину: <code>systemctl status tg-relay</code>.`,
+      login:
+        "⚠️ Слетел вход в Claude. На машине: <code>claude</code>, затем /login, затем <code>sudo systemctl restart tg-relay</code>.",
+    }[p.state],
+  buttonRelayInstall: "📋 Команда установки",
+  buttonRelayOff: "Отключить",
+  relayInstall: (command) =>
+    "Выполни на машине (Linux с systemd; попросит sudo). Команда при необходимости поставит Claude Code и " +
+    `запустит ретранслятор как сервис:\n<pre>${escapeHtml(command)}</pre>\nПотом один раз войди там в Claude Code: ` +
+    "<code>claude</code>, затем /login, затем <code>sudo systemctl restart tg-relay</code>. В команде токен " +
+    "ретранслятора — новая команда отключает старый.",
+  relayOff: "Ретранслятор отключён.",
+  relayLoginLost:
+    "⚠️ У ретранслятора слетел вход в Claude, поэтому реплаи сессиям запускают новые сессии. На машине: <code>claude</code>, затем /login, затем <code>sudo systemctl restart tg-relay</code>.",
+  relayWentOffline:
+    "⚠️ Ретранслятор замолчал: сообщения сессиям не доходят, реплаи запускают новые сессии. Проверь машину: <code>systemctl status tg-relay</code>.",
   claudeHere: (on) => (on ? "💬 Здесь: вкл ✅" : "💬 Здесь: выкл"),
   claudeHereHint:
     "Здесь: /run &lt;задача&gt;, упоминание или реплай на сообщение ассистента. В группах включается в 👥 Группы.",
