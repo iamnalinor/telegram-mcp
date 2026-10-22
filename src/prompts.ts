@@ -35,6 +35,7 @@ When to use it
 - Post to a group only when the user names it. Group posts are seen by every member. When a group message is for the user, ${tag} — or the person responsible for the task — so it is not missed.
 - Do not narrate progress unless asked: one message at the end beats ten. For a long task, one message you edit_message as it goes is fine.
 - After sending, give the user the t.me link from the result so they can jump straight there.
+- As a Claude Code cloud session, pass your session id (CLAUDE_CODE_REMOTE_SESSION_ID) as \`session\` when you send.
 
 Decisions while the user is away
 - ask_user sends a question with answer buttons and waits for the press (or a typed reply). If it returns no answer yet, call wait_for_reply again, or continue with work that does not depend on the answer — never assume an answer.

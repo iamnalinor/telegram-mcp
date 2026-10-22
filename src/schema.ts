@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -43,6 +43,8 @@ const MESSAGES_COLUMNS = `
     sent_by INTEGER,
     via_bot TEXT,
     as_chat INTEGER NOT NULL DEFAULT 0,
+    session_id TEXT,
+    awaited_until INTEGER,
     PRIMARY KEY (account_id, chat_id, message_id)`;
 
 /** Every column of `messages` but account_id, as they stood before version 4. */
@@ -258,6 +260,13 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
     alter: [
       "ALTER TABLE refresh_sessions ADD COLUMN client_name TEXT",
       "ALTER TABLE refresh_sessions ADD COLUMN created_at INTEGER",
+    ],
+  },
+  {
+    target: 8,
+    alter: [
+      "ALTER TABLE messages ADD COLUMN session_id TEXT",
+      "ALTER TABLE messages ADD COLUMN awaited_until INTEGER",
     ],
   },
 ];

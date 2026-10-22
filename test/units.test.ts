@@ -51,6 +51,7 @@ describe("rendered messages", () => {
     sent_by: null,
     via_bot: null,
     as_chat: false,
+    session_id: null,
     ...extra,
   });
   const ALICE = { id: 111, username: "alice", name: "Alice" };
@@ -426,7 +427,7 @@ describe("schema upgrade", () => {
       ensureSchema(new SqliteD1Proxy(db).asD1()),
       ensureSchema(new SqliteD1Proxy(db).asD1()),
     ]);
-    expect(version(db)).toBe("7");
+    expect(version(db)).toBe("8");
     const stored = await new Store(db.asD1()).getMessage(
       { account_id: BOT_ACCOUNT, chat_id: -100 },
       7,
@@ -448,7 +449,7 @@ describe("schema upgrade", () => {
     await ensureSchema(db.asD1());
     const columns = db.raw.query("PRAGMA table_info(users)").all() as { name: string }[];
     expect(columns.map((c) => c.name)).toContain("connected_at");
-    expect(version(db)).toBe("7");
+    expect(version(db)).toBe("8");
     expect(
       db.raw.query("SELECT name FROM sqlite_master WHERE name = 'refresh_sessions'").get(),
     ).not.toBeNull();
@@ -465,7 +466,7 @@ describe("schema upgrade", () => {
       ${V2_TABLES}`);
     // Two isolates racing on the upgrade: the table must be rebuilt once, not twice.
     await Promise.all([ensureSchema(db.asD1()), ensureSchema(new SqliteD1Proxy(db).asD1())]);
-    expect(version(db)).toBe("7");
+    expect(version(db)).toBe("8");
 
     const store = new Store(db.asD1());
     const ref = { account_id: BOT_ACCOUNT, chat_id: -100 };
@@ -479,6 +480,7 @@ describe("schema upgrade", () => {
     const names = keys.map((c) => c.name);
     expect(names).toContain("via_bot");
     expect(names).toContain("as_chat");
+    expect(names).toContain("session_id");
     expect((await store.getMessage(ref, 7))?.as_chat).toBe(false);
     expect(keys.filter((c) => c.pk > 0).map((c) => c.name)).toEqual([
       "account_id",

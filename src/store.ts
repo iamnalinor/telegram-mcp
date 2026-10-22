@@ -41,6 +41,8 @@ export interface StoredMessage {
   via_bot: string | null;
   /** Posted as the chat (an anonymous admin, a linked channel): no person is known. */
   as_chat: boolean;
+  /** For the bot's own messages: the Claude Code cloud session that sent it (session_…). */
+  session_id: string | null;
 }
 
 export interface StoredButton {
@@ -269,6 +271,7 @@ const MESSAGE_COLUMNS = [
   "sent_by",
   "via_bot",
   "as_chat",
+  "session_id",
 ] as const;
 
 function messageValues(message: StoredMessage): unknown[] {
@@ -299,6 +302,7 @@ function messageValues(message: StoredMessage): unknown[] {
     message.sent_by,
     message.via_bot,
     message.as_chat ? 1 : 0,
+    message.session_id,
   ];
 }
 
@@ -743,6 +747,37 @@ export class Store {
         `UPDATE messages SET ${sets.join(", ")} WHERE account_id = ? AND chat_id = ? AND message_id = ?`,
       )
       .bind(...values, chat.account_id, chat.chat_id, messageId)
+      .run();
+  }
+
+  /**
+   * A session is waiting for an answer to its message until `until`: a reply
+   * in the meantime is the waiter's to take, not a new task. Written when a
+   * wait starts and, if an answer comes early, when it ends — never per poll.
+   * Messages no session sent carry nothing to route, so they cost no write.
+   */
+  async markAwaited(
+    chat: ChatRef,
+    messageId: number,
+    until: number,
+    change: "start" | "end",
+  ): Promise<void> {
+    const value =
+      change === "start"
+        ? "MAX(COALESCE(awaited_until, 0), ?)"
+        : "MIN(COALESCE(awaited_until, ?), ?)";
+    await this.db
+      .prepare(
+        `UPDATE messages SET awaited_until = ${value}
+         WHERE account_id = ? AND chat_id = ? AND message_id = ? AND outgoing = 1
+           AND session_id IS NOT NULL`,
+      )
+      .bind(
+        ...(change === "start" ? [until] : [until, until]),
+        chat.account_id,
+        chat.chat_id,
+        messageId,
+      )
       .run();
   }
 

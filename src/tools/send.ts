@@ -23,6 +23,7 @@ import {
   sendText,
   sendUpload,
   sentLink,
+  sessionArg,
   text,
   ToolError,
   toolError,
@@ -52,7 +53,7 @@ type Answer = { kind: "press"; press: PressRow } | { kind: "message"; message: S
 /**
  * Wait for an answer to one of the bot's messages: a press on its buttons, a
  * reply to it, or — in the private chat — anything the user writes after it.
- * Polls D1, which costs a couple of row reads per round and no writes.
+ * Polls D1: a couple of row reads per round, no writes per round.
  */
 async function waitForAnswer(
   ctx: ToolContext,
@@ -61,20 +62,28 @@ async function waitForAnswer(
   seconds: number,
 ): Promise<Answer | null> {
   const deadline = Date.now() + seconds * 1000;
+  await ctx.store.markAwaited(chat, messageId, Math.ceil(deadline / 1000), "start");
   for (;;) {
-    const presses = await ctx.store.pressesFor(chat.chat_id, messageId);
-    if (presses.length) return { kind: "press", press: presses[0] };
-
-    const answer = await ctx.store.answerTo(
-      chat,
-      messageId,
-      chat.kind === "dm" ? ctx.userId : null,
-    );
-    if (answer) return { kind: "message", message: answer };
-
+    const answer = await findAnswer(ctx, chat, messageId);
+    if (answer) {
+      // The session stops listening now, not at the deadline.
+      await ctx.store.markAwaited(chat, messageId, Math.floor(Date.now() / 1000), "end");
+      return answer;
+    }
     if (Date.now() + WAIT_POLL_MS > deadline) return null;
     await sleep(WAIT_POLL_MS);
   }
+}
+
+async function findAnswer(
+  ctx: ToolContext,
+  chat: ChatView,
+  messageId: number,
+): Promise<Answer | null> {
+  const presses = await ctx.store.pressesFor(chat.chat_id, messageId);
+  if (presses.length) return { kind: "press", press: presses[0] };
+  const answer = await ctx.store.answerTo(chat, messageId, chat.kind === "dm" ? ctx.userId : null);
+  return answer ? { kind: "message", message: answer } : null;
 }
 
 function describeAnswer(
@@ -128,6 +137,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         reply_to: replyToArg,
         topic: topicArg,
         silent: silentArg,
+        session: sessionArg,
         link_preview: z
           .boolean()
           .optional()
@@ -146,6 +156,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
           topic: args.topic,
           silent: args.silent,
           linkPreview: args.link_preview,
+          session: args.session,
         });
         return text(sentSummary(ctx, chat, sent));
       } catch (error) {
@@ -174,6 +185,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
           ),
         chat: chatArg,
         topic: topicArg,
+        session: sessionArg,
         wait_seconds: z
           .number()
           .int()
@@ -200,6 +212,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
           buttons: buttons.length ? buttons : undefined,
           topic: args.topic,
           markChoice: true,
+          session: args.session,
         }).then((sent) => sent.slice(-1));
 
         const seconds = args.wait_seconds ?? WAIT_MAX_SECONDS;
@@ -270,6 +283,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     reply_to: replyToArg,
     topic: topicArg,
     silent: silentArg,
+    session: sessionArg,
   };
 
   server.registerTool(
@@ -297,6 +311,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
           replyTo: args.reply_to,
           topic: args.topic,
           silent: args.silent,
+          session: args.session,
         });
         const quoted = `'${url.replaceAll("'", "'\\''")}'`;
         return text(
@@ -358,6 +373,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
           replyTo: args.reply_to,
           topic: args.topic,
           silent: args.silent,
+          session: args.session,
         });
         return text(sentSummary(ctx, chat, [message]));
       } catch (error) {
@@ -398,6 +414,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         chat: chatArg,
         topic: topicArg,
         silent: silentArg,
+        session: sessionArg,
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
@@ -432,7 +449,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
           ...(args.topic ? { message_thread_id: args.topic } : {}),
           ...(args.silent ? { disable_notification: true } : {}),
         });
-        for (const message of sent) await recordSent(ctx, chat, message);
+        for (const message of sent) await recordSent(ctx, chat, message, { session: args.session });
         return text(sentSummary(ctx, chat, sent));
       } catch (error) {
         return toolError(error, ctx);
@@ -456,6 +473,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         address: z.string().max(200).optional(),
         chat: chatArg,
         topic: topicArg,
+        session: sessionArg,
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
@@ -473,6 +491,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         });
         await recordSent(ctx, chat, message, {
           text: venue ? `[venue] ${args.title}, ${args.address}` : undefined,
+          session: args.session,
         });
         return text(sentSummary(ctx, chat, [message]));
       } catch (error) {
@@ -495,6 +514,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         multiple_answers: z.boolean().optional(),
         chat: chatArg,
         topic: topicArg,
+        session: sessionArg,
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
@@ -510,7 +530,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
           allows_multiple_answers: args.multiple_answers ?? false,
           ...(args.topic ? { message_thread_id: args.topic } : {}),
         });
-        await recordSent(ctx, chat, message);
+        await recordSent(ctx, chat, message, { session: args.session });
         return text(sentSummary(ctx, chat, [message]));
       } catch (error) {
         return toolError(error, ctx);

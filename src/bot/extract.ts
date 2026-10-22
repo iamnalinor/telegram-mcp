@@ -227,6 +227,7 @@ export function toStored(message: Message, bot: BotIdentity, owner?: number): St
     // Only a real handle is kept: a bot's display name is free text and could pose as a marker.
     via_bot: message.via_bot ? botHandle(message.via_bot) : null,
     as_chat: message.sender_chat !== undefined,
+    session_id: null,
   };
 }
 

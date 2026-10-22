@@ -58,6 +58,8 @@ interface UploadBlob {
   r?: number;
   t?: number;
   s?: boolean;
+  /** The sending Claude Code session. */
+  ss?: string;
 }
 
 interface FileBlob {
@@ -89,6 +91,7 @@ export async function uploadLink(
       r: options.replyTo,
       t: options.topic,
       s: options.silent,
+      ss: options.session,
     },
     UPLOAD_TTL,
   );
@@ -200,6 +203,7 @@ export async function handleUpload(
         replyTo: link.r,
         topic: link.t,
         silent: link.s,
+        session: link.ss,
       },
     );
     const url = sentLink(ctx, chat, message);
