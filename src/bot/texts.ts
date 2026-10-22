@@ -11,32 +11,51 @@ export function escapeHtml(text: string): string {
 const en = {
   notAllowed: (id: number) =>
     `This bot is private. Your Telegram ID is <code>${id}</code> — ask its owner to add it to <code>ALLOWED_USER_IDS</code>.`,
-  start: (p: { id: number; retention: number; privacyOn: boolean }) =>
+  menuIntro: (id: number) =>
+    "Hi! I connect your AI assistant (Claude, ChatGPT, Codex) to Telegram: it can message you here, send files, ask you questions with buttons, and read what you send me or what is said in groups you connect.\n\n" +
+    `Your Telegram ID: <code>${id}</code>`,
+  menuNotConnected:
+    "To start, add this bot as a connector in Claude or ChatGPT and sign in with Telegram. Then this menu opens up.",
+  helpScreen: (p: { retention: number; privacyOn: boolean }) =>
     [
-      "Hi! I connect your AI assistant (Claude, ChatGPT, Codex) to Telegram: it can message you here, send files, ask you questions with buttons, and read what you send me or what is said in groups you connect.",
-      "",
-      `Your Telegram ID: <code>${p.id}</code>`,
-      "",
-      "<b>Commands</b>",
-      "/connect — give your assistant access to a group (or send /connect in the group itself)",
-      "/groups — see and revoke group access",
-      "/disconnect — sign out every connected assistant",
-      "",
-      "<b>Personal chats</b>: to let your assistant read your own chats with other people, add me in Settings → Telegram Business → Chatbots. Whether it may also reply for you is up to the permissions you give me there.",
+      "<b>How it works</b>",
+      "Your assistant reaches you through me: messages, files, questions with buttons. It reads what you send me and what is said in groups you connect.",
       "",
       `I keep messages for ${p.retention} days and only see chats I am in.` +
         (p.privacyOn
           ? " Privacy mode is on, so in groups I only see commands, mentions and replies to me — turn it off in @BotFather (/setprivacy) and re-add me to see everything."
           : ""),
+      "",
+      "<b>Commands</b>",
+      "/start — this menu",
+      "/groups — connected groups",
+      "/disconnect — sign out every connected assistant",
     ].join("\n"),
-  pickGroup: "Pick the group to connect. I must already be a member there.",
+  personalScreen:
+    "<b>Personal chats</b>\n\nTo let your assistant read your own chats with other people, add me in Settings → Telegram Business → Chatbots. Whether it may also reply for you is up to the permissions you give me there.",
+  addScreen:
+    "<b>Connect a group</b>\n\nAdd me with the button below — whoever adds me gets access right away.\n\nAlready in the group? Send /connect there.",
+  connectInPrivate:
+    "Add me to a group with the button below, or send /connect in a group I'm already in.",
+  groupScreen: (p: { title: string; full: boolean; since: string }) =>
+    `<b>${escapeHtml(p.title)}</b>\n\n` +
+    (p.full
+      ? "Your assistant sees everything I have stored here."
+      : `Your assistant sees messages from ${p.since}.`),
+  noGroupsMenu: "No groups connected yet. Add me to a group to start.",
+  useMenu: "That picker is gone. Send /start for the menu.",
+  menuGone: "That group is not connected for you.",
+  buttonGroups: "👥 Groups",
+  buttonAdd: "➕ Connect a group",
+  buttonPersonal: "🔗 Personal chats",
+  buttonHelp: "❓ How it works",
+  buttonBack: "« Back",
+  buttonAddToGroup: "Add to a group",
+  buttonRevoke: "Revoke access",
   connectFirst:
     "Connect your AI assistant to this bot first (add it as a connector in Claude or ChatGPT and sign in with Telegram), then link groups.",
   leavingNotConnected: (name: string) =>
     `${escapeHtml(name)}, connect your AI assistant to this bot first, then add me again. Leaving for now.`,
-  pickButton: "Choose a group",
-  cannotResolve: (what: string) =>
-    `I can't find ${escapeHtml(what)}. Use the button, or send a public @username. Invite links can't be resolved by bots.`,
   notInGroup:
     "I'm not in that group. Add me there first — whoever adds me gets access automatically.",
   notMember: "You don't seem to be a member of that group, so I can't give you access to it.",
@@ -99,32 +118,51 @@ type Texts = typeof en;
 const ru: Texts = {
   notAllowed: (id) =>
     `Это приватный бот. Твой Telegram ID: <code>${id}</code> — попроси владельца добавить его в <code>ALLOWED_USER_IDS</code>.`,
-  start: (p) =>
+  menuIntro: (id) =>
+    "Привет! Я связываю твоего AI-ассистента (Claude, ChatGPT, Codex) с Telegram: он может писать тебе сюда, присылать файлы, задавать вопросы с кнопками и читать, что ты мне пишешь или что пишут в подключённых группах.\n\n" +
+    `Твой Telegram ID: <code>${id}</code>`,
+  menuNotConnected:
+    "Для начала добавь этого бота как коннектор в Claude или ChatGPT и войди через Telegram. Тогда откроется меню.",
+  helpScreen: (p) =>
     [
-      "Привет! Я связываю твоего AI-ассистента (Claude, ChatGPT, Codex) с Telegram: он может писать тебе сюда, присылать файлы, задавать вопросы с кнопками и читать, что ты мне пишешь или что пишут в подключённых группах.",
-      "",
-      `Твой Telegram ID: <code>${p.id}</code>`,
-      "",
-      "<b>Команды</b>",
-      "/connect — дать ассистенту доступ к группе (или отправь /connect в самой группе)",
-      "/groups — посмотреть и отозвать доступ к группам",
-      "/disconnect — отключить все подключённые ассистенты",
-      "",
-      "<b>Личные переписки</b>: чтобы ассистент читал твои переписки с другими людьми, добавь меня в Настройки → Telegram для бизнеса → Чат-боты. Может ли он ещё и отвечать за тебя — решают права, которые ты дашь мне там.",
+      "<b>Как это работает</b>",
+      "Ассистент связывается с тобой через меня: сообщения, файлы, вопросы с кнопками. Он читает, что ты мне пишешь и что пишут в подключённых группах.",
       "",
       `Храню сообщения ${p.retention} дней и вижу только чаты, где я есть.` +
         (p.privacyOn
           ? " Включён privacy mode: в группах я вижу только команды, упоминания и ответы мне — выключи его в @BotFather (/setprivacy) и добавь меня заново, чтобы видеть всё."
           : ""),
+      "",
+      "<b>Команды</b>",
+      "/start — это меню",
+      "/groups — подключённые группы",
+      "/disconnect — отключить все подключённые ассистенты",
     ].join("\n"),
-  pickGroup: "Выбери группу. Я уже должен в ней состоять.",
+  personalScreen:
+    "<b>Личные переписки</b>\n\nЧтобы ассистент читал твои переписки с другими людьми, добавь меня в Настройки → Telegram для бизнеса → Чат-боты. Может ли он ещё и отвечать за тебя — решают права, которые ты дашь мне там.",
+  addScreen:
+    "<b>Подключить группу</b>\n\nДобавь меня кнопкой ниже — тот, кто добавляет, сразу получает доступ.\n\nЯ уже в группе? Отправь /connect прямо там.",
+  connectInPrivate:
+    "Добавь меня в группу кнопкой ниже или отправь /connect в группе, где я уже есть.",
+  groupScreen: (p) =>
+    `<b>${escapeHtml(p.title)}</b>\n\n` +
+    (p.full
+      ? "Ассистенту видно всё, что я здесь сохранил."
+      : `Ассистенту видны сообщения с ${p.since}.`),
+  noGroupsMenu: "Подключённых групп пока нет. Добавь меня в группу, чтобы начать.",
+  useMenu: "Этого выбора больше нет. Отправь /start, чтобы открыть меню.",
+  menuGone: "Эта группа у тебя не подключена.",
+  buttonGroups: "👥 Группы",
+  buttonAdd: "➕ Подключить группу",
+  buttonPersonal: "🔗 Личные переписки",
+  buttonHelp: "❓ Как это работает",
+  buttonBack: "« Назад",
+  buttonAddToGroup: "Добавить в группу",
+  buttonRevoke: "Отозвать доступ",
   connectFirst:
     "Сначала подключи AI-ассистента к этому боту (добавь коннектор в Claude или ChatGPT и войди через Telegram), потом привязывай группы.",
   leavingNotConnected: (name) =>
     `${escapeHtml(name)}, сначала подключи AI-ассистента к этому боту, потом добавь меня снова. Пока выхожу.`,
-  pickButton: "Выбрать группу",
-  cannotResolve: (what) =>
-    `Не нахожу ${escapeHtml(what)}. Нажми кнопку или пришли публичный @username — инвайт-ссылки боты открыть не могут.`,
   notInGroup:
     "Меня нет в этой группе. Сначала добавь меня — тот, кто добавляет, получает доступ сразу.",
   notMember: "Похоже, ты не участник этой группы, поэтому доступ дать не могу.",
