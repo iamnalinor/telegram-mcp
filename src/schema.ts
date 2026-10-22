@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -45,6 +45,7 @@ const MESSAGES_COLUMNS = `
     as_chat INTEGER NOT NULL DEFAULT 0,
     session_id TEXT,
     awaited_until INTEGER,
+    album TEXT,
     PRIMARY KEY (account_id, chat_id, message_id)`;
 
 /** Every column of `messages` but account_id, as they stood before version 4. */
@@ -223,7 +224,8 @@ const SCHEMA: string[] = [
   )`,
 
   // Each start, by the message that caused it: Telegram retries webhooks, and
-  // a start is a billed session. Also counts other members' starts per hour.
+  // a start is a billed session. Also counts other members' starts per hour,
+  // and makes the chat's log of starts: who, when, the first words.
   `CREATE TABLE IF NOT EXISTS fires (
     chat_id INTEGER NOT NULL,
     message_id INTEGER NOT NULL,
@@ -232,6 +234,9 @@ const SCHEMA: string[] = [
     status TEXT NOT NULL,
     session_id TEXT,
     at INTEGER NOT NULL,
+    from_name TEXT,
+    excerpt TEXT,
+    album TEXT,
     PRIMARY KEY (chat_id, message_id)
   ) WITHOUT ROWID`,
   `CREATE INDEX IF NOT EXISTS fires_by_user ON fires (user_id, at)`,
@@ -314,6 +319,15 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
   {
     target: 12,
     alter: ["ALTER TABLE claude_chats ADD COLUMN others_limit INTEGER NOT NULL DEFAULT 20"],
+  },
+  {
+    target: 13,
+    alter: [
+      "ALTER TABLE fires ADD COLUMN from_name TEXT",
+      "ALTER TABLE fires ADD COLUMN excerpt TEXT",
+      "ALTER TABLE fires ADD COLUMN album TEXT",
+      "ALTER TABLE messages ADD COLUMN album TEXT",
+    ],
   },
 ];
 

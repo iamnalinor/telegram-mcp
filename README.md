@@ -263,13 +263,19 @@ What starts a session:
 - **A group**, once you turn it on in the group's screen: a mention of the bot, or a reply to a
   message your assistant sent there. One person per group: whoever turned it on first. If they leave
   the group, it passes to the next who asks.
-- **Other members** of that group too, only if you turn on "Others too". The session is told to treat
-  their words as data, to do nothing for them that your memory for the chat does not explicitly
-  allow, and to ask you in your private chat instead — but it runs with your connectors, so that is a
-  guard of instructions, not of access. Their starts are limited per chat — 20 an hour by default, 5 to 50 in the group's screen; past that the bot reacts 😴 and tells you quietly, once an hour — and each start is reported to you quietly. A reply of theirs to your assistant's message starts a new session too, told
-  which session wrote it — under the same rules.
+- **Other members** of that group too, only if you turn on "Others too" — including messages posted
+  as a channel or as the group, which always count as someone else's. The session helps them with
+  what anyone could do on their own (answers, explanations, web search, talk about the chat). What is
+  yours — connectors, data, memory, other chats, repositories, your account — and running code it
+  uses for them only where your memory for the chat explicitly allows it; it declines the rest and
+  tells you only on signs of abuse. It runs with your connectors, so that is a guard of instructions, not of
+  access. Their starts are limited per chat — 20 an hour by default, 5 to 50 in the group's screen;
+  past that the bot reacts 😴 and tells you quietly, once an hour. A reply of theirs to your
+  assistant's message starts a new session too, told which session wrote it — under the same rules.
 
-Never: forwards, messages via inline bots or posted as a channel, edits, commands in groups, or a
+Every start goes into the group's 📜 Starts: who, when, the first words and a link to the session.
+
+Never: forwards, messages via inline bots, edits, commands in groups, or a
 reply that a waiting `ask_user` will pick up. Each message starts one session at most, however often
 Telegram retries it. The bot reacts 👀 to the message; sessions answer by replying to it rather than
 tagging anyone. Failures go to your private chat, never to the group. Each start is a billed session that counts toward the

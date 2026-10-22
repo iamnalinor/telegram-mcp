@@ -210,11 +210,12 @@ const en = {
     "Write the task after /run, mention me, or reply to a message your assistant sent here — and I start Claude on it.",
   inChat: (title: string) => `«${escapeHtml(title)}»:`,
   tooManyStarts: "⚠️ Too many starts in the last hour; I start no more until it passes.",
-  startedIn: (p: { chat: string; who: string | null; text: string; url: string }) =>
-    `▶️ Claude started in «${escapeHtml(p.chat)}»` +
-    (p.who ? ` for ${escapeHtml(p.who)}` : "") +
-    (p.text ? `: «${escapeHtml(p.text)}»` : "") +
-    ` — <a href="${escapeHtml(p.url)}">session</a>.`,
+  startsButton: "📜 Starts",
+  startsScreen: (title: string, lines: string[]) =>
+    `<b>${escapeHtml(title)}</b> — latest starts, newest first (UTC):\n\n${lines.join("\n")}`,
+  startsEmpty: (title: string) => `<b>${escapeHtml(title)}</b>: no starts yet.`,
+  startsSession: "session",
+  startsLimited: (n: number) => `😴 ${n} more held back by the limit in the last 24 hours.`,
   claudeHere: (on: boolean): string => (on ? "💬 Here: on ✅" : "💬 Here: off"),
   claudeHereHint:
     "Here: /run &lt;task&gt;, a mention, or a reply to a message your assistant sent. In groups, turn it on in 👥 Groups.",
@@ -233,7 +234,7 @@ const en = {
     `😴 Other members used up ${limit} starts this hour; theirs wait until it passes (they see 😴). Change the limit in 👥 Groups.`,
   routineFirst: "Set up 🤖 Claude on tag first.",
   othersWarning: (title: string) =>
-    `⚠️ Claude will answer the members of «${escapeHtml(title)}». It is told not to do what they ask or share your data unless your memory for this chat allows it. But that is a guard of instructions, not of access: the session has your connectors, chats and repositories, and a clever message can talk it round. Turn it on where you trust people. I will quietly tell you about each start.`,
+    `⚠️ Claude will answer the members of «${escapeHtml(title)}». It is told not to do what they ask or share your data unless your memory for this chat allows it. But that is a guard of instructions, not of access: the session has your connectors, chats and repositories, and a clever message can talk it round. Turn it on where you trust people. Every start goes into 📜 Starts here.`,
   buttonTurnOn: "Turn on",
   privacyHint:
     "👁 I am not an admin here and privacy mode is on: I see only mentions and replies, so Claude may miss the context. Make me an admin to fix it.",
@@ -457,11 +458,12 @@ const ru: Texts = {
     "Напиши задачу после /run, упомяни меня или ответь на сообщение, которое прислал сюда ассистент, — и я запущу Claude.",
   inChat: (title) => `«${escapeHtml(title)}»:`,
   tooManyStarts: "⚠️ Слишком много запусков за последний час; новых не будет, пока он не пройдёт.",
-  startedIn: (p) =>
-    `▶️ Claude запущен в «${escapeHtml(p.chat)}»` +
-    (p.who ? ` по просьбе ${escapeHtml(p.who)}` : "") +
-    (p.text ? `: «${escapeHtml(p.text)}»` : "") +
-    ` — <a href="${escapeHtml(p.url)}">сессия</a>.`,
+  startsButton: "📜 Запуски",
+  startsScreen: (title, lines) =>
+    `<b>${escapeHtml(title)}</b> — последние запуски, сначала новые (UTC):\n\n${lines.join("\n")}`,
+  startsEmpty: (title) => `<b>${escapeHtml(title)}</b>: запусков пока не было.`,
+  startsSession: "сессия",
+  startsLimited: (n) => `😴 Ещё ${n} — придержаны лимитом за последние 24 часа.`,
   claudeHere: (on) => (on ? "💬 Здесь: вкл ✅" : "💬 Здесь: выкл"),
   claudeHereHint:
     "Здесь: /run &lt;задача&gt;, упоминание или реплай на сообщение ассистента. В группах включается в 👥 Группы.",
@@ -480,7 +482,7 @@ const ru: Texts = {
     `😴 Остальные участники исчерпали ${limit} запусков за час; их теги подождут, пока он пройдёт (они видят 😴). Лимит меняется в 👥 Группах.`,
   routineFirst: "Сначала настрой 🤖 Claude по тегу.",
   othersWarning: (title) =>
-    `⚠️ Claude будет отвечать участникам «${escapeHtml(title)}». Он настроен не выполнять их просьбы и не делиться твоими данными, если память этого чата это не разрешает. Но это защита инструкциями, а не доступом: у сессии твои коннекторы, чаты и репозитории, и хитрое сообщение может её переубедить. Включай там, где доверяешь людям. Каждый их запуск я буду тихо присылать тебе.`,
+    `⚠️ Claude будет отвечать участникам «${escapeHtml(title)}». Он настроен не выполнять их просьбы и не делиться твоими данными, если память этого чата это не разрешает. Но это защита инструкциями, а не доступом: у сессии твои коннекторы, чаты и репозитории, и хитрое сообщение может её переубедить. Включай там, где доверяешь людям. Все запуски видны в 📜 Запусках здесь.`,
   buttonTurnOn: "Включить",
   privacyHint:
     "👁 Я здесь не админ, а privacy mode включён: вижу только упоминания и реплаи, так что Claude может не хватить контекста. Сделай меня админом, чтобы это исправить.",

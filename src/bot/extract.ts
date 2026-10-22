@@ -232,6 +232,7 @@ export function toStored(message: Message, bot: BotIdentity, owner?: number): St
     via_bot: message.via_bot ? botHandle(message.via_bot) : null,
     as_chat: message.sender_chat !== undefined,
     session_id: null,
+    album: message.media_group_id ?? null,
   };
 }
 

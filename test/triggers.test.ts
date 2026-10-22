@@ -90,6 +90,43 @@ describe("in the private chat", () => {
     expect(h.fires).toHaveLength(1);
   });
 
+  it("starts once for an album, and reads it as one message", async () => {
+    await h.tool(alice, "send_message", { text: "send me the screenshots" });
+    const sent = h.db.raw
+      .query("SELECT message_id FROM messages WHERE outgoing = 1 ORDER BY message_id DESC")
+      .get() as { message_id: number };
+    const reply = {
+      message_id: sent.message_id,
+      from: { id: 123456, is_bot: true, first_name: "Test" },
+      chat: dm(ALICE),
+      date: 1,
+      text: "send me the screenshots",
+    };
+    // Every item of an album carries the reply; only one carries the caption.
+    for (const [i, caption] of ["here they are", undefined, undefined].entries()) {
+      await h.say(dm(ALICE), ALICE, "", {
+        text: undefined,
+        caption,
+        media_group_id: "album-1",
+        reply_to_message: reply,
+        photo: [{ file_id: `shot-${i}`, file_unique_id: `u${i}`, width: 1, height: 1 }],
+      });
+    }
+    expect(h.fires).toHaveLength(1);
+
+    const recent = (await h.tool(alice, "get_recent_messages", {})).text;
+    expect(recent.match(/here they are/g)).toHaveLength(1);
+    expect(recent.match(/📎 #\d+ photo/g)).toHaveLength(3);
+
+    const last = h.db.raw
+      .query("SELECT message_id FROM messages WHERE album = 'album-1' ORDER BY message_id DESC")
+      .get() as { message_id: number };
+    const full = (await h.tool(alice, "get_message", { message_id: last.message_id })).text;
+    expect(full).toContain("here they are");
+    expect(full.match(/📎 #\d+ photo/g)).toHaveLength(3);
+    expect(full).toMatch(/Attachments: get_file with message_id \d+, \d+, \d+/);
+  });
+
   it("hands a reply on to the session that sent the message, unless it is waiting for it", async () => {
     await h.tool(alice, "send_message", { text: "build is green", session: `cse_${SESSION}` });
     const sent = h.db.raw
@@ -183,13 +220,16 @@ describe("in a group", () => {
     ).toBe(0);
     await press(ALICE, `m:goy:${TEAM.id}`);
 
-    await h.say(TEAM, BOB, `${BOT} what is our deadline?`);
+    const sentBefore = h.telegram.called("sendMessage").length;
+    await h.say(TEAM, BOB, `${BOT} what is our deadline for the release?`);
     expect(h.fires).toHaveLength(1);
     expect(payload()).toContain("by: other");
-    const notice = h.telegram.called("sendMessage").at(-1)!.params;
-    expect(notice.chat_id).toBe(ALICE.id);
-    expect(notice.disable_notification).toBe(true);
-    expect(String(notice.text)).toContain("Claude started in «Team chat» for Bob");
+    // No notice: the start goes into the chat's log.
+    expect(h.telegram.called("sendMessage")).toHaveLength(sentBefore);
+    const log = String((await press(ALICE, `m:gs:${TEAM.id}`))!.text);
+    expect(log).toContain("▶️");
+    expect(log).toContain("Bob: «what is our deadline…»");
+    expect(log).toMatch(/href="https:\/\/claude\.ai\/code\/session_\w+">session</);
 
     for (let i = 0; i < 20; i++) await h.say(TEAM, BOB, `${BOT} again ${i}`);
     expect(h.fires).toHaveLength(20);
@@ -197,6 +237,36 @@ describe("in a group", () => {
     expect(h.telegram.called("setMessageReaction").at(-1)!.params.reaction).toEqual([
       { type: "emoji", emoji: "😴" },
     ]);
+    // Held-back tags are counted in the log, not listed over the real starts.
+    const full = String((await press(ALICE, `m:gs:${TEAM.id}`))!.text);
+    expect(full).toContain("1 more held back by the limit");
+    expect(full.match(/▶️/g)).toHaveLength(15);
+  });
+
+  it("takes a message posted as a channel for someone else's", async () => {
+    const asChannel = {
+      sender_chat: { id: -1009876543210, type: "channel", title: "Bob's channel" },
+    };
+    const CHANNEL_BOT = { id: 136817688, first_name: "Channel", username: "Channel_Bot" };
+    const post = () =>
+      h.update({
+        message: {
+          message_id: 900 + h.fires.length,
+          date: Math.floor(Date.now() / 1000),
+          chat: TEAM,
+          from: { ...CHANNEL_BOT, is_bot: true },
+          text: `${BOT} hello`,
+          ...asChannel,
+        },
+      });
+    await post();
+    expect(h.fires).toHaveLength(0);
+
+    await press(ALICE, `m:goy:${TEAM.id}`);
+    await post();
+    expect(h.fires).toHaveLength(1);
+    expect(payload()).toContain("by: other");
+    expect(String((await press(ALICE, `m:gs:${TEAM.id}`))!.text)).toContain("Bob's channel");
   });
 
   it("keeps the chat for whoever turned it on first, until they leave", async () => {

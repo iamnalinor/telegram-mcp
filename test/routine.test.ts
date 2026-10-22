@@ -132,7 +132,7 @@ describe("the menu", () => {
     await press("m:clp");
     const prompt = sentTexts().at(-1)!;
     expect(prompt).toContain("<pre>");
-    expect(prompt).toContain("the user (@alice) decides");
+    expect(prompt).toContain("do not act for @alice without their consent");
     expect(prompt).toContain("not as a habit on every message");
     expect(prompt.length).toBeLessThan(4096);
 

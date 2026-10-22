@@ -6,11 +6,12 @@
  * to a message the bot sent for the chat's holder. A mention in the private
  * chat must be spelled out — everything there is "for the bot".
  *
- * Nothing starts for a forward, a message via an inline bot or posted as the
- * chat, or a reply that a waiting session (ask_user, wait_for_reply) is about
- * to take. Other members' messages start it only where the holder allowed
- * them, a few times an hour. Failures go to the holder's private chat, never
- * into the chat itself.
+ * Nothing starts for a forward, a message via an inline bot, or a reply that
+ * a waiting session (ask_user, wait_for_reply) is about to take. Other
+ * members' messages start it only where the holder allowed them, a few times
+ * an hour; a message posted as a channel or the chat is always someone
+ * else's. Each start goes into the chat's log in the menu; failures go to the
+ * holder's private chat, never into the chat itself.
  */
 
 import { nowSeconds } from "../crypto";
@@ -28,6 +29,8 @@ import { escapeHtml, texts } from "./texts";
 const AWAIT_GRACE = 60;
 /** Starts in all, per user per hour: Anthropic allows a routine about 30. */
 const USER_PER_HOUR = 30;
+/** How much of the message the log keeps. */
+const EXCERPT_LENGTH = 20;
 
 const silent = {
   parse_mode: "HTML",
@@ -41,8 +44,10 @@ export async function maybeStart(
   command: Command | null,
 ): Promise<void> {
   const from = message.from;
-  if (!from || from.is_bot) return;
-  if (message.forward_origin || message.via_bot || message.sender_chat) return;
+  // Posted as a channel or the chat, `from` is Telegram's stand-in bot: no person is known.
+  const asChat = message.sender_chat;
+  if (!from || (from.is_bot && !asChat)) return;
+  if (message.forward_origin || message.via_bot) return;
   const chat = message.chat;
   // /run is for the private chat; in groups, commands start nothing — a mention does.
   if (command && (command.name !== "run" || chat.type !== "private")) return;
@@ -54,7 +59,7 @@ export async function maybeStart(
   const claim = await ctx.store.getClaudeChat(chat.id);
   if (!claim || !isAllowed(ctx.config, claim.user_id)) return;
   const holder = claim.user_id;
-  const byOther = from.id !== holder;
+  const byOther = asChat !== undefined || from.id !== holder;
   if (byOther && (chat.type === "private" || !claim.others)) return;
 
   // A reply counts when it answers what the bot sent for the holder.
@@ -97,20 +102,25 @@ export async function maybeStart(
   // Others' failures reach the holder once an hour per chat: a broken routine
   // must not turn every member's message into a notice.
   const quiet = byOther && (await ctx.store.othersFailedSince(holder, chat.id, now - 3600));
-  const claimed = await ctx.store.beginFire(
-    { chatId: chat.id, messageId: message.message_id, userId: holder, byOther },
-    { user: USER_PER_HOUR, others: claim.others_limit },
-  );
+  const entry = {
+    chatId: chat.id,
+    messageId: message.message_id,
+    userId: holder,
+    byOther,
+    fromName: asChat ? (asChat.title ?? null) : displayName(from),
+    excerpt: excerptOf(message.text ?? message.caption ?? "", ctx.bot.username),
+    album: message.media_group_id ?? null,
+  };
+  const claimed = await ctx.store.beginFire(entry, {
+    user: USER_PER_HOUR,
+    others: claim.others_limit,
+  });
   if (claimed === "again") return;
   if (claimed === "limit") {
-    if (!byOther) {
-      await tell(where + ot.tooManyStarts);
-      return;
-    }
     // Not silence: the sender sees the bot is resting, and the holder hears once an hour.
     await react(ctx, chat.id, message.message_id, "😴");
-    if (await ctx.store.noteLimited(chat.id, message.message_id, holder)) {
-      await tell(where + ot.othersLimited(claim.others_limit));
+    if (await ctx.store.noteLimited(entry)) {
+      await tell(where + (byOther ? ot.othersLimited(claim.others_limit) : ot.tooManyStarts));
     }
     return;
   }
@@ -146,21 +156,17 @@ export async function maybeStart(
     status: "started",
     sessionId: result.sessionId,
   });
+  // No notice: 👀 says it started, and the chat's log in the menu has the session.
   await react(ctx, chat.id, message.message_id, "👀");
+}
 
-  // The holder's own starts need no notice: 👀 says it, and the session answers there.
-  if (!byOther) return;
-  const excerpt = Array.from(redactSecrets(message.text ?? message.caption ?? ""))
-    .slice(0, 200)
-    .join("");
-  await tell(
-    ot.startedIn({
-      chat: chat.title ?? String(chat.id),
-      who: displayName(from),
-      text: excerpt,
-      url: result.sessionUrl,
-    }),
-  );
+/** The first words, without the mention that called the bot. */
+function excerptOf(text: string, botUsername: string): string {
+  const mention = new RegExp(`@${botUsername}\\b`, "gi");
+  const chars = Array.from(redactSecrets(text).replace(mention, "").replace(/\s+/g, " ").trim());
+  return chars.length > EXCERPT_LENGTH
+    ? `${chars.slice(0, EXCERPT_LENGTH).join("")}…`
+    : chars.join("");
 }
 
 function react(ctx: BotContext, chatId: number, messageId: number, emoji: string) {

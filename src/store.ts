@@ -46,6 +46,8 @@ export interface StoredMessage {
   session_id: string | null;
   /** Read only (markAwaited sets it): until when that session waits for an answer. */
   awaited_until?: number | null;
+  /** Telegram's media_group_id: the photos and files sent together, shown as one message. */
+  album?: string | null;
 }
 
 export interface StoredButton {
@@ -81,6 +83,28 @@ export interface ClaudeChat {
   /** Other members' starts allowed per hour. */
   others_limit: number;
   since: number;
+}
+
+/** A start being claimed: whose routine, and what the log shows of it. */
+export interface FireEntry {
+  chatId: number;
+  messageId: number;
+  userId: number;
+  byOther: boolean;
+  fromName: string | null;
+  /** The first words of the message, keys removed. */
+  excerpt: string;
+  /** An album starts once, whichever of its items comes first. */
+  album: string | null;
+}
+
+export interface FireRow {
+  message_id: number;
+  status: "pending" | "started" | "failed";
+  session_id: string | null;
+  at: number;
+  from_name: string | null;
+  excerpt: string | null;
 }
 
 export interface MemoryDoc {
@@ -244,6 +268,9 @@ export interface SearchQuery {
   limit: number;
 }
 
+/** How far apart an album's message ids can be: ten items, and others' messages between them. */
+const ALBUM_SPAN = 30;
+
 /** D1 refuses more than 100 bound parameters in one statement; a scope takes four. */
 export const MAX_SCOPES = 20;
 
@@ -294,6 +321,7 @@ const MESSAGE_COLUMNS = [
   "via_bot",
   "as_chat",
   "session_id",
+  "album",
 ] as const;
 
 function messageValues(message: StoredMessage): unknown[] {
@@ -326,6 +354,7 @@ function messageValues(message: StoredMessage): unknown[] {
     message.via_bot,
     message.as_chat ? 1 : 0,
     message.session_id,
+    message.album ?? null,
   ];
 }
 
@@ -754,7 +783,8 @@ export class Store {
            file_id = COALESCE(excluded.file_id, file_id),
            file_name = COALESCE(excluded.file_name, file_name),
            file_mime = COALESCE(excluded.file_mime, file_mime),
-           file_size = COALESCE(excluded.file_size, file_size)`,
+           file_size = COALESCE(excluded.file_size, file_size),
+           album = COALESCE(excluded.album, album)`,
       )
       .bind(...messageValues(message), ...guardValues)
       .run();
@@ -843,6 +873,25 @@ export class Store {
       .bind(chat.account_id, chat.chat_id, ...ids)
       .all<MessageRow>();
     return results.map(toMessage);
+  }
+
+  /** The rest of an album, oldest first: Telegram sends its items one after another, at most ten. */
+  async albumOf(message: StoredMessage): Promise<StoredMessage[]> {
+    if (!message.album) return [message];
+    const { results } = await this.db
+      .prepare(
+        `SELECT * FROM messages WHERE account_id = ? AND chat_id = ? AND album = ?
+         AND message_id BETWEEN ? AND ? ORDER BY message_id`,
+      )
+      .bind(
+        message.account_id,
+        message.chat_id,
+        message.album,
+        message.message_id - ALBUM_SPAN,
+        message.message_id + ALBUM_SPAN,
+      )
+      .all<MessageRow>();
+    return results.length ? results.map(toMessage) : [message];
   }
 
   /** Forget messages, with their presses and reactions (which only the bot's account has). */
@@ -1536,18 +1585,19 @@ export class Store {
    * count against the limits.
    */
   async beginFire(
-    fire: { chatId: number; messageId: number; userId: number; byOther: boolean },
+    fire: FireEntry,
     limits: { user: number; others: number },
   ): Promise<"claimed" | "again" | "limit"> {
     const now = nowSeconds();
     const result = await this.db
       .prepare(
-        `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at)
-         SELECT ?1, ?2, ?3, ?4, 'pending', ?5
+        `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at, from_name, excerpt, album)
+         SELECT ?1, ?2, ?3, ?4, 'pending', ?5, ?9, ?10, ?11
          WHERE (SELECT COUNT(*) FROM fires WHERE user_id = ?3 AND at >= ?6 AND status IN ('pending', 'started')) < ?7
            AND (?4 = 0 OR (SELECT COUNT(*) FROM fires
                 WHERE user_id = ?3 AND at >= ?6 AND chat_id = ?1 AND by_other = 1
                   AND status IN ('pending', 'started')) < ?8)
+           AND (?11 IS NULL OR NOT EXISTS (SELECT 1 FROM fires WHERE chat_id = ?1 AND album = ?11))
          ON CONFLICT (chat_id, message_id) DO NOTHING`,
       )
       .bind(
@@ -1559,12 +1609,15 @@ export class Store {
         now - 3600,
         limits.user,
         limits.others,
+        fire.fromName,
+        fire.excerpt,
+        fire.album,
       )
       .run();
     if ((result.meta.changes ?? 0) > 0) return "claimed";
     const seen = await this.db
-      .prepare("SELECT 1 FROM fires WHERE chat_id = ? AND message_id = ?")
-      .bind(fire.chatId, fire.messageId)
+      .prepare("SELECT 1 FROM fires WHERE chat_id = ?1 AND (message_id = ?2 OR album = ?3) LIMIT 1")
+      .bind(fire.chatId, fire.messageId, fire.album)
       .first();
     return seen ? "again" : "limit";
   }
@@ -1584,20 +1637,62 @@ export class Store {
    * Record a start held back by the limit. True when it is the first in this
    * chat within the hour: the holder hears about it once, not per message.
    */
-  async noteLimited(chatId: number, messageId: number, userId: number): Promise<boolean> {
+  async noteLimited(fire: FireEntry): Promise<boolean> {
     const now = nowSeconds();
     const [earlier] = await this.db.batch([
       this.db
-        .prepare("SELECT 1 FROM fires WHERE chat_id = ? AND status = 'limited' AND at >= ? LIMIT 1")
-        .bind(chatId, now - 3600),
+        .prepare(
+          "SELECT 1 FROM fires WHERE chat_id = ? AND by_other = ? AND status = 'limited' AND at >= ? LIMIT 1",
+        )
+        .bind(fire.chatId, fire.byOther ? 1 : 0, now - 3600),
       this.db
         .prepare(
-          `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at)
-           VALUES (?, ?, ?, 1, 'limited', ?) ON CONFLICT (chat_id, message_id) DO NOTHING`,
+          `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at, from_name, excerpt, album)
+           VALUES (?, ?, ?, ?, 'limited', ?, ?, ?, ?) ON CONFLICT (chat_id, message_id) DO NOTHING`,
         )
-        .bind(chatId, messageId, userId, now),
+        .bind(
+          fire.chatId,
+          fire.messageId,
+          fire.userId,
+          fire.byOther ? 1 : 0,
+          now,
+          fire.fromName,
+          fire.excerpt,
+          fire.album,
+        ),
     ]);
     return earlier.results.length === 0;
+  }
+
+  /**
+   * The holder's latest starts in a chat, newest first: the chat's log. Tags
+   * held back by the limit are only counted, so a flood of them cannot push
+   * the real starts out of sight.
+   */
+  async firesIn(
+    userId: number,
+    chatId: number,
+    limit: number,
+    since: number,
+  ): Promise<{ fires: FireRow[]; limited: number }> {
+    const [fires, limited] = await this.db.batch([
+      this.db
+        .prepare(
+          `SELECT message_id, status, session_id, at, from_name, excerpt FROM fires
+           WHERE chat_id = ? AND user_id = ? AND status != 'limited'
+           ORDER BY at DESC, message_id DESC LIMIT ?`,
+        )
+        .bind(chatId, userId, limit),
+      this.db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM fires WHERE chat_id = ? AND user_id = ? AND status = 'limited' AND at >= ?",
+        )
+        .bind(chatId, userId, since),
+    ]);
+    return {
+      fires: fires.results as FireRow[],
+      limited: (limited.results[0] as { n: number } | undefined)?.n ?? 0,
+    };
   }
 
   /** Whether other members' starts already failed in this chat since `since`: the holder heard once. */
@@ -1744,7 +1839,7 @@ export class Store {
       // a session with no row would start afresh.
       this.db.prepare("DELETE FROM refresh_sessions WHERE expires_at < ?").bind(nowSeconds() - DAY),
       this.db.prepare("DELETE FROM day_marks WHERE day < ?").bind(Math.floor(cutoff / DAY)),
-      this.db.prepare("DELETE FROM fires WHERE at < ?").bind(nowSeconds() - DAY),
+      this.db.prepare("DELETE FROM fires WHERE at < ?").bind(cutoff),
       // People nobody has heard from within retention.
       this.db.prepare(
         `DELETE FROM personal_chats WHERE NOT EXISTS (
