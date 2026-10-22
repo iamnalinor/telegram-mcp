@@ -59,6 +59,37 @@ export async function hmac(key: CryptoKey, data: string): Promise<Uint8Array> {
   return new Uint8Array(await crypto.subtle.sign("HMAC", key, encoder.encode(data)));
 }
 
+export function aesKey(raw: Uint8Array): Promise<CryptoKey> {
+  return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+}
+
+/** A secret to keep at rest: base64url of a random IV followed by the AES-GCM ciphertext. */
+export async function encrypt(key: CryptoKey, plaintext: string): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const sealed = new Uint8Array(
+    await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, encoder.encode(plaintext)),
+  );
+  const out = new Uint8Array(iv.length + sealed.length);
+  out.set(iv);
+  out.set(sealed, iv.length);
+  return bytesToBase64Url(out);
+}
+
+/** The secret, or null when it was sealed with another key (the bot token changed) or is damaged. */
+export async function decrypt(key: CryptoKey, sealed: string): Promise<string | null> {
+  try {
+    const bytes = base64UrlToBytes(sealed);
+    const plain = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: bytes.subarray(0, 12) },
+      key,
+      bytes.subarray(12),
+    );
+    return decoder.decode(plain);
+  } catch {
+    return null;
+  }
+}
+
 /** Compare two strings without leaking where they differ. */
 export function timingSafeEqual(a: string, b: string): boolean {
   const left = encoder.encode(a);

@@ -180,6 +180,9 @@ export default {
     for (const userId of await core.store.memoryUsers()) {
       if (!isAllowed(core.config, userId)) await core.store.wipeMemory(userId);
     }
+    for (const userId of await core.store.routineUsers()) {
+      if (!isAllowed(core.config, userId)) await core.store.deleteRoutine(userId);
+    }
 
     const origin = await core.store.getMeta("public_origin");
     if (origin) {

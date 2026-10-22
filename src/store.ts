@@ -61,6 +61,13 @@ interface MessageRow extends Omit<
   as_chat: number;
 }
 
+export interface Routine {
+  user_id: number;
+  trigger_id: string;
+  token_enc: string;
+  updated_at: number;
+}
+
 export interface MemoryDoc {
   user_id: number;
   chat_id: number;
@@ -1356,6 +1363,38 @@ export class Store {
   }
 
   /** Users with any memory, for dropping those no longer allowed. */
+  // --- routines ------------------------------------------------------------
+
+  getRoutine(userId: number): Promise<Routine | null> {
+    return this.db
+      .prepare("SELECT * FROM routines WHERE user_id = ?")
+      .bind(userId)
+      .first<Routine>();
+  }
+
+  async setRoutine(userId: number, triggerId: string, tokenEnc: string): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO routines (user_id, trigger_id, token_enc, updated_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (user_id) DO UPDATE SET
+           trigger_id = excluded.trigger_id, token_enc = excluded.token_enc,
+           updated_at = excluded.updated_at`,
+      )
+      .bind(userId, triggerId, tokenEnc, nowSeconds())
+      .run();
+  }
+
+  async deleteRoutine(userId: number): Promise<void> {
+    await this.db.prepare("DELETE FROM routines WHERE user_id = ?").bind(userId).run();
+  }
+
+  async routineUsers(): Promise<number[]> {
+    const { results } = await this.db
+      .prepare("SELECT user_id FROM routines")
+      .all<{ user_id: number }>();
+    return results.map((row) => row.user_id);
+  }
+
   async memoryUsers(): Promise<number[]> {
     const { results } = await this.db
       .prepare("SELECT DISTINCT user_id FROM memory_docs")

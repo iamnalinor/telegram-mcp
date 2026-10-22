@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -200,6 +200,15 @@ const SCHEMA: string[] = [
     sent_at INTEGER NOT NULL,
     PRIMARY KEY (user_id, chat_id, client)
   ) WITHOUT ROWID`,
+
+  // The user's Claude Code routine, started when they tag Claude in Telegram.
+  // The API token is encrypted with a key derived from the bot token.
+  `CREATE TABLE IF NOT EXISTS routines (
+    user_id INTEGER PRIMARY KEY,
+    trigger_id TEXT NOT NULL,
+    token_enc TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
 
   // A user's Telegram Business connection: the bot reads their private chats,
   // and acts in them only as far as `rights` (set by the user in Telegram) allow.

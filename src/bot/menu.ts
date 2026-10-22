@@ -17,15 +17,23 @@
  *   m:add         how to connect a group
  *   m:personal    personal chats through Telegram Business
  *   m:help        how it works, retention, commands
+ *   m:cl          Claude on tag: the routine, if set
+ *   m:clh         how to set the routine up; m:clp sends its prompt
+ *   m:clset       asks for the trigger and token
+ *   m:cltest      starts the routine once, as a check
+ *   m:cldel       remove the routine: asks first; m:cldely does it
  *
  * Every press is checked again: anyone can send any callback_data.
  */
 
+import { decrypt } from "../crypto";
 import { isAllowed } from "../env";
+import { routinePrompt } from "../routine";
 import { memoryTitle } from "../tools/memory";
 import { TelegramError } from "../telegram/api";
 import type { CallbackQuery, InlineKeyboardMarkup, User } from "../telegram/types";
 import { hasConnected, type BotContext, type WebhookReply } from "./context";
+import { testRoutine } from "./routine";
 import { escapeHtml, formatDate, texts } from "./texts";
 
 export interface Screen {
@@ -54,7 +62,8 @@ export async function mainScreen(ctx: BotContext, user: User): Promise<Screen> {
       inline_keyboard: [
         [button(t.buttonGroups, "groups"), button(t.buttonAdd, "add")],
         [button(t.buttonMemory, "mem"), button(t.buttonSignIns, "si")],
-        [button(t.buttonPersonal, "personal"), button(t.buttonHelp, "help")],
+        [button(t.buttonRoutine, "cl"), button(t.buttonPersonal, "personal")],
+        [button(t.buttonHelp, "help")],
       ],
     },
   };
@@ -187,6 +196,45 @@ async function signInsScreen(ctx: BotContext, user: User): Promise<Screen> {
   };
 }
 
+async function routineScreen(ctx: BotContext, user: User): Promise<Screen> {
+  const t = texts(user.language_code);
+  const row = await ctx.store.getRoutine(user.id);
+  const state = !row
+    ? "none"
+    : (await decrypt(ctx.config.secretKey, row.token_enc)) === null
+      ? "broken"
+      : "set";
+  return {
+    text: t.routineScreen({
+      state,
+      trigger: row?.trigger_id,
+      since: row ? formatDate(row.updated_at) : undefined,
+    }),
+    reply_markup: {
+      inline_keyboard: [
+        [button(t.buttonGuide, "clh"), button(t.buttonSetRoutine, "clset")],
+        ...(state === "set" ? [[button(t.buttonTestRoutine, "cltest")]] : []),
+        ...(row ? [[button(t.buttonDeleteRoutine, "cldel")]] : []),
+        [button(t.buttonBack, "main")],
+      ],
+    },
+  };
+}
+
+function guideScreen(user: User): Screen {
+  const t = texts(user.language_code);
+  return {
+    text: t.routineGuide,
+    reply_markup: {
+      inline_keyboard: [
+        [{ text: t.buttonOpenRoutines, url: "https://claude.ai/code/routines" }],
+        [button(t.buttonSendPrompt, "clp"), button(t.buttonSetRoutine, "clset")],
+        [button(t.buttonBack, "cl")],
+      ],
+    },
+  };
+}
+
 function staticScreen(text: string, back: string, user: User): Screen {
   return {
     text,
@@ -273,6 +321,44 @@ async function render(
     };
   }
   if (name === "personal") return staticScreen(t.personalScreen, "main", user);
+  if (name === "cl") return routineScreen(ctx, user);
+  if (name === "clh") return guideScreen(user);
+  if (name === "clp") {
+    await ctx.api.call("sendMessage", {
+      chat_id: user.id,
+      text: `${t.routinePromptIntro}\n<pre>${escapeHtml(routinePrompt(user.username ?? null))}</pre>`,
+      parse_mode: "HTML",
+    });
+    return { ...guideScreen(user), note: t.promptSent };
+  }
+  if (name === "clset") {
+    await ctx.api.call("sendMessage", {
+      chat_id: user.id,
+      text: t.setRoutineAsk,
+      parse_mode: "HTML",
+      reply_markup: { force_reply: true, input_field_placeholder: "trig_… sk-ant-oat01-…" },
+    });
+    return { ...(await routineScreen(ctx, user)), note: t.setRoutineNote };
+  }
+  if (name === "cltest") {
+    await testRoutine(ctx, user, 0);
+    return routineScreen(ctx, user);
+  }
+  if (name === "cldel") {
+    return {
+      text: t.confirmDeleteRoutine,
+      reply_markup: {
+        inline_keyboard: [
+          [button(t.buttonConfirmRemove, "cldely")],
+          [button(t.buttonCancel, "cl")],
+        ],
+      },
+    };
+  }
+  if (name === "cldely") {
+    await ctx.store.deleteRoutine(user.id);
+    return { ...(await routineScreen(ctx, user)), note: t.routineDeleted };
+  }
   if (name === "add") {
     return {
       text: t.addScreen(ctx.bot.username),

@@ -6,7 +6,7 @@
  * rotating the token in @BotFather invalidates every session at once.
  */
 
-import { bytesToHex, hmac, hmacKey, sha256 } from "./crypto";
+import { aesKey, bytesToHex, hmac, hmacKey, sha256 } from "./crypto";
 
 export interface Env {
   BOT_TOKEN: string;
@@ -38,6 +38,8 @@ export interface Config {
   loginKey: CryptoKey;
   /** Sent by Telegram as X-Telegram-Bot-Api-Secret-Token on every webhook call. */
   webhookSecret: string;
+  /** Encrypts the routine tokens users give the bot (AES-GCM). */
+  secretKey: CryptoKey;
 }
 
 const DEFAULT_RETENTION_DAYS = 14;
@@ -94,5 +96,6 @@ async function buildConfig(env: Env): Promise<Config> {
     signingKey: await hmacKey(await hmac(root, "telegram-mcp/sign")),
     loginKey: await hmacKey(await sha256(botToken)),
     webhookSecret: bytesToHex(await hmac(root, "telegram-mcp/webhook")),
+    secretKey: await aesKey(await hmac(root, "telegram-mcp/secret")),
   };
 }
