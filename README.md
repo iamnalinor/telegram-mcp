@@ -249,7 +249,9 @@ bun run dev
 - `bun test`: unit tests plus end-to-end runs of the real Worker against SQLite (behind a D1-shaped
   adapter) and a fake Bot API. They cover the webhook gate, groups and grants, topics, replies,
   buttons, file links, OAuth, the allowlist, and concurrent and out-of-order updates.
-- `bun run lint`: prettier, eslint, tsc (TypeScript 7) and knip.
+- `bun run lint`: prettier, eslint, tsc (TypeScript 7) and knip. It fixes what it can in place;
+  `bun run check` only reports, and is what CI runs, with `bun test`, on pushes to `main` and on
+  pull requests.
 - `bun run dev` reads `BOT_TOKEN` from `.dev.vars` or `.env`. To feed it webhook calls from your
   machine, also set `DEV_SKIP_IP_CHECK=1` there (never in production).
 

@@ -7,7 +7,8 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "test": "bun test",
-    "lint": "prettier . --ignore-path .gitignore --write --log-level warn && eslint . --fix && tsc --pretty && knip --no-progress"
+    "lint": "prettier . --ignore-path .gitignore --write --log-level warn && eslint . --fix && tsc --pretty && knip --no-progress",
+    "check": "prettier . --ignore-path .gitignore --check --log-level warn && eslint . && tsc --pretty && knip --no-progress"
   },
   "dependencies": {
     "@modelcontextprotocol/server": "^2.3.1",
