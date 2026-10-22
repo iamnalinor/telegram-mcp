@@ -2,7 +2,7 @@
  * Starting the user's routine from Telegram.
  *
  * In a chat where Claude answers (see `claude_chats`), a message starts a
- * cloud session when it calls on the bot: `/claude …`, a mention, or a reply
+ * cloud session when it calls on the bot: `/run …` (private chat only), a mention, or a reply
  * to a message the bot sent for the chat's holder. A mention in the private
  * chat must be spelled out — everything there is "for the bot".
  *
@@ -27,7 +27,7 @@ import { escapeHtml, texts } from "./texts";
 /** A reply this long after a wait ended is a new task, not the answer. */
 const AWAIT_GRACE = 60;
 /** Starts from other members, per chat per hour. */
-const OTHERS_PER_HOUR = 5;
+const OTHERS_PER_HOUR = 20;
 /** Starts in all, per user per hour: Anthropic allows a routine about 30. */
 const USER_PER_HOUR = 30;
 
@@ -45,14 +45,13 @@ export async function maybeStart(
   const from = message.from;
   if (!from || from.is_bot) return;
   if (message.forward_origin || message.via_bot || message.sender_chat) return;
-  if (command && command.name !== "claude") return;
   const chat = message.chat;
+  // /run is for the private chat; in groups, commands start nothing — a mention does.
+  if (command && (command.name !== "run" || chat.type !== "private")) return;
   if (chat.type !== "private" && chat.type !== "group" && chat.type !== "supergroup") return;
   // Most messages call on nobody: they cost no read.
   const target = realReply(message);
   if (!command && !tagsBot(message, ctx.bot) && target?.from?.id !== ctx.bot.id) return;
-  // A bare /claude in a group is someone trying the command, not a task.
-  if (command && !command.args && !target && chat.type !== "private") return;
 
   const claim = await ctx.store.getClaudeChat(chat.id);
   if (!claim || !isAllowed(ctx.config, claim.user_id)) return;
@@ -107,6 +106,8 @@ export async function maybeStart(
   if (claimed === "again") return;
   if (claimed === "limit") {
     if (!byOther) await tell(where + ot.tooManyStarts);
+    // Not silence: the sender sees the bot is resting rather than ignoring them.
+    else await react(ctx, chat.id, message.message_id, "😴");
     return;
   }
 
@@ -141,29 +142,31 @@ export async function maybeStart(
     status: "started",
     sessionId: result.sessionId,
   });
-  await ctx.api
-    .call("setMessageReaction", {
-      chat_id: chat.id,
-      message_id: message.message_id,
-      reaction: [{ type: "emoji", emoji: "👀" }],
-    })
-    .catch(() => undefined); // Reactions may be off in that chat.
+  await react(ctx, chat.id, message.message_id, "👀");
 
-  if (chat.type === "private") {
-    await tell(ot.startedHere(result.sessionUrl), message.message_id);
-    return;
-  }
+  // The holder's own starts need no notice: 👀 says it, and the session answers there.
+  if (!byOther) return;
   const excerpt = Array.from(redactSecrets(message.text ?? message.caption ?? ""))
     .slice(0, 200)
     .join("");
   await tell(
     ot.startedIn({
       chat: chat.title ?? String(chat.id),
-      who: byOther ? displayName(from) : null,
+      who: displayName(from),
       text: excerpt,
       url: result.sessionUrl,
     }),
   );
+}
+
+function react(ctx: BotContext, chatId: number, messageId: number, emoji: string) {
+  return ctx.api
+    .call("setMessageReaction", {
+      chat_id: chatId,
+      message_id: messageId,
+      reaction: [{ type: "emoji", emoji }],
+    })
+    .catch(() => undefined); // Reactions may be off in that chat.
 }
 
 /**

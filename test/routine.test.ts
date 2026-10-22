@@ -132,7 +132,8 @@ describe("the menu", () => {
     await press("m:clp");
     const prompt = sentTexts().at(-1)!;
     expect(prompt).toContain("<pre>");
-    expect(prompt).toContain("tag @alice to decide");
+    expect(prompt).toContain("@alice decides");
+    expect(prompt).toContain("rather than tagging anyone");
     expect(prompt.length).toBeLessThan(4096);
 
     await press("m:clset");

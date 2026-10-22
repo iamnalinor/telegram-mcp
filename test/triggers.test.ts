@@ -51,11 +51,11 @@ const lastTo = (chatId: number) =>
     .at(-1);
 
 describe("in the private chat", () => {
-  it("starts on /claude, an explicit mention or a reply to the assistant — not on plain messages", async () => {
+  it("starts on /run, an explicit mention or a reply to the assistant — not on plain messages", async () => {
     await h.say(dm(ALICE), ALICE, "just a file for later");
     expect(h.fires).toHaveLength(0);
 
-    const asked = await h.say(dm(ALICE), ALICE, "/claude check the build");
+    const asked = await h.say(dm(ALICE), ALICE, "/run check the build");
     expect(h.fires).toHaveLength(1);
     expect(payload()).toContain(`chat: ${ALICE.id}`);
     expect(payload()).toContain(`message: ${String(asked.message_id)}`);
@@ -64,16 +64,17 @@ describe("in the private chat", () => {
       chat_id: ALICE.id,
       message_id: asked.message_id,
     });
-    expect(lastTo(ALICE.id)).toContain("Claude is on it");
+    // The user's own start needs no notice: 👀 says it.
+    expect(lastTo(ALICE.id)).not.toContain("Claude is on it");
 
     await h.say(dm(ALICE), ALICE, `${BOT} and the tests`);
     expect(h.fires).toHaveLength(2);
   });
 
-  it("explains /claude without a task", async () => {
-    await h.say(dm(ALICE), ALICE, "/claude");
+  it("explains /run without a task", async () => {
+    await h.say(dm(ALICE), ALICE, "/run");
     expect(h.fires).toHaveLength(0);
-    expect(lastTo(ALICE.id)).toContain("Write the task after /claude");
+    expect(lastTo(ALICE.id)).toContain("Write the task after /run");
   });
 
   it("starts once per message, however often Telegram retries it", async () => {
@@ -82,7 +83,7 @@ describe("in the private chat", () => {
       date: Math.floor(Date.now() / 1000),
       chat: { ...dm(ALICE), first_name: "Alice" },
       from: { ...ALICE, is_bot: false },
-      text: "/claude once",
+      text: "/run once",
     };
     await h.update({ message });
     await h.update({ message });
@@ -114,21 +115,21 @@ describe("in the private chat", () => {
   });
 
   it("does nothing for a forward, or once turned off", async () => {
-    await h.say(dm(ALICE), ALICE, `/claude ${BOT} look`, {
+    await h.say(dm(ALICE), ALICE, `/run ${BOT} look`, {
       forward_origin: { type: "hidden_user", sender_user_name: "Eve", date: 1 },
     });
     expect(h.fires).toHaveLength(0);
     await press(ALICE, "m:cldm");
-    await h.say(dm(ALICE), ALICE, "/claude look");
+    await h.say(dm(ALICE), ALICE, "/run look");
     expect(h.fires).toHaveLength(0);
     await press(ALICE, "m:cldm");
-    await h.say(dm(ALICE), ALICE, "/claude look");
+    await h.say(dm(ALICE), ALICE, "/run look");
     expect(h.fires).toHaveLength(1);
   });
 
   it("tells the user, not the chat, why it could not start", async () => {
     h.fireAnswer = () => new Response("{}", { status: 401 });
-    await h.say(dm(ALICE), ALICE, "/claude look");
+    await h.say(dm(ALICE), ALICE, "/run look");
     expect(lastTo(ALICE.id)).toContain("token was refused");
     expect(h.telegram.called("setMessageReaction")).toHaveLength(0);
   });
@@ -160,18 +161,14 @@ describe("in a group", () => {
     await press(ALICE, `m:gc:${TEAM.id}`);
   });
 
-  it("starts for the holder's mention and reply, and tells them quietly", async () => {
+  it("starts for the holder's mention without telling them about their own start", async () => {
     await h.say(TEAM, ALICE, "lunch?");
     expect(h.fires).toHaveLength(0);
+    const sentBefore = h.telegram.called("sendMessage").length;
     await h.say(TEAM, ALICE, `${BOT} fix the login page`);
     expect(h.fires).toHaveLength(1);
     expect(payload()).toContain(`chat: ${TEAM.id}`);
-    const notice = h.telegram.called("sendMessage").at(-1)!.params;
-    expect(notice.chat_id).toBe(ALICE.id);
-    expect(notice.disable_notification).toBe(true);
-    expect(String(notice.text)).toContain(
-      "Claude started in «Team chat»: «@test_mcp_bot fix the login page»",
-    );
+    expect(h.telegram.called("sendMessage")).toHaveLength(sentBefore);
   });
 
   it("ignores other members until the holder lets them in, then limits them", async () => {
@@ -189,10 +186,17 @@ describe("in a group", () => {
     await h.say(TEAM, BOB, `${BOT} what is our deadline?`);
     expect(h.fires).toHaveLength(1);
     expect(payload()).toContain("by: other");
-    expect(lastTo(ALICE.id)).toContain("for Bob");
+    const notice = h.telegram.called("sendMessage").at(-1)!.params;
+    expect(notice.chat_id).toBe(ALICE.id);
+    expect(notice.disable_notification).toBe(true);
+    expect(String(notice.text)).toContain("Claude started in «Team chat» for Bob");
 
-    for (let i = 0; i < 6; i++) await h.say(TEAM, BOB, `${BOT} again ${i}`);
-    expect(h.fires).toHaveLength(5);
+    for (let i = 0; i < 20; i++) await h.say(TEAM, BOB, `${BOT} again ${i}`);
+    expect(h.fires).toHaveLength(20);
+    // Past the limit the sender sees 😴, not silence.
+    expect(h.telegram.called("setMessageReaction").at(-1)!.params.reaction).toEqual([
+      { type: "emoji", emoji: "😴" },
+    ]);
   });
 
   it("keeps the chat for whoever turned it on first, until they leave", async () => {
@@ -245,11 +249,11 @@ describe("in a group", () => {
     expect(claims()).toBe(0);
   });
 
-  it("a burst of others' tags still starts five, and their failures reach the holder once", async () => {
+  it("a burst of others' tags still starts twenty, and their failures reach the holder once", async () => {
     h.telegram.members.set(`${TEAM.id}:${BOB.id}`, "member");
     await press(ALICE, `m:goy:${TEAM.id}`);
-    await Promise.all(Array.from({ length: 8 }, (_, i) => h.say(TEAM, BOB, `${BOT} go ${i}`)));
-    expect(h.fires).toHaveLength(5);
+    await Promise.all(Array.from({ length: 25 }, (_, i) => h.say(TEAM, BOB, `${BOT} go ${i}`)));
+    expect(h.fires).toHaveLength(20);
 
     h.db.raw.exec("DELETE FROM fires");
     h.fires.length = 0;
@@ -266,8 +270,9 @@ describe("in a group", () => {
     expect(String(notices[0].params.text)).toContain("token was refused");
   });
 
-  it("a bare /claude in the group starts nothing", async () => {
-    await h.say(TEAM, ALICE, "/claude@test_mcp_bot");
+  it("commands in the group start nothing, /run included", async () => {
+    await h.say(TEAM, ALICE, "/run@test_mcp_bot fix it");
+    await h.say(TEAM, ALICE, "/run fix it");
     expect(h.fires).toHaveLength(0);
   });
 
