@@ -1749,11 +1749,15 @@ export class Store {
     };
   }
 
-  /** A start in this chat since `since`, other than this message's: a session about to read it along. */
+  /**
+   * A start for an earlier message in this chat since `since`: a session about
+   * to read this one along. Earlier only — two messages handled at once must
+   * not both wait on the other.
+   */
   async recentStart(chatId: number, messageId: number, since: number): Promise<boolean> {
     const row = await this.db
       .prepare(
-        `SELECT 1 FROM fires WHERE chat_id = ? AND message_id != ? AND at >= ?
+        `SELECT 1 FROM fires WHERE chat_id = ? AND message_id < ? AND at >= ?
          AND status IN ('pending', 'started') LIMIT 1`,
       )
       .bind(chatId, messageId, since)
@@ -1915,12 +1919,14 @@ export class Store {
       .prepare(
         `UPDATE relay_jobs SET status = 'taken', taken_at = ?1
          WHERE id IN (SELECT id FROM relay_jobs WHERE user_id = ?2 AND status = 'queued'
-                      ORDER BY created_at LIMIT ?3)
+                      ORDER BY created_at, message_id LIMIT ?3)
          RETURNING *`,
       )
       .bind(nowSeconds(), userId, limit)
       .all<RelayJob>();
-    return results.sort((a, b) => a.created_at - b.created_at);
+    return results.sort(
+      (a, b) => a.created_at - b.created_at || (a.message_id ?? 0) - (b.message_id ?? 0),
+    );
   }
 
   /** The relay's report on a job it took; null when it was not that relay's or not taken. */
@@ -1952,6 +1958,21 @@ export class Store {
          RETURNING *`,
       )
       .bind(queuedBefore, takenBefore)
+      .all<RelayJob>();
+    return results;
+  }
+
+  /**
+   * The day's messages still queued for a session that turned out gone: they
+   * fail too, and the session started in its place reads them along.
+   */
+  async foldDayJobs(userId: number, session: string): Promise<RelayJob[]> {
+    const { results } = await this.db
+      .prepare(
+        `UPDATE relay_jobs SET status = 'failed', error = 'its session was gone; the new one reads it'
+         WHERE user_id = ? AND target_session = ? AND kind = 'day' AND status = 'queued' RETURNING *`,
+      )
+      .bind(userId, session)
       .all<RelayJob>();
     return results;
   }

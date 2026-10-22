@@ -27,9 +27,9 @@ import { installScript } from "./relayScript";
 import type { RelayJob, RelayOrigin, RelayRow, Store } from "./store";
 
 /** Heard from within this long: online. The relay asks every few seconds. */
-const ONLINE_SECONDS = 90;
+const ONLINE_SECONDS = 120;
 /** A job nobody took within this long fails, and a reply starts a session instead. */
-const JOB_EXPIRY_SECONDS = 180;
+const JOB_EXPIRY_SECONDS = 330;
 /** One at a time: the relay calls in between jobs, so a slow one does not make it look gone. */
 const JOBS_PER_POLL = 1;
 /**
@@ -191,6 +191,8 @@ export async function handleRelay(
     );
     const deadline = Date.now() + wait * 1000;
     for (;;) {
+      // A relay that hung up (restarted, say) must not be handed a job it will never see.
+      if (request.signal?.aborted) return new Response(null, { status: 499 });
       const jobs = await store.takeJobs(relay.user_id, JOBS_PER_POLL);
       if (jobs.length || Date.now() + WAIT_STEP_MS > deadline) {
         return Response.json(
@@ -209,6 +211,8 @@ export async function handleRelay(
   } catch {
     return new Response("expected JSON\n", { status: 400 });
   }
+  // A report is a sign of life too: a long job must not make the relay look gone.
+  await store.touchRelay(relay.user_id, now);
   const ok = report.ok === true;
   const error = ok
     ? null
@@ -239,6 +243,14 @@ export async function fallBack(
   why: "login" | "offline" | "failed",
 ): Promise<void> {
   if (job.chat_id === null || job.message_id === null) return;
+  if (job.kind === "day") {
+    // One new session for the day, not one per message queued behind this one.
+    for (const later of await ctx.store.foldDayJobs(job.user_id, job.target_session)) {
+      if (later.chat_id !== null && later.message_id !== null) {
+        await ctx.store.endFire(later.chat_id, later.message_id, { status: "joined" });
+      }
+    }
+  }
   const chat = await ctx.store.getChat(job.chat_id);
   await launch(ctx, {
     holder: job.user_id,
@@ -263,7 +275,19 @@ export async function sweepRelays(store: Store, botFor: () => Promise<BotContext
   if (!expired.length) return;
   const ctx = await botFor();
   const seen = new Set<number>();
-  for (const job of expired) {
+  const restarted = new Set<string>();
+  const order = (a: RelayJob, b: RelayJob) =>
+    a.created_at - b.created_at || (a.message_id ?? 0) - (b.message_id ?? 0);
+  for (const job of expired.sort(order)) {
+    // The day's messages for one session start one new session; the rest join it.
+    const day = `${job.user_id}:${job.target_session}`;
+    if (job.kind === "day" && restarted.has(day)) {
+      if (job.chat_id !== null && job.message_id !== null) {
+        await ctx.store.endFire(job.chat_id, job.message_id, { status: "joined" });
+      }
+      continue;
+    }
+    if (job.kind === "day") restarted.add(day);
     const state = relayState(await store.getRelay(job.user_id), now);
     if (!seen.has(job.user_id) && job.taken_at === null) {
       seen.add(job.user_id);

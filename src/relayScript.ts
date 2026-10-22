@@ -12,7 +12,7 @@
  * (`claude`, then /login) — the relay writes to sessions as that account.
  *
  * The shell's own `${…}` would clash with the template, so the scripts do
- * without it (the one use is spelled out).
+ * without it (where it must, it is spelled ${"$"}{…}).
  */
 
 const RELAY_LOOP = String.raw`#!/usr/bin/env bash

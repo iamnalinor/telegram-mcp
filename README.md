@@ -281,10 +281,11 @@ What starts a session:
 
 Every start goes into the group's 📜 Starts: who, when, the first words and a link to the session.
 
-Never: forwards, messages via inline bots, edits, commands in groups, or a
-reply that a waiting `ask_user` will pick up. Each message starts one session at most, however often
-Telegram retries it. The bot reacts 👀 to the message; sessions answer by replying to it rather than
-tagging anyone. Failures go to your private chat, never to the group. Each start is a billed session that counts toward the
+Never: commands, edits, answers to the bot's own prompts, a reply that a waiting `ask_user` will
+pick up, and — in groups — forwards and messages via inline bots. Each message starts one session at
+most, however often Telegram retries it. The bot reacts 👀 when a new session starts (not when a
+message goes into one already running); sessions answer by replying to it rather than tagging
+anyone. Failures go to your private chat, never to the group. Each start is a billed session that counts toward the
 routine's own limits.
 
 ### Talking to other sessions

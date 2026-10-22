@@ -396,3 +396,60 @@ describe("long poll", () => {
     expect(Date.now() - t1).toBeLessThan(5000);
   });
 });
+
+describe("after review", () => {
+  const age = (seconds: number) => h.db.raw.exec(`UPDATE fires SET at = at - ${seconds}`);
+
+  it("two messages handled at once do not both wait on each other", async () => {
+    // A later message's start, claimed in the same instant, must not hold this one back.
+    h.db.raw.exec(
+      `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at) VALUES (${ALICE.id}, 99999, ${ALICE.id}, 0, 'pending', ${Math.floor(Date.now() / 1000)})`,
+    );
+    await h.say(dm(ALICE), ALICE, "first");
+    expect(h.fires).toHaveLength(1);
+  });
+
+  it("an answer to the bot's own prompt starts nothing", async () => {
+    await press("m:clset");
+    const prompt = h.telegram.called("sendMessage").at(-1)!;
+    const sent = h.db.raw
+      .query("SELECT message_id FROM messages WHERE outgoing = 1 ORDER BY message_id DESC")
+      .get() as { message_id: number } | null;
+    await h.say(dm(ALICE), ALICE, "trig_01F9YA8ci7HHDqR8LkjEAq", {
+      reply_to_message: {
+        message_id: sent?.message_id ?? 4242,
+        from: { id: 123456, is_bot: true, first_name: "Test" },
+        chat: dm(ALICE),
+        date: 1,
+        text: String(prompt.params.text),
+      },
+    });
+    expect(h.fires).toHaveLength(0);
+  });
+
+  it("messages queued for a day session that is gone start one new session", async () => {
+    const token = await relayToken();
+    await poll(token);
+    await h.say(dm(ALICE), ALICE, "plan my week");
+    age(120);
+    await h.say(dm(ALICE), ALICE, "and the gym");
+    await h.say(dm(ALICE), ALICE, "and groceries");
+    const [job] = await jobs(token);
+    await report(token, job.id, { ok: false, error: "cloud session is archived" });
+    expect(h.fires).toHaveLength(2);
+    const statuses = (
+      h.db.raw.query("SELECT status FROM fires ORDER BY message_id").all() as { status: string }[]
+    ).map((row) => row.status);
+    expect(statuses).toEqual(["started", "started", "joined"]);
+    expect(await jobs(token)).toHaveLength(0);
+  });
+
+  it("a signed-out relay's long poll answers at once", async () => {
+    const token = await relayToken();
+    await poll(token);
+    h.db.raw.exec("UPDATE relays SET login_failed_at = 1");
+    const t0 = Date.now();
+    await h.fetch("/relay/jobs?wait=10", { headers: { authorization: `Bearer ${token}` } });
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+});

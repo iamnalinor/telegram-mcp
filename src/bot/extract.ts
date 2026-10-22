@@ -106,11 +106,6 @@ function originName(message: Message): string | null {
   return chat?.title ?? chat?.username ?? "unknown";
 }
 
-/**
- * In a forum, every message that is not an explicit reply arrives with
- * `reply_to_message` set to the topic's creation message. That is the
- * thread, not a reply, and must not read as one.
- */
 /** Whether a message says or carries anything: not a service message. */
 export function hasContent(message: Message): boolean {
   return Boolean(
@@ -123,6 +118,11 @@ export function hasContent(message: Message): boolean {
   );
 }
 
+/**
+ * In a forum, every message that is not an explicit reply arrives with
+ * `reply_to_message` set to the topic's creation message. That is the
+ * thread, not a reply, and must not read as one.
+ */
 export function realReply(message: Message): Message | undefined {
   const reply = message.reply_to_message;
   if (!reply || reply.forum_topic_created) return undefined;

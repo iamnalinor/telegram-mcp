@@ -83,6 +83,8 @@ export async function maybeStart(
       : null;
   const replyToHolder = answered?.outgoing === true && answered.sent_by === holder;
   if (!isPrivate && !tagsBot(message, ctx.bot) && !replyToHolder) return;
+  // An answer to the bot's own prompt (the menu asking for the routine, say) is for the bot.
+  if (isPrivate && target?.from?.id === ctx.bot.id && !replyToHolder) return;
 
   // The session that sent it is listening: the answer is its to take.
   const now = nowSeconds();
