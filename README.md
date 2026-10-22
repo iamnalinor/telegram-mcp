@@ -138,8 +138,8 @@ Telegram lets a user connect a bot to their own account (Telegram Business → C
 receives the user's private chats with other people, and Claude can read and search them like any
 other chat.
 
-1. In [@BotFather](https://t.me/BotFather): your bot → Bot Settings → **Business Mode** → on. Once
-   per bot.
+1. In [@BotFather](https://t.me/BotFather): your bot → Bot Settings → **Secretary Mode** → on
+   (called Business Mode before). Once per bot.
 2. Each user who wants it, in Telegram: Settings → Telegram Business → **Chatbots** → add the bot.
    There they choose which chats it gets (all except some, or only some) and what it may do.
 
