@@ -55,6 +55,7 @@ export async function testRoutine(ctx: BotContext, user: User, messageId: number
     firePayload({ chat: user.id, message: messageId, by: "test" }),
   );
   if (result.ok) {
+    await ctx.store.setRoutineTest(user.id, result.sessionId);
     await say(ctx, user.id, t.testStarted(result.sessionUrl));
     return;
   }

@@ -69,6 +69,9 @@ export interface Routine {
   trigger_id: string;
   token_enc: string;
   updated_at: number;
+  /** The last test start: its session, and when. */
+  test_session: string | null;
+  test_at: number | null;
 }
 
 export interface ClaudeChat {
@@ -1422,10 +1425,32 @@ export class Store {
         `INSERT INTO routines (user_id, trigger_id, token_enc, updated_at) VALUES (?1, ?2, ?3, ?4)
          ON CONFLICT (user_id) DO UPDATE SET
            trigger_id = excluded.trigger_id, token_enc = excluded.token_enc,
-           updated_at = excluded.updated_at`,
+           updated_at = excluded.updated_at, test_session = NULL, test_at = NULL`,
       )
       .bind(userId, triggerId, tokenEnc, nowSeconds())
       .run();
+  }
+
+  async setRoutineTest(userId: number, sessionId: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE routines SET test_session = ?, test_at = ? WHERE user_id = ?")
+      .bind(sessionId, nowSeconds(), userId)
+      .run();
+  }
+
+  /** Whether this session has sent anything to the chat since `since` — a test start answering. */
+  async sessionSpokeIn(chatId: number, sessionId: string, since: number): Promise<boolean> {
+    const chat = { account_id: BOT_ACCOUNT, chat_id: chatId };
+    const [floor] = await this.idFloors([chat], [since]);
+    const row = await this.db
+      .prepare(
+        `SELECT 1 FROM messages
+         WHERE account_id = ? AND chat_id = ? AND message_id >= ? AND outgoing = 1 AND session_id = ?
+         LIMIT 1`,
+      )
+      .bind(chat.account_id, chat.chat_id, floor, sessionId)
+      .first();
+    return row !== null;
   }
 
   async deleteRoutine(userId: number): Promise<void> {
@@ -1478,6 +1503,15 @@ export class Store {
       .bind(limit)
       .all<ClaudeChat>();
     return results;
+  }
+
+  /** The chats where Claude answers for this user, and whether others may start it there. */
+  async claudeChatsOf(userId: number): Promise<Map<number, boolean>> {
+    const { results } = await this.db
+      .prepare("SELECT chat_id, others FROM claude_chats WHERE user_id = ?")
+      .bind(userId)
+      .all<{ chat_id: number; others: number }>();
+    return new Map(results.map((row) => [row.chat_id, row.others === 1]));
   }
 
   async dropClaudeChats(userId: number): Promise<void> {

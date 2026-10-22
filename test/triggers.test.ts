@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
+import { resetBotIdentity } from "../src/telegram/api";
 import { Harness } from "./harness";
 
 const ALICE = { id: 111, first_name: "Alice", username: "alice", language_code: "en" };
@@ -133,6 +134,25 @@ describe("in the private chat", () => {
   });
 });
 
+describe("the routine screen", () => {
+  it("tells whether the test session answered", async () => {
+    let screen = await press(ALICE, "m:cl");
+    expect(String(screen!.text)).toContain("no answer yet");
+    await h.tool(alice, "send_message", { text: "ok", session: "cse_01TestSession0000000001" });
+    screen = await press(ALICE, "m:cl");
+    expect(String(screen!.text)).toContain("it works");
+  });
+
+  it("forgets the old test when the routine is set again", async () => {
+    await h.tool(alice, "send_message", { text: "ok", session: "cse_01TestSession0000000001" });
+    // Within the minute, the new routine's test start is held back: no status rather than a stale one.
+    await h.say(dm(ALICE), ALICE, `${TRIGGER} ${TOKEN}`);
+    const screen = await press(ALICE, "m:cl");
+    expect(String(screen!.text)).not.toContain("it works");
+    expect(String(screen!.text)).not.toContain("no answer yet");
+  });
+});
+
 describe("in a group", () => {
   beforeEach(async () => {
     await h.addBot(TEAM, ALICE);
@@ -256,6 +276,19 @@ describe("in a group", () => {
     expect(h.db.raw.query("SELECT * FROM claude_chats").get()).toBeNull();
     await h.say(TEAM, ALICE, `${BOT} hi`);
     expect(h.fires).toHaveLength(0);
+  });
+
+  it("marks the group in the list, and warns when the bot sees only mentions", async () => {
+    let list = await press(ALICE, "m:groups");
+    expect(String(list!.text)).toContain("🤖 <b>Team chat</b>");
+    await press(ALICE, `m:goy:${TEAM.id}`);
+    list = await press(ALICE, "m:groups");
+    expect(String(list!.text)).toContain("🤖⚠️ <b>Team chat</b>");
+
+    expect(String((await press(ALICE, `m:g:${TEAM.id}`))!.text)).not.toContain("privacy mode");
+    h.telegram.privacyOn = true;
+    resetBotIdentity();
+    expect(String((await press(ALICE, `m:g:${TEAM.id}`))!.text)).toContain("privacy mode is on");
   });
 
   it("needs the routine first", async () => {

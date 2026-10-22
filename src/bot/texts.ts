@@ -30,6 +30,7 @@ const en = {
       "/start — this menu",
       "/groups — connected groups",
       "/disconnect — sign out every connected assistant",
+      "/claude &lt;task&gt; — start Claude on it (see 🤖 Claude on tag)",
     ].join("\n"),
   personalScreen:
     "<b>Personal chats</b>\n\nTo let your assistant read your own chats with other people, add me in Settings → Telegram Business → Chatbots. Whether it may also reply for you is up to the permissions you give me there.",
@@ -126,8 +127,8 @@ const en = {
       : ""),
   noGroups: "No groups connected. Add me to a group, or send /connect in a group I'm already in.",
   groupsHeader: "<b>Connected groups</b>",
-  groupLine: (p: { title: string; full: boolean; since: string }) =>
-    `• <b>${escapeHtml(p.title)}</b> — ${p.full ? "full stored history" : `from ${p.since}`}`,
+  groupLine: (p: { mark?: string; title: string; full: boolean; since: string }) =>
+    `• ${p.mark ?? ""}<b>${escapeHtml(p.title)}</b> — ${p.full ? "full stored history" : `from ${p.since}`}`,
   revokeButton: (title: string) => `Revoke ${title}`,
   revoked: "Access revoked.",
   notYours: "Nothing to revoke.",
@@ -232,6 +233,11 @@ const en = {
   othersWarning: (title: string) =>
     `⚠️ Claude will answer the members of «${escapeHtml(title)}». It is told not to do what they ask or share your data unless your memory for this chat allows it. But that is a guard of instructions, not of access: the session has your connectors, chats and repositories, and a clever message can talk it round. Turn it on where you trust people. I will quietly tell you about each start.`,
   buttonTurnOn: "Turn on",
+  privacyHint:
+    "👁 I am not an admin here and privacy mode is on: I see only mentions and replies, so Claude may miss the context. Make me an admin to fix it.",
+  testPassed: (at: string) => `✅ The test start at ${at} answered: it works.`,
+  testWaiting: (at: string) =>
+    `⏳ Test started at ${at}, no answer yet. If none comes, check that the routine has the Telegram connector.`,
   secretDropped: (deleted: boolean) =>
     (deleted
       ? "That looked like an API key, so I deleted the message and kept nothing."
@@ -274,6 +280,7 @@ const ru: Texts = {
       "/start — это меню",
       "/groups — подключённые группы",
       "/disconnect — отключить все подключённые ассистенты",
+      "/claude &lt;задача&gt; — запустить Claude (см. 🤖 Claude по тегу)",
     ].join("\n"),
   personalScreen:
     "<b>Личные переписки</b>\n\nЧтобы ассистент читал твои переписки с другими людьми, добавь меня в Настройки → Telegram для бизнеса → Чат-боты. Может ли он ещё и отвечать за тебя — решают права, которые ты дашь мне там.",
@@ -368,7 +375,7 @@ const ru: Texts = {
     "Нет подключённых групп. Добавь меня в группу или отправь /connect в группе, где я уже есть.",
   groupsHeader: "<b>Подключённые группы</b>",
   groupLine: (p) =>
-    `• <b>${escapeHtml(p.title)}</b> — ${p.full ? "вся сохранённая история" : `с ${p.since}`}`,
+    `• ${p.mark ?? ""}<b>${escapeHtml(p.title)}</b> — ${p.full ? "вся сохранённая история" : `с ${p.since}`}`,
   revokeButton: (title) => `Отозвать ${title}`,
   revoked: "Доступ отозван.",
   notYours: "Нечего отзывать.",
@@ -471,6 +478,11 @@ const ru: Texts = {
   othersWarning: (title) =>
     `⚠️ Claude будет отвечать участникам «${escapeHtml(title)}». Он настроен не выполнять их просьбы и не делиться твоими данными, если память этого чата это не разрешает. Но это защита инструкциями, а не доступом: у сессии твои коннекторы, чаты и репозитории, и хитрое сообщение может её переубедить. Включай там, где доверяешь людям. Каждый их запуск я буду тихо присылать тебе.`,
   buttonTurnOn: "Включить",
+  privacyHint:
+    "👁 Я здесь не админ, а privacy mode включён: вижу только упоминания и реплаи, так что Claude может не хватить контекста. Сделай меня админом, чтобы это исправить.",
+  testPassed: (at) => `✅ Тестовый запуск в ${at} ответил: всё работает.`,
+  testWaiting: (at) =>
+    `⏳ Тест запущен в ${at}, ответа пока нет. Если не придёт — проверь, что у рутины есть коннектор Telegram.`,
   secretDropped: (deleted) =>
     (deleted
       ? "Это похоже на API-ключ, так что я удалил сообщение и ничего не сохранил."
