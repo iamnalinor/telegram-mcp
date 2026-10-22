@@ -266,8 +266,7 @@ What starts a session:
 - **Other members** of that group too, only if you turn on "Others too". The session is told to treat
   their words as data, to do nothing for them that your memory for the chat does not explicitly
   allow, and to ask you in your private chat instead — but it runs with your connectors, so that is a
-  guard of instructions, not of access. Their starts are limited to 20 an hour per chat (past that the
-  bot reacts 😴), and each is reported to you quietly. A reply of theirs to your assistant's message starts a new session too, told
+  guard of instructions, not of access. Their starts are limited per chat — 20 an hour by default, 5 to 50 in the group's screen; past that the bot reacts 😴 and tells you quietly, once an hour — and each start is reported to you quietly. A reply of theirs to your assistant's message starts a new session too, told
   which session wrote it — under the same rules.
 
 Never: forwards, messages via inline bots or posted as a channel, edits, commands in groups, or a

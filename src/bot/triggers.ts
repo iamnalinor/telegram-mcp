@@ -26,8 +26,6 @@ import { escapeHtml, texts } from "./texts";
 
 /** A reply this long after a wait ended is a new task, not the answer. */
 const AWAIT_GRACE = 60;
-/** Starts from other members, per chat per hour. */
-const OTHERS_PER_HOUR = 20;
 /** Starts in all, per user per hour: Anthropic allows a routine about 30. */
 const USER_PER_HOUR = 30;
 
@@ -101,13 +99,19 @@ export async function maybeStart(
   const quiet = byOther && (await ctx.store.othersFailedSince(holder, chat.id, now - 3600));
   const claimed = await ctx.store.beginFire(
     { chatId: chat.id, messageId: message.message_id, userId: holder, byOther },
-    { user: USER_PER_HOUR, others: OTHERS_PER_HOUR },
+    { user: USER_PER_HOUR, others: claim.others_limit },
   );
   if (claimed === "again") return;
   if (claimed === "limit") {
-    if (!byOther) await tell(where + ot.tooManyStarts);
-    // Not silence: the sender sees the bot is resting rather than ignoring them.
-    else await react(ctx, chat.id, message.message_id, "😴");
+    if (!byOther) {
+      await tell(where + ot.tooManyStarts);
+      return;
+    }
+    // Not silence: the sender sees the bot is resting, and the holder hears once an hour.
+    await react(ctx, chat.id, message.message_id, "😴");
+    if (await ctx.store.noteLimited(chat.id, message.message_id, holder)) {
+      await tell(where + ot.othersLimited(claim.others_limit));
+    }
     return;
   }
 

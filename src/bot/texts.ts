@@ -220,14 +220,17 @@ const en = {
     "Here: /run &lt;task&gt;, a mention, or a reply to a message your assistant sent. In groups, turn it on in 👥 Groups.",
   claudeToggle: (on: boolean): string => (on ? "🤖 Claude answers: ✅" : "🤖 Claude answers: off"),
   othersToggle: (on: boolean): string => (on ? "👥 Others too: ⚠️ on" : "👥 Others too: off"),
-  groupClaude: (p: { on: boolean; others: boolean; heldBy: string | null }) =>
+  groupClaude: (p: { on: boolean; others: boolean; limit: number; heldBy: string | null }) =>
     p.heldBy
       ? `\n\n🤖 Claude answers here for ${p.heldBy}. You can turn it on once they turn it off.`
       : p.on
         ? `\n\n🤖 A mention of me or a reply to your assistant's message starts Claude — for you` +
-          (p.others ? ", and ⚠️ for everyone else here." : " only.")
+          (p.others ? `, and ⚠️ for everyone else here, up to ${p.limit} times an hour.` : " only.")
         : "",
   chatHeld: "Claude already answers here for someone else.",
+  othersLimitButton: (limit: number) => `⏱ Others: up to ${limit}/h`,
+  othersLimited: (limit: number) =>
+    `😴 Other members used up ${limit} starts this hour; theirs wait until it passes (they see 😴). Change the limit in 👥 Groups.`,
   routineFirst: "Set up 🤖 Claude on tag first.",
   othersWarning: (title: string) =>
     `⚠️ Claude will answer the members of «${escapeHtml(title)}». It is told not to do what they ask or share your data unless your memory for this chat allows it. But that is a guard of instructions, not of access: the session has your connectors, chats and repositories, and a clever message can talk it round. Turn it on where you trust people. I will quietly tell you about each start.`,
@@ -469,9 +472,12 @@ const ru: Texts = {
       ? `\n\n🤖 Здесь Claude отвечает для ${p.heldBy}. Включить можно, когда он отключит.`
       : p.on
         ? `\n\n🤖 Упоминание меня или реплай на сообщение ассистента запускает Claude — для тебя` +
-          (p.others ? ", и ⚠️ для всех остальных здесь." : ".")
+          (p.others ? `, и ⚠️ для всех остальных здесь — до ${p.limit} раз в час.` : ".")
         : "",
   chatHeld: "Здесь Claude уже отвечает для другого человека.",
+  othersLimitButton: (limit) => `⏱ Другим: до ${limit}/ч`,
+  othersLimited: (limit) =>
+    `😴 Остальные участники исчерпали ${limit} запусков за час; их теги подождут, пока он пройдёт (они видят 😴). Лимит меняется в 👥 Группах.`,
   routineFirst: "Сначала настрой 🤖 Claude по тегу.",
   othersWarning: (title) =>
     `⚠️ Claude будет отвечать участникам «${escapeHtml(title)}». Он настроен не выполнять их просьбы и не делиться твоими данными, если память этого чата это не разрешает. Но это защита инструкциями, а не доступом: у сессии твои коннекторы, чаты и репозитории, и хитрое сообщение может её переубедить. Включай там, где доверяешь людям. Каждый их запуск я буду тихо присылать тебе.`,

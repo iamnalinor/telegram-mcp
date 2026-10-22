@@ -270,6 +270,22 @@ describe("in a group", () => {
     expect(String(notices[0].params.text)).toContain("token was refused");
   });
 
+  it("lets the holder set the others' limit, and tells them quietly once it is reached", async () => {
+    h.telegram.members.set(`${TEAM.id}:${BOB.id}`, "member");
+    await press(ALICE, `m:goy:${TEAM.id}`);
+    const screen = await press(ALICE, `m:gl:${TEAM.id}`); // 20 → 50
+    expect(String(screen!.text)).toContain("up to 50 times an hour");
+    await press(ALICE, `m:gl:${TEAM.id}`); // → 5
+    for (let i = 0; i < 8; i++) await h.say(TEAM, BOB, `${BOT} hi ${i}`);
+    expect(h.fires).toHaveLength(5);
+    const notices = h.telegram
+      .called("sendMessage")
+      .filter((c) => String(c.params.text).includes("used up 5 starts"));
+    expect(notices).toHaveLength(1);
+    expect(notices[0].params.chat_id).toBe(ALICE.id);
+    expect(notices[0].params.disable_notification).toBe(true);
+  });
+
   it("commands in the group start nothing, /run included", async () => {
     await h.say(TEAM, ALICE, "/run@test_mcp_bot fix it");
     await h.say(TEAM, ALICE, "/run fix it");
