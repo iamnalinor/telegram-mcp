@@ -62,6 +62,7 @@ async function renderer(
   ctx: ToolContext,
   chats: ChatView[],
   messages: StoredMessage[],
+  extra: string[] = [],
 ): Promise<Renderer> {
   const present = new Map(
     messages.map((message) => [`${message.chat_id}:${message.message_id}`, message]),
@@ -83,7 +84,7 @@ async function renderer(
   const topics = await ctx.store.topics(
     chats.filter((chat) => chat.is_forum).map((chat) => chat.chat_id),
   );
-  return new Renderer(ctx.bot.username, ctx.userId, chats, topics, present);
+  return new Renderer(ctx.bot.username, ctx.userId, chats, topics, present, extra);
 }
 
 function nothingFound(ctx: ToolContext, what: string): string {
@@ -374,7 +375,9 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           ctx.store.reactionsFor(chat.chat_id, message.message_id),
         ]);
 
-        const render = await renderer(ctx, [chat], [message, ...chain]);
+        const presented = formatPresses(presses, ctx.userId);
+        const reacted = formatReactions(reactions, ctx.userId);
+        const render = await renderer(ctx, [chat], [message, ...chain], [presented, reacted]);
         const parts = [render.fence.note(), render.message(message, { full: true })];
         if (message.file_id) {
           parts.push(
@@ -382,10 +385,10 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           );
         }
         if (presses.length) {
-          parts.push(`Button presses:\n${render.fence.wrap(formatPresses(presses, ctx.userId))}`);
+          parts.push(`Button presses:\n${render.fence.wrap(presented)}`);
         }
         if (reactions.length) {
-          parts.push(`Reactions:\n${render.fence.wrap(formatReactions(reactions, ctx.userId))}`);
+          parts.push(`Reactions:\n${render.fence.wrap(reacted)}`);
         }
         if (chain.length) {
           parts.push(
@@ -445,7 +448,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         if (isTextual(message)) {
           const content = new TextDecoder().decode(bytes);
           const cut = content.length > INLINE_TEXT_CHARS;
-          const fence = new Fence(ctx.userId);
+          const fence = new Fence(ctx.userId, [content]);
           return text(
             `${info}\n\nContent${cut ? ` (first ${INLINE_TEXT_CHARS} characters of ${content.length}; download for the rest)` : ""}. ${fence.note()}\n` +
               fence.wrap(content.slice(0, INLINE_TEXT_CHARS)),

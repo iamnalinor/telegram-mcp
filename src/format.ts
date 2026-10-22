@@ -5,8 +5,8 @@
  * which forum topic, whether the bot was tagged.
  *
  * All of it is written by whoever posted it, so each message is fenced in a
- * tag picked fresh for every result: a message cannot guess it, so it cannot
- * close the fence early and pose as tool output. Sender ids, with the user
+ * tag picked fresh for every result and absent from its content: a message
+ * cannot close the fence early and pose as tool output. Sender ids, with the user
  * marked, tell the user's words from everyone else's.
  *
  *   <tg-Xy7k>
@@ -63,14 +63,44 @@ function sender(message: StoredMessage, botUsername: string, userId: number): st
   return person(message.from_name, message.from_username, message.from_id, userId);
 }
 
-/** A tag unique to one result, around content written by others. */
-export class Fence {
-  readonly tag = `tg-${randomId(3)}`;
+const FENCE_TRIES = 5;
 
-  constructor(private readonly userId: number) {}
+/** Everything in a stored message its sender chose. */
+function authored(message: StoredMessage): string[] {
+  return [
+    message.text,
+    message.quote,
+    message.from_name,
+    message.from_username,
+    message.forwarded_from,
+    message.file_name,
+    message.buttons,
+  ].filter((part): part is string => part !== null);
+}
+
+/**
+ * A tag unique to one result, around content written by others. Picked
+ * before anything is wrapped, against everything the result will carry, so
+ * the content is left as is. A random tag is next to impossible to hit; if
+ * every try does, the last one stands.
+ */
+export class Fence {
+  readonly tag: string;
+
+  constructor(
+    private readonly userId: number,
+    contents: string[],
+    nextTag = () => `tg-${randomId(3)}`,
+  ) {
+    let tag = nextTag();
+    for (let i = 1; i < FENCE_TRIES && contents.some((part) => part.includes(tag)); i++) {
+      tag = nextTag();
+    }
+    this.tag = tag;
+  }
 
   wrap(body: string): string {
-    return `<${this.tag}>\n${body.replaceAll(this.tag, "tg")}\n</${this.tag}>`;
+    return `<${this.tag}>\n${body}\n</${this.tag}>`;
   }
 
   /** The line that heads a result, saying what the fence means. */
@@ -89,12 +119,14 @@ export class Renderer {
     private readonly userId: number,
     chats: ChatView[],
     topics: TopicRow[] = [],
-    /** Messages that others reply to, keyed `chat:message`, for reply previews. */
+    /** Every message the result shows, keyed `chat:message`, for reply previews. */
     private readonly replyTargets = new Map<string, StoredMessage>(),
+    /** Other content the result carries inside the fence. */
+    extra: string[] = [],
   ) {
     this.chats = new Map(chats.map((chat) => [chat.chat_id, chat]));
     for (const topic of topics) this.topics.set(`${topic.chat_id}:${topic.thread_id}`, topic.name);
-    this.fence = new Fence(userId);
+    this.fence = new Fence(userId, [...[...replyTargets.values()].flatMap(authored), ...extra]);
   }
 
   topicName(chatId: number, threadId: number | null): string | null {

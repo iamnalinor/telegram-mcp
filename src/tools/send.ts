@@ -90,21 +90,24 @@ function describeAnswer(
       "to keep waiting, or carry on with work that does not depend on the answer. Do not assume one."
     );
   }
-  const fence = new Fence(userId);
   if (answer.kind === "press") {
     const { press } = answer;
     const value = press.data !== press.label ? ` (value: ${press.data})` : "";
     const who = person(press.user_name, null, press.user_id, userId);
-    return `${fence.note()}\n${fence.wrap(`${who} pressed "${press.label}"${value} at ${formatTime(press.date)} UTC.`)}`;
+    const body = `${who} pressed "${press.label}"${value} at ${formatTime(press.date)} UTC.`;
+    const fence = new Fence(userId, [body]);
+    return `${fence.note()}\n${fence.wrap(body)}`;
   }
   const message = answer.message;
   const who = person(message.from_name, message.from_username, message.from_id, userId);
   const file = message.file_id
     ? `\n[attachment: ${message.file_name ?? message.file_kind} — get_file chat ${message.chat_id} message ${message.message_id}]`
     : "";
+  const body = `${who}: ${message.text}${file}`;
+  const fence = new Fence(userId, [body]);
   return (
     `Answer #${message.message_id}, ${formatTime(message.date)} UTC. ${fence.note()}\n` +
-    fence.wrap(`${who}: ${message.text}${file}`)
+    fence.wrap(body)
   );
 }
 
