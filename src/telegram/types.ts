@@ -85,6 +85,8 @@ export interface Message {
   /** Service message: a member left or was removed. */
   left_chat_member?: User;
   reply_to_message?: Message;
+  /** Shared by the photos and files sent together as one album. */
+  media_group_id?: string;
   /** The part of the replied-to message the sender highlighted. */
   quote?: { text: string };
   /** A reply to a message in another chat. */

@@ -45,6 +45,7 @@ const MESSAGES_COLUMNS = `
     as_chat INTEGER NOT NULL DEFAULT 0,
     session_id TEXT,
     awaited_until INTEGER,
+    album TEXT,
     PRIMARY KEY (account_id, chat_id, message_id)`;
 
 /** Every column of `messages` but account_id, as they stood before version 4. */
@@ -235,6 +236,7 @@ const SCHEMA: string[] = [
     at INTEGER NOT NULL,
     from_name TEXT,
     excerpt TEXT,
+    album TEXT,
     PRIMARY KEY (chat_id, message_id)
   ) WITHOUT ROWID`,
   `CREATE INDEX IF NOT EXISTS fires_by_user ON fires (user_id, at)`,
@@ -323,6 +325,8 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
     alter: [
       "ALTER TABLE fires ADD COLUMN from_name TEXT",
       "ALTER TABLE fires ADD COLUMN excerpt TEXT",
+      "ALTER TABLE fires ADD COLUMN album TEXT",
+      "ALTER TABLE messages ADD COLUMN album TEXT",
     ],
   },
 ];

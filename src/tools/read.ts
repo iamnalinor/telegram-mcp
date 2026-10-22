@@ -317,9 +317,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         if (!found.length) return text(`${window}\n${nothingFound(ctx, what)}`);
 
         const render = await renderer(ctx, chats, found);
-        const body = found
-          .map((message) => render.message(message, { showChat: chats.length > 1 }))
-          .join("\n\n");
+        const body = render.messages(found, { showChat: chats.length > 1 }).join("\n\n");
         const more =
           found.length === limit
             ? `\n\n(${limit} shown; more may exist — narrow with since/until/chat or raise limit.)`
@@ -396,9 +394,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           args.topic ? ` › ${render.topicName(chat.chat_id, args.topic)}` : ""
         } — ${messages.length} message${messages.length === 1 ? "" : "s"}, oldest first, UTC.\n${render.fence.note()}`;
         const older = `\n\n(Older: before_message_id ${messages[0].message_id}.)`;
-        return text(
-          `${heading}\n\n${messages.map((message) => render.message(message)).join("\n\n")}${older}`,
-        );
+        return text(`${heading}\n\n${render.messages(messages).join("\n\n")}${older}`);
       } catch (error) {
         return toolError(error, ctx);
       }
@@ -438,14 +434,18 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           own ? ctx.store.reactionsFor(chat.chat_id, message.message_id) : [],
         ]);
 
+        const album = (await ctx.store.albumOf(message)).filter(
+          (item) => item.date >= chat.visible_from,
+        );
         const presented = formatPresses(presses, ctx.userId);
         const reacted = formatReactions(reactions, ctx.userId);
-        const render = await renderer(ctx, [chat], [message, ...chain], [presented, reacted]);
-        const parts = [render.fence.note(), render.message(message, { full: true })];
-        if (message.file_id) {
-          parts.push(
-            `Attachment: get_file with message_id ${message.message_id} to read or download it.`,
-          );
+        const render = await renderer(ctx, [chat], [...album, ...chain], [presented, reacted]);
+        const parts = [render.fence.note(), render.message(message, { full: true, album })];
+        const files = album.filter((item) => item.file_id).map((item) => item.message_id);
+        if (files.length === 1) {
+          parts.push(`Attachment: get_file with message_id ${files[0]} to read or download it.`);
+        } else if (files.length) {
+          parts.push(`Attachments: get_file with message_id ${files.join(", ")} — one call each.`);
         }
         if (presses.length) {
           parts.push(`Button presses:\n${render.fence.wrap(presented)}`);

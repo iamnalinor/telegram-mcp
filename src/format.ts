@@ -16,6 +16,9 @@
  *     📎 report.pdf (2.1 MB, document)
  *     https://t.me/c/123/7/4512
  *   </tg-Xy7k>
+ *
+ * An album — photos or files sent together, one message each in Telegram —
+ * reads as one entry, with a 📎 line per item naming its message id.
  */
 
 import type { ChatView } from "./access";
@@ -193,11 +196,45 @@ export class Renderer {
     return topic ? `${title} › ${topic}` : title;
   }
 
+  /** Messages in the order given, each album's items run together into one entry. */
+  messages(list: StoredMessage[], options: { showChat?: boolean } = {}): string[] {
+    const entries: StoredMessage[][] = [];
+    for (const message of list) {
+      const last = entries.at(-1);
+      if (
+        message.album &&
+        last?.[0].album === message.album &&
+        refKey(last[0]) === refKey(message)
+      ) {
+        last.push(message);
+      } else {
+        entries.push([message]);
+      }
+    }
+    return entries.map((items) => this.message(items[0], { ...options, album: items }));
+  }
+
   /**
    * @param showChat include the chat in the header — for results spanning chats
    * @param full the whole text instead of a snippet
+   * @param album every item of the message's album this result has, the message among them
    */
-  message(message: StoredMessage, options: { showChat?: boolean; full?: boolean } = {}): string {
+  message(
+    first: StoredMessage,
+    options: { showChat?: boolean; full?: boolean; album?: StoredMessage[] } = {},
+  ): string {
+    const items = [...(options.album ?? [first])].sort((a, b) => a.message_id - b.message_id);
+    // The album's caption sits on one of its items, and so may its reply.
+    const message: StoredMessage = {
+      ...items[0],
+      text: items
+        .map((item) => item.text)
+        .filter(Boolean)
+        .join("\n"),
+      reply_to_id: items.find((item) => item.reply_to_id)?.reply_to_id ?? null,
+      quote: items.find((item) => item.quote)?.quote ?? null,
+      mentions_bot: items.some((item) => item.mentions_bot),
+    };
     const header = [
       `#${message.message_id}`,
       formatTime(message.date) + (message.edited_at ? " (edited)" : ""),
@@ -233,11 +270,14 @@ export class Renderer {
         lines.push("  (cut — get_message for the rest)");
       }
     }
-    if (message.file_id) {
+    for (const item of items) {
+      if (!item.file_id) continue;
       lines.push(
-        `  📎 ${message.file_name ?? message.file_kind} (${humanSize(message.file_size)}, ${message.file_kind}${message.file_mime ? `, ${message.file_mime}` : ""})`,
+        `  📎 ${items.length > 1 ? `#${item.message_id} ` : ""}${item.file_name ?? item.file_kind} (${humanSize(item.file_size)}, ${item.file_kind}${item.file_mime ? `, ${item.file_mime}` : ""})`,
       );
     }
+    if (message.album && items.length === 1)
+      lines.push("  (part of an album: get_message shows all of it)");
     if (message.buttons) {
       const labels = (JSON.parse(message.buttons) as { text: string }[][])
         .flat()

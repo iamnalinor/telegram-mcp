@@ -46,6 +46,8 @@ export interface StoredMessage {
   session_id: string | null;
   /** Read only (markAwaited sets it): until when that session waits for an answer. */
   awaited_until?: number | null;
+  /** Telegram's media_group_id: the photos and files sent together, shown as one message. */
+  album?: string | null;
 }
 
 export interface StoredButton {
@@ -92,6 +94,8 @@ export interface FireEntry {
   fromName: string | null;
   /** The first words of the message, keys removed. */
   excerpt: string;
+  /** An album starts once, whichever of its items comes first. */
+  album: string | null;
 }
 
 export interface FireRow {
@@ -264,6 +268,9 @@ export interface SearchQuery {
   limit: number;
 }
 
+/** How far apart an album's message ids can be: ten items, and others' messages between them. */
+const ALBUM_SPAN = 30;
+
 /** D1 refuses more than 100 bound parameters in one statement; a scope takes four. */
 export const MAX_SCOPES = 20;
 
@@ -314,6 +321,7 @@ const MESSAGE_COLUMNS = [
   "via_bot",
   "as_chat",
   "session_id",
+  "album",
 ] as const;
 
 function messageValues(message: StoredMessage): unknown[] {
@@ -346,6 +354,7 @@ function messageValues(message: StoredMessage): unknown[] {
     message.via_bot,
     message.as_chat ? 1 : 0,
     message.session_id,
+    message.album ?? null,
   ];
 }
 
@@ -863,6 +872,25 @@ export class Store {
       .bind(chat.account_id, chat.chat_id, ...ids)
       .all<MessageRow>();
     return results.map(toMessage);
+  }
+
+  /** The rest of an album, oldest first: Telegram sends its items one after another, at most ten. */
+  async albumOf(message: StoredMessage): Promise<StoredMessage[]> {
+    if (!message.album) return [message];
+    const { results } = await this.db
+      .prepare(
+        `SELECT * FROM messages WHERE account_id = ? AND chat_id = ? AND album = ?
+         AND message_id BETWEEN ? AND ? ORDER BY message_id`,
+      )
+      .bind(
+        message.account_id,
+        message.chat_id,
+        message.album,
+        message.message_id - ALBUM_SPAN,
+        message.message_id + ALBUM_SPAN,
+      )
+      .all<MessageRow>();
+    return results.length ? results.map(toMessage) : [message];
   }
 
   /** Forget messages, with their presses and reactions (which only the bot's account has). */
@@ -1562,12 +1590,13 @@ export class Store {
     const now = nowSeconds();
     const result = await this.db
       .prepare(
-        `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at, from_name, excerpt)
-         SELECT ?1, ?2, ?3, ?4, 'pending', ?5, ?9, ?10
+        `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at, from_name, excerpt, album)
+         SELECT ?1, ?2, ?3, ?4, 'pending', ?5, ?9, ?10, ?11
          WHERE (SELECT COUNT(*) FROM fires WHERE user_id = ?3 AND at >= ?6 AND status IN ('pending', 'started')) < ?7
            AND (?4 = 0 OR (SELECT COUNT(*) FROM fires
                 WHERE user_id = ?3 AND at >= ?6 AND chat_id = ?1 AND by_other = 1
                   AND status IN ('pending', 'started')) < ?8)
+           AND (?11 IS NULL OR NOT EXISTS (SELECT 1 FROM fires WHERE chat_id = ?1 AND album = ?11))
          ON CONFLICT (chat_id, message_id) DO NOTHING`,
       )
       .bind(
@@ -1581,12 +1610,13 @@ export class Store {
         limits.others,
         fire.fromName,
         fire.excerpt,
+        fire.album,
       )
       .run();
     if ((result.meta.changes ?? 0) > 0) return "claimed";
     const seen = await this.db
-      .prepare("SELECT 1 FROM fires WHERE chat_id = ? AND message_id = ?")
-      .bind(fire.chatId, fire.messageId)
+      .prepare("SELECT 1 FROM fires WHERE chat_id = ?1 AND (message_id = ?2 OR album = ?3) LIMIT 1")
+      .bind(fire.chatId, fire.messageId, fire.album)
       .first();
     return seen ? "again" : "limit";
   }
@@ -1614,10 +1644,18 @@ export class Store {
         .bind(fire.chatId, now - 3600),
       this.db
         .prepare(
-          `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at, from_name, excerpt)
-           VALUES (?, ?, ?, 1, 'limited', ?, ?, ?) ON CONFLICT (chat_id, message_id) DO NOTHING`,
+          `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at, from_name, excerpt, album)
+           VALUES (?, ?, ?, 1, 'limited', ?, ?, ?, ?) ON CONFLICT (chat_id, message_id) DO NOTHING`,
         )
-        .bind(fire.chatId, fire.messageId, fire.userId, now, fire.fromName, fire.excerpt),
+        .bind(
+          fire.chatId,
+          fire.messageId,
+          fire.userId,
+          now,
+          fire.fromName,
+          fire.excerpt,
+          fire.album,
+        ),
     ]);
     return earlier.results.length === 0;
   }

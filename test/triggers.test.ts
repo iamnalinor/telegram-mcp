@@ -90,6 +90,43 @@ describe("in the private chat", () => {
     expect(h.fires).toHaveLength(1);
   });
 
+  it("starts once for an album, and reads it as one message", async () => {
+    await h.tool(alice, "send_message", { text: "send me the screenshots" });
+    const sent = h.db.raw
+      .query("SELECT message_id FROM messages WHERE outgoing = 1 ORDER BY message_id DESC")
+      .get() as { message_id: number };
+    const reply = {
+      message_id: sent.message_id,
+      from: { id: 123456, is_bot: true, first_name: "Test" },
+      chat: dm(ALICE),
+      date: 1,
+      text: "send me the screenshots",
+    };
+    // Every item of an album carries the reply; only one carries the caption.
+    for (const [i, caption] of ["here they are", undefined, undefined].entries()) {
+      await h.say(dm(ALICE), ALICE, "", {
+        text: undefined,
+        caption,
+        media_group_id: "album-1",
+        reply_to_message: reply,
+        photo: [{ file_id: `shot-${i}`, file_unique_id: `u${i}`, width: 1, height: 1 }],
+      });
+    }
+    expect(h.fires).toHaveLength(1);
+
+    const recent = (await h.tool(alice, "get_recent_messages", {})).text;
+    expect(recent.match(/here they are/g)).toHaveLength(1);
+    expect(recent.match(/📎 #\d+ photo/g)).toHaveLength(3);
+
+    const last = h.db.raw
+      .query("SELECT message_id FROM messages WHERE album = 'album-1' ORDER BY message_id DESC")
+      .get() as { message_id: number };
+    const full = (await h.tool(alice, "get_message", { message_id: last.message_id })).text;
+    expect(full).toContain("here they are");
+    expect(full.match(/📎 #\d+ photo/g)).toHaveLength(3);
+    expect(full).toMatch(/Attachments: get_file with message_id \d+, \d+, \d+/);
+  });
+
   it("hands a reply on to the session that sent the message, unless it is waiting for it", async () => {
     await h.tool(alice, "send_message", { text: "build is green", session: `cse_${SESSION}` });
     const sent = h.db.raw

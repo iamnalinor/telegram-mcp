@@ -109,6 +109,7 @@ export async function maybeStart(
     byOther,
     fromName: asChat ? (asChat.title ?? null) : displayName(from),
     excerpt: excerptOf(message.text ?? message.caption ?? "", ctx.bot.username),
+    album: message.media_group_id ?? null,
   };
   const claimed = await ctx.store.beginFire(entry, {
     user: USER_PER_HOUR,
