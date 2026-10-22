@@ -215,6 +215,7 @@ const en = {
     `<b>${escapeHtml(title)}</b> — latest starts, newest first (UTC):\n\n${lines.join("\n")}`,
   startsEmpty: (title: string) => `<b>${escapeHtml(title)}</b>: no starts yet.`,
   startsSession: "session",
+  startsLimited: (n: number) => `😴 ${n} more held back by the limit in the last 24 hours.`,
   claudeHere: (on: boolean): string => (on ? "💬 Here: on ✅" : "💬 Here: off"),
   claudeHereHint:
     "Here: /run &lt;task&gt;, a mention, or a reply to a message your assistant sent. In groups, turn it on in 👥 Groups.",
@@ -462,6 +463,7 @@ const ru: Texts = {
     `<b>${escapeHtml(title)}</b> — последние запуски, сначала новые (UTC):\n\n${lines.join("\n")}`,
   startsEmpty: (title) => `<b>${escapeHtml(title)}</b>: запусков пока не было.`,
   startsSession: "сессия",
+  startsLimited: (n) => `😴 Ещё ${n} — придержаны лимитом за последние 24 часа.`,
   claudeHere: (on) => (on ? "💬 Здесь: вкл ✅" : "💬 Здесь: выкл"),
   claudeHereHint:
     "Здесь: /run &lt;задача&gt;, упоминание или реплай на сообщение ассистента. В группах включается в 👥 Группы.",

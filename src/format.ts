@@ -276,8 +276,9 @@ export class Renderer {
         `  📎 ${items.length > 1 ? `#${item.message_id} ` : ""}${item.file_name ?? item.file_kind} (${humanSize(item.file_size)}, ${item.file_kind}${item.file_mime ? `, ${item.file_mime}` : ""})`,
       );
     }
-    if (message.album && items.length === 1)
+    if (message.album && items.length === 1 && !options.full) {
       lines.push("  (part of an album: get_message shows all of it)");
+    }
     if (message.buttons) {
       const labels = (JSON.parse(message.buttons) as { text: string }[][])
         .flat()

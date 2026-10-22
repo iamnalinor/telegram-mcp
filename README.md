@@ -265,10 +265,10 @@ What starts a session:
   the group, it passes to the next who asks.
 - **Other members** of that group too, only if you turn on "Others too" — including messages posted
   as a channel or as the group, which always count as someone else's. The session helps them with
-  what anyone could do on their own (answers, explanations, web search, talk about the chat) and
-  keeps what is yours — connectors, data, other chats, repositories, your account — and running
-  code for what your memory for the chat explicitly allows; it declines the rest and tells you only
-  on signs of abuse. It runs with your connectors, so that is a guard of instructions, not of
+  what anyone could do on their own (answers, explanations, web search, talk about the chat). What is
+  yours — connectors, data, memory, other chats, repositories, your account — and running code it
+  uses for them only where your memory for the chat explicitly allows it; it declines the rest and
+  tells you only on signs of abuse. It runs with your connectors, so that is a guard of instructions, not of
   access. Their starts are limited per chat — 20 an hour by default, 5 to 50 in the group's screen;
   past that the bot reacts 😴 and tells you quietly, once an hour. A reply of theirs to your
   assistant's message starts a new session too, told which session wrote it — under the same rules.

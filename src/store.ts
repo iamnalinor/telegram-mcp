@@ -100,7 +100,7 @@ export interface FireEntry {
 
 export interface FireRow {
   message_id: number;
-  status: "pending" | "started" | "failed" | "limited";
+  status: "pending" | "started" | "failed";
   session_id: string | null;
   at: number;
   from_name: string | null;
@@ -783,7 +783,8 @@ export class Store {
            file_id = COALESCE(excluded.file_id, file_id),
            file_name = COALESCE(excluded.file_name, file_name),
            file_mime = COALESCE(excluded.file_mime, file_mime),
-           file_size = COALESCE(excluded.file_size, file_size)`,
+           file_size = COALESCE(excluded.file_size, file_size),
+           album = COALESCE(excluded.album, album)`,
       )
       .bind(...messageValues(message), ...guardValues)
       .run();
@@ -1640,17 +1641,20 @@ export class Store {
     const now = nowSeconds();
     const [earlier] = await this.db.batch([
       this.db
-        .prepare("SELECT 1 FROM fires WHERE chat_id = ? AND status = 'limited' AND at >= ? LIMIT 1")
-        .bind(fire.chatId, now - 3600),
+        .prepare(
+          "SELECT 1 FROM fires WHERE chat_id = ? AND by_other = ? AND status = 'limited' AND at >= ? LIMIT 1",
+        )
+        .bind(fire.chatId, fire.byOther ? 1 : 0, now - 3600),
       this.db
         .prepare(
           `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at, from_name, excerpt, album)
-           VALUES (?, ?, ?, 1, 'limited', ?, ?, ?, ?) ON CONFLICT (chat_id, message_id) DO NOTHING`,
+           VALUES (?, ?, ?, ?, 'limited', ?, ?, ?, ?) ON CONFLICT (chat_id, message_id) DO NOTHING`,
         )
         .bind(
           fire.chatId,
           fire.messageId,
           fire.userId,
+          fire.byOther ? 1 : 0,
           now,
           fire.fromName,
           fire.excerpt,
@@ -1660,16 +1664,35 @@ export class Store {
     return earlier.results.length === 0;
   }
 
-  /** The holder's latest starts in a chat, newest first: the chat's log. */
-  async firesIn(userId: number, chatId: number, limit: number): Promise<FireRow[]> {
-    const { results } = await this.db
-      .prepare(
-        `SELECT message_id, status, session_id, at, from_name, excerpt FROM fires
-         WHERE chat_id = ? AND user_id = ? ORDER BY at DESC, message_id DESC LIMIT ?`,
-      )
-      .bind(chatId, userId, limit)
-      .all<FireRow>();
-    return results;
+  /**
+   * The holder's latest starts in a chat, newest first: the chat's log. Tags
+   * held back by the limit are only counted, so a flood of them cannot push
+   * the real starts out of sight.
+   */
+  async firesIn(
+    userId: number,
+    chatId: number,
+    limit: number,
+    since: number,
+  ): Promise<{ fires: FireRow[]; limited: number }> {
+    const [fires, limited] = await this.db.batch([
+      this.db
+        .prepare(
+          `SELECT message_id, status, session_id, at, from_name, excerpt FROM fires
+           WHERE chat_id = ? AND user_id = ? AND status != 'limited'
+           ORDER BY at DESC, message_id DESC LIMIT ?`,
+        )
+        .bind(chatId, userId, limit),
+      this.db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM fires WHERE chat_id = ? AND user_id = ? AND status = 'limited' AND at >= ?",
+        )
+        .bind(chatId, userId, since),
+    ]);
+    return {
+      fires: fires.results as FireRow[],
+      limited: (limited.results[0] as { n: number } | undefined)?.n ?? 0,
+    };
   }
 
   /** Whether other members' starts already failed in this chat since `since`: the holder heard once. */

@@ -237,6 +237,10 @@ describe("in a group", () => {
     expect(h.telegram.called("setMessageReaction").at(-1)!.params.reaction).toEqual([
       { type: "emoji", emoji: "😴" },
     ]);
+    // Held-back tags are counted in the log, not listed over the real starts.
+    const full = String((await press(ALICE, `m:gs:${TEAM.id}`))!.text);
+    expect(full).toContain("1 more held back by the limit");
+    expect(full.match(/▶️/g)).toHaveLength(15);
   });
 
   it("takes a message posted as a channel for someone else's", async () => {

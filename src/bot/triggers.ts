@@ -117,14 +117,10 @@ export async function maybeStart(
   });
   if (claimed === "again") return;
   if (claimed === "limit") {
-    if (!byOther) {
-      await tell(where + ot.tooManyStarts);
-      return;
-    }
     // Not silence: the sender sees the bot is resting, and the holder hears once an hour.
     await react(ctx, chat.id, message.message_id, "😴");
     if (await ctx.store.noteLimited(entry)) {
-      await tell(where + ot.othersLimited(claim.others_limit));
+      await tell(where + (byOther ? ot.othersLimited(claim.others_limit) : ot.tooManyStarts));
     }
     return;
   }

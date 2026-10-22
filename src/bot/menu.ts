@@ -314,7 +314,7 @@ async function groupScreen(
 }
 
 const STARTS_SHOWN = 15;
-const STARTS_MARK = { pending: "⏳", started: "▶️", failed: "⚠️", limited: "😴" } as const;
+const STARTS_MARK = { pending: "⏳", started: "▶️", failed: "⚠️" } as const;
 
 /** The holder's latest starts in a group: who, when, the first words, the session. */
 async function startsScreen(
@@ -324,7 +324,12 @@ async function startsScreen(
   title: string,
 ): Promise<Screen> {
   const t = texts(user.language_code);
-  const fires = await ctx.store.firesIn(user.id, chatId, STARTS_SHOWN);
+  const { fires, limited } = await ctx.store.firesIn(
+    user.id,
+    chatId,
+    STARTS_SHOWN,
+    nowSeconds() - 86_400,
+  );
   const lines = fires.map(
     (fire) =>
       `${STARTS_MARK[fire.status]} ${formatTime(fire.at).slice(5)} ${escapeHtml(fire.from_name ?? "?")}` +
@@ -334,7 +339,9 @@ async function startsScreen(
         : ""),
   );
   return {
-    text: lines.length ? t.startsScreen(title, lines) : t.startsEmpty(title),
+    text:
+      (lines.length ? t.startsScreen(title, lines) : t.startsEmpty(title)) +
+      (limited ? `\n\n${t.startsLimited(limited)}` : ""),
     reply_markup: { inline_keyboard: [[button(t.buttonBack, `g:${chatId}`)]] },
   };
 }
