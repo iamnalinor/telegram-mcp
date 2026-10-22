@@ -147,18 +147,24 @@ other chat.
 
 **What Claude may do is exactly what you allowed there**, checked on every call:
 
-| Permission in Telegram | What it lets Claude do                                               |
-| ---------------------- | -------------------------------------------------------------------- |
-| (connected at all)     | read and search the chats you gave it                                |
-| Reply to messages      | send and edit messages as you: text, files, albums, locations, polls |
-| Mark messages as read  | `mark_read`                                                          |
-| Delete sent messages   | delete messages it sent (never yours or the other person's)          |
+| Permission in Telegram | What it lets Claude do                                                 |
+| ---------------------- | ---------------------------------------------------------------------- |
+| (connected at all)     | read and search the chats you gave it                                  |
+| Reply to messages      | `send_as_user` (text and files), `edit_as_user`                        |
+| Mark messages as read  | `mark_read`                                                            |
+| Delete sent messages   | `delete_as_user`: messages it sent (never yours or the other person's) |
 
 Without a permission the tool refuses before anything reaches Telegram. Change it in Telegram and
 the next call follows; the bot tells you in its chat what Claude can do whenever it changes.
 Telegram also allows writing only within 24 hours of the other person's last message. Buttons,
-`ask_user`, reactions, pins and forwards are not used in personal chats. Claude is told that
+`ask_user`, reactions, pins, forwards, albums, locations and polls are not used in personal chats. Claude is told that
 anything it sends there goes out as you, and to send only when you ask it to in the conversation.
+
+Acting as you has its own tools, marked destructive, and the bot's tools (`send_message`,
+`edit_message`, …) refuse personal chats. So your client can let Claude message you and your groups
+freely and still ask you before anything goes out in your name: in Claude Code, allow
+`mcp__Telegram` and add `mcp__Telegram__send_as_user`, `…__edit_as_user`, `…__delete_as_user` and
+`…__mark_read` to `permissions.ask`.
 
 - **What the bot sees**: messages from the moment you connect it, in the chats you chose, including
   your own replies. No history, no secret chats, no groups.
@@ -207,6 +213,9 @@ allowlist.
 | `pin_message`         | Pin or unpin                                                               |
 | `react`               | An emoji reaction instead of a reply                                       |
 | `forward_message`     | Copy a message (with its file) into another chat you can access            |
+| `send_as_user`        | In a personal chat, as you: text, or a file (inline or upload link)        |
+| `edit_as_user`        | Edit a message sent as you                                                 |
+| `delete_as_user`      | Delete a message sent as you                                               |
 | `mark_read`           | Mark a personal chat's latest message read (needs that permission)         |
 | `list_chats`          | Your chat, groups, personal chats (with permissions), topics, t.me links   |
 | `search_messages`     | Keywords, sender, time, files, topic, or only messages that tag the bot    |

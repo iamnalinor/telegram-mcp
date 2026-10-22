@@ -60,6 +60,8 @@ interface UploadBlob {
   s?: boolean;
   /** The sending Claude Code session. */
   ss?: string;
+  /** Made for a personal chat, by send_as_user: such a link sends as the user, nothing else does. */
+  p?: boolean;
 }
 
 interface FileBlob {
@@ -92,6 +94,7 @@ export async function uploadLink(
       t: options.topic,
       s: options.silent,
       ss: options.session,
+      p: chat.kind === "personal" || undefined,
     },
     UPLOAD_TTL,
   );
@@ -155,6 +158,9 @@ export async function handleUpload(
   let chat: ChatView;
   try {
     chat = await ctx.access.resolve(link.c);
+    if ((chat.kind === "personal") !== (link.p === true)) {
+      return plain("This upload link is not for that chat. Ask for a new one.", 403);
+    }
     // Rights can change within the link's life; check before the nonce is spent.
     await mayPost(ctx, chat, link.b);
   } catch (error) {

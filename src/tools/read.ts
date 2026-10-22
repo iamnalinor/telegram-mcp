@@ -113,9 +113,9 @@ function personalChats(
   last: Map<string, number>,
 ): string {
   const allowed = [
-    rights.can_reply ? "send and edit messages as the user" : null,
-    rights.can_read_messages ? "mark messages as read" : null,
-    rights.can_delete_sent_messages ? "delete messages sent through you" : null,
+    rights.can_reply ? "send and edit messages as the user (send_as_user, edit_as_user)" : null,
+    rights.can_read_messages ? "mark messages as read (mark_read)" : null,
+    rights.can_delete_sent_messages ? "delete messages sent through you (delete_as_user)" : null,
   ].filter(Boolean);
   const header =
     "Personal chats — the user's own chats with other people (Telegram Business), from when they connected " +

@@ -9,10 +9,11 @@ import { z } from "zod";
 import { telegramChat, type ChatView } from "../access";
 import { uploadLink } from "../files";
 import { Fence, formatTime, person } from "../format";
-import { GROUP_NOTE, PERSONAL_NOTE, type UserRef } from "../prompts";
+import { GROUP_NOTE, type UserRef } from "../prompts";
 import type { PressRow, StoredMessage } from "../store";
 import type { Message } from "../telegram/types";
 import {
+  asBot,
   buttonsArg,
   chatArg,
   formatArg,
@@ -37,8 +38,50 @@ const WAIT_MAX_SECONDS = 50;
 const WAIT_POLL_MS = 2000;
 const INLINE_FILE_BYTES = 1024 * 1024;
 
-const silentArg = z.boolean().optional().describe("Deliver without a notification sound.");
-const replyToArg = z.number().int().positive().optional().describe("Reply to this message id.");
+export const silentArg = z.boolean().optional().describe("Deliver without a notification sound.");
+export const replyToArg = z
+  .number()
+  .int()
+  .positive()
+  .optional()
+  .describe("Reply to this message id.");
+
+/** File content passed inline, as text or base64; at most 1 MB. */
+export function inlineBytes(content: { text?: string; content_base64?: string }): Uint8Array {
+  if ((content.text === undefined) === (content.content_base64 === undefined)) {
+    throw new ToolError("Pass exactly one of text or content_base64.");
+  }
+  let bytes: Uint8Array;
+  if (content.text !== undefined) {
+    bytes = new TextEncoder().encode(content.text);
+  } else {
+    try {
+      const binary = atob(
+        content.content_base64!.replace(/\s+/g, "").replaceAll("-", "+").replaceAll("_", "/"),
+      );
+      bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    } catch {
+      throw new ToolError("content_base64 is not valid base64.");
+    }
+  }
+  if (bytes.byteLength > INLINE_FILE_BYTES) {
+    throw new ToolError(
+      `That is ${bytes.byteLength} bytes; inline files stop at 1 MB. Use an upload link.`,
+    );
+  }
+  if (!bytes.byteLength) throw new ToolError("The file is empty.");
+  return bytes;
+}
+
+/** What create_upload_url (and its as-user counterpart) hands back. */
+export function uploadInstructions(filename: string, chat: ChatView, url: string): string {
+  const quoted = `'${url.replaceAll("'", "'\\''")}'`;
+  return (
+    `Upload link for ${filename} → ${where(chat)}, valid 10 minutes, single use:\n${url}\n\n` +
+    `Run:\ncurl -sS --fail-with-body -T <path-to-file> ${quoted}\n\n` +
+    "It prints where the file was sent. Do not show this link to the user."
+  );
+}
 
 export function sentSummary(ctx: ToolContext, chat: ChatView, messages: Message[]): string {
   const ids = messages.map((message) => `#${message.message_id}`).join(", ");
@@ -128,7 +171,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         'Message the user in Telegram — chat "me" by default — or a connected group. Use for "message me / ' +
         'ping me when done / tell me in Telegram". Markdown is converted; long text is split. Optional buttons ' +
         "(presses are recorded) and reply_to. Returns the message id and a t.me link to give the user. For a " +
-        `question that needs an answer, use ask_user instead. ${GROUP_NOTE} ${PERSONAL_NOTE}`,
+        `question that needs an answer, use ask_user instead. ${GROUP_NOTE}`,
       inputSchema: z.object({
         text: z.string().min(1).max(20_000),
         chat: chatArg,
@@ -148,6 +191,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     async (args) => {
       try {
         const chat = await ctx.access.resolve(args.chat);
+        asBot(chat, "send_as_user");
         const sent = await sendText(ctx, chat, {
           text: args.text,
           format: args.format,
@@ -293,7 +337,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
       description:
         "The way to send a file you built when you have a shell: returns a one-time URL (valid 10 min) and the " +
         "curl command to run. The file is sent to the chat the moment the upload finishes, up to 50 MB, and curl " +
-        `prints the message link. Prefer this over send_file for anything but small text. ${GROUP_NOTE} ${PERSONAL_NOTE}`,
+        `prints the message link. Prefer this over send_file for anything but small text. ${GROUP_NOTE}`,
       inputSchema: z.object({
         filename: z.string().min(1).max(200).describe("Name the user sees, with extension."),
         ...fileOptions,
@@ -303,6 +347,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     async (args) => {
       try {
         const chat = await ctx.access.resolve(args.chat);
+        asBot(chat, "send_as_user with file.upload");
         await mayPost(ctx, chat, args.buttons);
         const url = await uploadLink(ctx, chat, args.filename, {
           as: args.as,
@@ -313,12 +358,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
           silent: args.silent,
           session: args.session,
         });
-        const quoted = `'${url.replaceAll("'", "'\\''")}'`;
-        return text(
-          `Upload link for ${args.filename} → ${where(chat)}, valid 10 minutes, single use:\n${url}\n\n` +
-            `Run:\ncurl -sS --fail-with-body -T <path-to-file> ${quoted}\n\n` +
-            "It prints where the file was sent. Do not show this link to the user.",
-        );
+        return text(uploadInstructions(args.filename, chat, url));
       } catch (error) {
         return toolError(error, ctx);
       }
@@ -332,7 +372,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
       description:
         "Send a file whose content you pass directly: `text` for text files (code, logs, CSV, Markdown), or " +
         "`content_base64` for small binaries (≤1 MB). Use when you have no shell; otherwise create_upload_url " +
-        `is cheaper and handles big files. ${GROUP_NOTE} ${PERSONAL_NOTE}`,
+        `is cheaper and handles big files. ${GROUP_NOTE}`,
       inputSchema: z.object({
         filename: z.string().min(1).max(200),
         text: z.string().optional().describe("File content as text (UTF-8)."),
@@ -343,29 +383,9 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     },
     async (args) => {
       try {
-        if ((args.text === undefined) === (args.content_base64 === undefined)) {
-          throw new ToolError("Pass exactly one of text or content_base64.");
-        }
-        let bytes: Uint8Array;
-        if (args.text !== undefined) {
-          bytes = new TextEncoder().encode(args.text);
-        } else {
-          try {
-            const binary = atob(
-              args.content_base64!.replace(/\s+/g, "").replaceAll("-", "+").replaceAll("_", "/"),
-            );
-            bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-          } catch {
-            throw new ToolError("content_base64 is not valid base64.");
-          }
-        }
-        if (bytes.byteLength > INLINE_FILE_BYTES) {
-          throw new ToolError(
-            `That is ${bytes.byteLength} bytes; inline files stop at 1 MB. Use create_upload_url.`,
-          );
-        }
-        if (!bytes.byteLength) throw new ToolError("The file is empty.");
         const chat = await ctx.access.resolve(args.chat);
+        asBot(chat, "send_as_user with file");
+        const bytes = inlineBytes(args);
         const message = await sendUpload(ctx, chat, { blob: new Blob([bytes]) }, args.filename, {
           as: args.as,
           caption: args.caption,
@@ -389,7 +409,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
       description:
         "Group 2–10 photos/videos (or 2–10 documents) into one album. Items are files already in Telegram — " +
         "attachments of stored messages, by message id — or public URLs Telegram can fetch. To upload new files, " +
-        `send them one by one with create_upload_url. ${GROUP_NOTE} ${PERSONAL_NOTE}`,
+        `send them one by one with create_upload_url. ${GROUP_NOTE}`,
       inputSchema: z.object({
         items: z
           .array(
@@ -421,11 +441,13 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     async (args) => {
       try {
         const chat = await ctx.access.resolve(args.chat);
+        asBot(chat, "send_as_user, one file at a time");
         await mayPost(ctx, chat);
         const media = [];
         for (const item of args.items) {
           if (item.message_id) {
             const from = await ctx.access.resolve(item.from_chat);
+            notPersonal(from, "the bot cannot carry a personal chat's files elsewhere.");
             const stored = await ctx.store.getMessage(from, item.message_id);
             if (!stored?.file_id || stored.date < from.visible_from) {
               throw new ToolError(`Message #${item.message_id} has no stored attachment.`);
@@ -461,7 +483,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     "send_location",
     {
       title: "Send a map pin",
-      description: `Send a location pin, optionally as a named venue. ${GROUP_NOTE} ${PERSONAL_NOTE}`,
+      description: `Send a location pin, optionally as a named venue. ${GROUP_NOTE}`,
       inputSchema: z.object({
         latitude: z.number().min(-90).max(90),
         longitude: z.number().min(-180).max(180),
@@ -480,6 +502,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     async (args) => {
       try {
         const chat = await ctx.access.resolve(args.chat);
+        asBot(chat, "send_as_user with the address as text");
         await mayPost(ctx, chat);
         const venue = args.title && args.address;
         const message = await ctx.api.call<Message>(venue ? "sendVenue" : "sendLocation", {
@@ -506,7 +529,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
       title: "Start a poll",
       description:
         'Post a native Telegram poll, typically in a group ("poll the team on Friday vs Monday"). Votes are ' +
-        `not reported back to you; for one person's decision, use ask_user. ${GROUP_NOTE} ${PERSONAL_NOTE}`,
+        `not reported back to you; for one person's decision, use ask_user. ${GROUP_NOTE}`,
       inputSchema: z.object({
         question: z.string().min(1).max(300),
         options: z.array(z.string().min(1).max(100)).min(2).max(12),
@@ -521,6 +544,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     async (args) => {
       try {
         const chat = await ctx.access.resolve(args.chat);
+        asBot(chat, "send_as_user with the question as text");
         await mayPost(ctx, chat);
         const message = await ctx.api.call<Message>("sendPoll", {
           ...telegramChat(chat),
@@ -568,7 +592,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     async (args) => {
       try {
         const chat = await ctx.access.resolve(args.chat);
-        await mayPost(ctx, chat);
+        notPersonal(chat, "the other person would see the user typing.");
         await ctx.api.call("sendChatAction", {
           ...telegramChat(chat),
           action: args.action ?? "typing",
