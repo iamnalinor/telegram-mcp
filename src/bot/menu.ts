@@ -22,6 +22,9 @@
  *   m:clset       asks for the trigger and token
  *   m:cltest      starts the routine once, as a check
  *   m:cldel       remove the routine: asks first; m:cldely does it
+ *   m:cldm        Claude in the private chat: on or off
+ *   m:gc:<id>     Claude in that group: on (taking it over from a holder who left) or off
+ *   m:go:<id>     other members too: asks first; m:goy:<id> turns it on
  *
  * Every press is checked again: anyone can send any callback_data.
  */
@@ -33,6 +36,7 @@ import { TelegramError } from "../telegram/api";
 import type { CallbackQuery, InlineKeyboardMarkup, User } from "../telegram/types";
 import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { testRoutine } from "./routine";
+import { holderName, stillMember } from "./triggers";
 import { escapeHtml, formatDate, texts } from "./texts";
 
 export interface Screen {
@@ -203,16 +207,20 @@ async function routineScreen(ctx: BotContext, user: User): Promise<Screen> {
     : (await tokenOf(ctx.config.secretKey, row)) === null
       ? "broken"
       : "set";
+  const here = (await ctx.store.getClaudeChat(user.id))?.user_id === user.id;
   return {
-    text: t.routineScreen({
-      state,
-      trigger: row?.trigger_id,
-      since: row ? formatDate(row.updated_at) : undefined,
-    }),
+    text:
+      t.routineScreen({
+        state,
+        trigger: row?.trigger_id,
+        since: row ? formatDate(row.updated_at) : undefined,
+      }) + (state === "set" ? `\n\n${t.claudeHereHint}` : ""),
     reply_markup: {
       inline_keyboard: [
         [button(t.buttonGuide, "clh"), button(t.buttonSetRoutine, "clset")],
-        ...(state === "set" ? [[button(t.buttonTestRoutine, "cltest")]] : []),
+        ...(state === "set"
+          ? [[button(t.claudeHere(here), "cldm"), button(t.buttonTestRoutine, "cltest")]]
+          : []),
         ...(row ? [[button(t.buttonDeleteRoutine, "cldel")]] : []),
         [button(t.buttonBack, "main")],
       ],
@@ -232,6 +240,58 @@ function guideScreen(user: User): Screen {
       ],
     },
   };
+}
+
+async function groupScreen(
+  ctx: BotContext,
+  user: User,
+  grant: { chat_id: number; title: string | null; visible_from: number },
+): Promise<Screen> {
+  const t = texts(user.language_code);
+  const chatId = grant.chat_id;
+  const claim = await ctx.store.getClaudeChat(chatId);
+  const on = claim?.user_id === user.id;
+  const heldBy = claim && !on ? await holderName(ctx, claim.user_id) : null;
+  return {
+    text:
+      t.groupScreen({
+        title: grant.title ?? String(chatId),
+        full: grant.visible_from === 0,
+        since: formatDate(grant.visible_from),
+      }) + t.groupClaude({ on, others: on && claim.others === 1, heldBy }),
+    reply_markup: {
+      inline_keyboard: [
+        [button(t.claudeToggle(on), `gc:${chatId}`)],
+        ...(on ? [[button(t.othersToggle(claim.others === 1), `go:${chatId}`)]] : []),
+        [button(t.buttonChatMemory, `mv:${chatId}`)],
+        [button(t.buttonRevoke, `rv:${chatId}`)],
+        [button(t.buttonBack, "groups")],
+      ],
+    },
+  };
+}
+
+/**
+ * Turn Claude on or off in a group. Whoever turned it on first holds the
+ * chat; a holder Telegram says has left loses it to whoever asks next.
+ */
+async function toggleClaude(
+  ctx: BotContext,
+  user: User,
+  chatId: number,
+  claim: { user_id: number } | null,
+): Promise<string | undefined> {
+  const t = texts(user.language_code);
+  if (claim?.user_id === user.id) {
+    await ctx.store.releaseClaudeChat(user.id, chatId);
+    return undefined;
+  }
+  if (!(await ctx.store.getRoutine(user.id))) return t.routineFirst;
+  if (claim) {
+    if ((await stillMember(ctx, chatId, claim.user_id)) !== false) return t.chatHeld;
+    await ctx.store.revokeGrant(claim.user_id, chatId);
+  }
+  return (await ctx.store.claimClaudeChat(user.id, chatId)) ? undefined : t.chatHeld;
 }
 
 function staticScreen(text: string, back: string, user: User): Screen {
@@ -339,6 +399,12 @@ async function render(
     });
     return { ...(await routineScreen(ctx, user)), note: t.setRoutineNote };
   }
+  if (name === "cldm") {
+    const claim = await ctx.store.getClaudeChat(user.id);
+    if (claim) await ctx.store.releaseClaudeChat(user.id, user.id);
+    else if (await ctx.store.getRoutine(user.id)) await ctx.store.claimClaudeChat(user.id, user.id);
+    return routineScreen(ctx, user);
+  }
   if (name === "cltest") {
     await testRoutine(ctx, user, 0);
     return routineScreen(ctx, user);
@@ -370,30 +436,37 @@ async function render(
     };
   }
 
-  const group = /^(g|rv):(-?\d+)$/.exec(name);
+  const group = /^(g|rv|gc|go|goy):(-?\d+)$/.exec(name);
   if (group) {
     const chatId = Number(group[2]);
     const grant = (await ctx.store.listGrants(user.id)).find((g) => g.chat_id === chatId);
     // Gone already (left, or revoked from /groups): the list, not a stale screen.
     if (!grant) return { ...(await groupsScreen(ctx, user)), note: t.menuGone };
+    const title = grant.title ?? String(grant.chat_id);
     if (group[1] === "rv") {
       await ctx.store.revokeGrant(user.id, chatId);
       return { ...(await groupsScreen(ctx, user)), note: t.revoked };
     }
-    return {
-      text: t.groupScreen({
-        title: grant.title ?? String(grant.chat_id),
-        full: grant.visible_from === 0,
-        since: formatDate(grant.visible_from),
-      }),
-      reply_markup: {
-        inline_keyboard: [
-          [button(t.buttonChatMemory, `mv:${chatId}`)],
-          [button(t.buttonRevoke, `rv:${chatId}`)],
-          [button(t.buttonBack, "groups")],
-        ],
-      },
-    };
+    let note: string | undefined;
+    const claim = await ctx.store.getClaudeChat(chatId);
+    const mine = claim?.user_id === user.id;
+    if (group[1] === "gc") note = await toggleClaude(ctx, user, chatId, claim);
+    if (group[1] === "go" && mine) {
+      if (!claim.others) {
+        return {
+          text: t.othersWarning(title),
+          reply_markup: {
+            inline_keyboard: [
+              [button(t.buttonTurnOn, `goy:${chatId}`)],
+              [button(t.buttonCancel, `g:${chatId}`)],
+            ],
+          },
+        };
+      }
+      await ctx.store.setClaudeOthers(user.id, chatId, false);
+    }
+    if (group[1] === "goy" && mine) await ctx.store.setClaudeOthers(user.id, chatId, true);
+    return { ...(await groupScreen(ctx, user, grant)), note };
   }
   return mainScreen(ctx, user);
 }

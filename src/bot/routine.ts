@@ -96,6 +96,8 @@ export async function handleSecret(
     await say(ctx, message.chat.id, t.routineNotSaved + after);
     return null;
   }
+  // Answering in the private chat comes on with the routine; groups are turned on one by one.
+  await ctx.store.claimClaudeChat(user.id, user.id);
   await say(ctx, message.chat.id, t.routineSaved(routine.triggerId, deleted) + after);
   await testRoutine(ctx, user, message.message_id);
   return null;

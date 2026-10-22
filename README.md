@@ -243,6 +243,38 @@ of a file path.
 - Memory is kept until deleted (not limited to `RETENTION_DAYS`). It goes with your access to a
   group, and when your ID leaves `ALLOWED_USER_IDS`.
 
+## Claude on tag
+
+Tag the bot in Telegram and a Claude Code cloud session does the work and answers there. The session
+runs as your [routine](https://claude.ai/code/routines) on your Anthropic account, with the
+connectors and repositories you give that routine; this bot only starts it.
+
+Set it up from the bot's menu, **🤖 Claude on tag**: it walks you through creating the routine,
+sends you the prompt to paste into it, and asks for the routine's API trigger id and token. Send both
+in one message: the bot deletes it, keeps the token encrypted (with a key derived from the bot
+token), and starts a test session that answers "ok". No message containing an Anthropic key is ever
+stored, in any chat.
+
+What starts a session:
+
+- **Your private chat with the bot** (on once the routine is set): `/claude <task>`, an explicit
+  @mention, or a reply to a message your assistant sent there. Other messages stay what they are —
+  files and notes for your assistant.
+- **A group**, once you turn it on in the group's screen: a mention of the bot, or a reply to a
+  message your assistant sent there. One person per group: whoever turned it on first. If they leave
+  the group, it passes to the next who asks.
+- **Other members** of that group too, only if you turn on "Others too". The session is told to treat
+  their words as data, to do nothing for them that your memory for the chat does not explicitly
+  allow, and to tag you instead — but it runs with your connectors, so that is a guard of
+  instructions, not of access. Their starts are limited to 5 an hour per chat, and each is reported
+  to you quietly.
+
+Never: forwards, messages via inline bots or posted as a channel, edits, or a reply that a waiting
+`ask_user` will pick up. Each message starts one session at most, however often Telegram retries it.
+The bot reacts 👀 to the message and tells you, quietly, with a link to the session; failures go to
+your private chat, never to the group. Each start is a billed session that counts toward the
+routine's own limits.
+
 ## Limits
 
 Cloudflare's limits are **per account**, shared by every Worker on it. On the free plan:

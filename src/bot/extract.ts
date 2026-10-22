@@ -147,7 +147,11 @@ function quoteOf(message: Message): string | null {
 
 export function mentionsBot(message: Message, bot: BotIdentity): boolean {
   if (message.chat.type === "private") return true;
+  return tagsBot(message, bot) || realReply(message)?.from?.id === bot.id;
+}
 
+/** The message names the bot: @username, a text mention, or a command addressed to it. */
+export function tagsBot(message: Message, bot: BotIdentity): boolean {
   const handle = `@${bot.username}`.toLowerCase();
   const text = message.text ?? message.caption ?? "";
   const entities = message.entities ?? message.caption_entities ?? [];
@@ -159,9 +163,9 @@ export function mentionsBot(message: Message, bot: BotIdentity): boolean {
     }
   }
   // Telegram marks @mentions as entities; plain text is the fallback for clients that do not.
-  if (new RegExp(`(^|[^\\w])${handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text))
-    return true;
-  return realReply(message)?.from?.id === bot.id;
+  return new RegExp(`(^|[^\\w])${handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(
+    text,
+  );
 }
 
 /** A bot's @username when it is a well-formed one, else "" — "some inline bot". */

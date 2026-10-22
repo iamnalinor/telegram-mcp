@@ -44,6 +44,8 @@ export interface StoredMessage {
   as_chat: boolean;
   /** For the bot's own messages: the Claude Code cloud session that sent it (session_…). */
   session_id: string | null;
+  /** Read only (markAwaited sets it): until when that session waits for an answer. */
+  awaited_until?: number | null;
 }
 
 export interface StoredButton {
@@ -67,6 +69,13 @@ export interface Routine {
   trigger_id: string;
   token_enc: string;
   updated_at: number;
+}
+
+export interface ClaudeChat {
+  chat_id: number;
+  user_id: number;
+  others: number;
+  since: number;
 }
 
 export interface MemoryDoc {
@@ -347,7 +356,15 @@ function personalOn(userParam: string): string {
 }
 
 /** Tables of a group's own, keyed by chat id alone. */
-const GROUP_TABLES = ["grants", "button_presses", "reactions", "topics", "chats"];
+const GROUP_TABLES = [
+  "grants",
+  "button_presses",
+  "reactions",
+  "topics",
+  "chats",
+  "claude_chats",
+  "fires",
+];
 /** Tables keyed by account too; a group's rows sit under the bot's account. */
 const ACCOUNT_TABLES = ["messages", "day_marks"];
 const HISTORY_TABLES = ["button_presses", "reactions", "topics", "chats"];
@@ -507,7 +524,14 @@ export class Store {
   /** A group became a supergroup and got a new id; carry everything over. */
   async migrateChat(from: number, to: number): Promise<void> {
     await this.db.batch([
-      ...["grants", "button_presses", "reactions", "topics", ...USER_CHAT_TABLES].map((table) =>
+      ...[
+        "grants",
+        "button_presses",
+        "reactions",
+        "topics",
+        "claude_chats",
+        ...USER_CHAT_TABLES,
+      ].map((table) =>
         this.db
           .prepare(`UPDATE OR IGNORE ${table} SET chat_id = ?2 WHERE chat_id = ?1`)
           .bind(from, to),
@@ -600,6 +624,9 @@ export class Store {
           .prepare(`DELETE FROM ${table} WHERE user_id = ? AND chat_id = ?`)
           .bind(userId, chatId),
       ),
+      this.db
+        .prepare("DELETE FROM claude_chats WHERE user_id = ? AND chat_id = ?")
+        .bind(userId, chatId),
       this.db.prepare("DELETE FROM grants WHERE user_id = ? AND chat_id = ?").bind(userId, chatId),
       ...this.purgeOrphanStatements(chatId),
     ]);
@@ -979,6 +1006,21 @@ export class Store {
   }
 
   /** The bot's latest message in a chat, looking back over the last few days only. */
+  /** Whether a session is waiting for an answer in this private chat, or was since `since`. */
+  async awaitedIn(chatId: number, since: number): Promise<boolean> {
+    const chat = { account_id: BOT_ACCOUNT, chat_id: chatId };
+    const [floor] = await this.idFloors([chat], [nowSeconds() - DAY]);
+    const row = await this.db
+      .prepare(
+        `SELECT 1 FROM messages
+         WHERE account_id = ? AND chat_id = ? AND message_id >= ? AND outgoing = 1 AND awaited_until >= ?
+         LIMIT 1`,
+      )
+      .bind(chat.account_id, chat.chat_id, floor, since)
+      .first();
+    return row !== null;
+  }
+
   async lastOutgoing(chat: ChatRef): Promise<StoredMessage | null> {
     const [floor] = await this.idFloors([chat], [nowSeconds() - 3 * DAY]);
     const row = await this.db
@@ -1390,6 +1432,101 @@ export class Store {
     await this.db.prepare("DELETE FROM routines WHERE user_id = ?").bind(userId).run();
   }
 
+  // --- where Claude answers -------------------------------------------------
+
+  getClaudeChat(chatId: number): Promise<ClaudeChat | null> {
+    return this.db
+      .prepare("SELECT * FROM claude_chats WHERE chat_id = ?")
+      .bind(chatId)
+      .first<ClaudeChat>();
+  }
+
+  /** Claude answers in the chat for this user, if nobody holds it yet. True when it is theirs. */
+  async claimClaudeChat(userId: number, chatId: number): Promise<boolean> {
+    await this.db
+      .prepare(
+        `INSERT INTO claude_chats (chat_id, user_id, since) VALUES (?, ?, ?)
+         ON CONFLICT (chat_id) DO NOTHING`,
+      )
+      .bind(chatId, userId, nowSeconds())
+      .run();
+    return (await this.getClaudeChat(chatId))?.user_id === userId;
+  }
+
+  async releaseClaudeChat(userId: number, chatId: number): Promise<void> {
+    await this.db
+      .prepare("DELETE FROM claude_chats WHERE chat_id = ? AND user_id = ?")
+      .bind(chatId, userId)
+      .run();
+  }
+
+  async setClaudeOthers(userId: number, chatId: number, others: boolean): Promise<void> {
+    await this.db
+      .prepare("UPDATE claude_chats SET others = ? WHERE chat_id = ? AND user_id = ?")
+      .bind(others ? 1 : 0, chatId, userId)
+      .run();
+  }
+
+  /** Groups where Claude answers, for checking now and then that their holder is still a member. */
+  async claimedGroups(): Promise<ClaudeChat[]> {
+    const { results } = await this.db
+      .prepare("SELECT * FROM claude_chats WHERE chat_id < 0")
+      .all<ClaudeChat>();
+    return results;
+  }
+
+  async dropClaudeChats(userId: number): Promise<void> {
+    await this.db.prepare("DELETE FROM claude_chats WHERE user_id = ?").bind(userId).run();
+  }
+
+  // --- starts --------------------------------------------------------------
+
+  /** Claim the start for this message. False when it was claimed already (a retried webhook). */
+  async beginFire(
+    chatId: number,
+    messageId: number,
+    userId: number,
+    byOther: boolean,
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at)
+         VALUES (?, ?, ?, ?, 'pending', ?) ON CONFLICT (chat_id, message_id) DO NOTHING`,
+      )
+      .bind(chatId, messageId, userId, byOther ? 1 : 0, nowSeconds())
+      .run();
+    return (result.meta.changes ?? 0) > 0;
+  }
+
+  async endFire(
+    chatId: number,
+    messageId: number,
+    outcome: { status: "started"; sessionId: string } | { status: "failed" },
+  ): Promise<void> {
+    await this.db
+      .prepare("UPDATE fires SET status = ?, session_id = ? WHERE chat_id = ? AND message_id = ?")
+      .bind(outcome.status, "sessionId" in outcome ? outcome.sessionId : null, chatId, messageId)
+      .run();
+  }
+
+  /** Starts since `since`: the user's, and how many of them came from other members of this chat. */
+  async fireCounts(
+    userId: number,
+    chatId: number,
+    since: number,
+  ): Promise<{ user: number; others: number; othersFailed: number }> {
+    const row = await this.db
+      .prepare(
+        `SELECT COUNT(*) AS user,
+           COALESCE(SUM(chat_id = ?2 AND by_other = 1), 0) AS others,
+           COALESCE(SUM(chat_id = ?2 AND by_other = 1 AND status = 'failed'), 0) AS othersFailed
+         FROM fires WHERE user_id = ?1 AND at >= ?3`,
+      )
+      .bind(userId, chatId, since)
+      .first<{ user: number; others: number; othersFailed: number }>();
+    return row ?? { user: 0, others: 0, othersFailed: 0 };
+  }
+
   async routineUsers(): Promise<number[]> {
     const { results } = await this.db
       .prepare("SELECT user_id FROM routines")
@@ -1522,6 +1659,7 @@ export class Store {
       // a session with no row would start afresh.
       this.db.prepare("DELETE FROM refresh_sessions WHERE expires_at < ?").bind(nowSeconds() - DAY),
       this.db.prepare("DELETE FROM day_marks WHERE day < ?").bind(Math.floor(cutoff / DAY)),
+      this.db.prepare("DELETE FROM fires WHERE at < ?").bind(nowSeconds() - DAY),
       // People nobody has heard from within retention.
       this.db.prepare(
         `DELETE FROM personal_chats WHERE NOT EXISTS (

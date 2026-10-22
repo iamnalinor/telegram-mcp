@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -209,6 +209,28 @@ const SCHEMA: string[] = [
     token_enc TEXT NOT NULL,
     updated_at INTEGER NOT NULL
   )`,
+
+  // Chats where a tag starts the routine, and for whom: one user per chat,
+  // whoever turned it on first. `others`: tags from other members count too.
+  `CREATE TABLE IF NOT EXISTS claude_chats (
+    chat_id INTEGER PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    others INTEGER NOT NULL DEFAULT 0,
+    since INTEGER NOT NULL
+  )`,
+
+  // Each start, by the message that caused it: Telegram retries webhooks, and
+  // a start is a billed session. Also counts other members' starts per hour.
+  `CREATE TABLE IF NOT EXISTS fires (
+    chat_id INTEGER NOT NULL,
+    message_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    by_other INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    session_id TEXT,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (chat_id, message_id)
+  ) WITHOUT ROWID`,
 
   // A user's Telegram Business connection: the bot reads their private chats,
   // and acts in them only as far as `rights` (set by the user in Telegram) allow.
