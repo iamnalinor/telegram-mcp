@@ -12,6 +12,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { instructions } from "./prompts";
 import type { ToolContext } from "./tools/common";
 import { registerEditTools } from "./tools/edit";
+import { registerMemoryTools } from "./tools/memory";
 import { registerReadTools } from "./tools/read";
 import { registerSendTools } from "./tools/send";
 
@@ -29,5 +30,6 @@ export function createServer(ctx: ToolContext): McpServer {
   registerSendTools(server, ctx);
   registerEditTools(server, ctx);
   registerReadTools(server, ctx);
+  registerMemoryTools(server, ctx);
   return server;
 }

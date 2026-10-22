@@ -213,9 +213,26 @@ allowlist.
 | `get_recent_messages` | Latest messages in a chat, or the window around one message                |
 | `get_message`         | One message in full, with its reply chain, button presses and reactions    |
 | `get_file`            | Download link for an attachment, and the content when small                |
+| `memory`              | Read and edit what your assistants keep about each chat (see Memory)       |
 
 Every send returns a `t.me` link Claude can hand you. Buttons are recorded when pressed;
 reactions on the bot's messages are recorded too (in groups, that needs the bot to be an admin).
+
+## Memory
+
+Your assistants keep notes about each chat in one Markdown document per chat: `me` for your private
+chat with the bot and things that apply everywhere, and one per group — who is responsible for what,
+the project's repository, the tone, and under `## Trust` who may ask for what. Every assistant you
+connect reads the same memory, so what Claude learns ChatGPT knows too. The `memory` tool works like
+Claude's own memory tool (`view`, `create`, `str_replace`, `insert`, `delete`), with a chat in place
+of a file path.
+
+- **You see every change**: each one arrives silently in your private chat, with what changed, which
+  assistant made it, and an **Undo** button. Changes in quick succession share one message.
+- **Trust** changes only when you ask yourself; assistants are told nothing overrides that.
+- **Menu → Memory** lists the chats with memory; read, delete, or erase it all there.
+- Memory is kept until deleted (not limited to `RETENTION_DAYS`). It goes with your access to a
+  group, and when your ID leaves `ALLOWED_USER_IDS`.
 
 ## Limits
 

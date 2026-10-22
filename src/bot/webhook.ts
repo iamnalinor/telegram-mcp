@@ -38,7 +38,7 @@ import {
 import { BOT_ACCOUNT, type Guard } from "../store";
 import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { handleAssistantButton, handleChatShared, handleCommand, handleRevoke } from "./commands";
-import { handleMenu } from "./menu";
+import { handleMemoryUndo, handleMenu } from "./menu";
 import { parseCommand, realReply, toStored, topicName, topicOf } from "./extract";
 import { texts } from "./texts";
 
@@ -259,6 +259,11 @@ async function onCallback(ctx: BotContext, query: CallbackQuery): Promise<Webhoo
       };
     }
     return handleRevoke(ctx, query, Number(revoke[1]));
+  }
+
+  const undo = /^mu(!?):(\d+)(?::(\d+))?$/.exec(data);
+  if (undo) {
+    return handleMemoryUndo(ctx, query, Number(undo[2]), undo[1] ? null : Number(undo[3] ?? 0));
   }
 
   const menu = /^m:([\w:-]{1,60})$/.exec(data);

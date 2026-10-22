@@ -54,6 +54,41 @@ const en = {
   buttonBack: "« Back",
   buttonAddToGroup: "Add to a group",
   buttonRevoke: "Revoke access",
+  someAssistant: "An assistant",
+  memoryOfMe: "Chat with me",
+  memoryNotice: (p: { client: string; chat: string; diff: string }) =>
+    `📝 <b>${escapeHtml(p.client)}</b> changed the memory of <b>${escapeHtml(p.chat)}</b>\n\n<pre>${p.diff}</pre>`,
+  memoryNoVisibleChange: "(only blank lines or order changed)",
+  memoryMoreLines: (n: number) => `… and ${n} more changed line(s)`,
+  buttonUndo: "Undo",
+  buttonUndoAnyway: "Undo anyway",
+  undone: "Undone.",
+  undoGone: "That change is too old to undo.",
+  undoConfirm: (later: number) =>
+    `The memory changed ${later} more time(s) since. Undoing goes back to before this change and drops those too.`,
+  buttonMemory: "📝 Memory",
+  buttonChatMemory: "📝 Chat memory",
+  memoryListScreen: (lines: string[]) =>
+    lines.length
+      ? `<b>Memory</b>\nWhat your assistants keep about each chat. Tap one to read or delete it.\n\n${lines.join("\n")}`
+      : "<b>Memory</b>\n\nNothing yet. Ask your assistant to remember something about a chat.",
+  memoryLine: (p: { chat: string; size: number; date: string }) =>
+    `• <b>${escapeHtml(p.chat)}</b> — ${p.size} characters, ${p.date}`,
+  memoryDoc: (p: { chat: string; content: string }) =>
+    `<b>Memory: ${escapeHtml(p.chat)}</b>\n\n<pre>${escapeHtml(p.content)}</pre>`,
+  memoryAsFile: (chat: string) =>
+    `<b>Memory: ${escapeHtml(chat)}</b>\n\nIt is long, so I sent it as a file.`,
+  memoryNone: (chat: string) =>
+    `<b>Memory: ${escapeHtml(chat)}</b>\n\nNothing kept for this chat yet.`,
+  buttonDelete: "🗑 Delete",
+  confirmDeleteMemory: (chat: string) =>
+    `Delete the memory of <b>${escapeHtml(chat)}</b>, with its history? This cannot be undone.`,
+  buttonConfirmDelete: "Yes, delete",
+  memoryDeleted: "Deleted.",
+  buttonWipe: "🗑 Erase all memory",
+  confirmWipe: "Erase the memory of every chat, with its history? This cannot be undone.",
+  buttonConfirmWipe: "Yes, erase everything",
+  memoryWiped: "All memory erased.",
   buttonSignIns: "🔑 Sign-ins",
   buttonSignOutAll: "Sign out everywhere",
   buttonConfirmSignOut: "Yes, sign out everywhere",
@@ -176,6 +211,39 @@ const ru: Texts = {
   buttonBack: "« Назад",
   buttonAddToGroup: "Добавить в группу",
   buttonRevoke: "Отозвать доступ",
+  someAssistant: "Ассистент",
+  memoryOfMe: "Чат со мной",
+  memoryNotice: (p) =>
+    `📝 <b>${escapeHtml(p.client)}</b> изменил память «<b>${escapeHtml(p.chat)}</b>»\n\n<pre>${p.diff}</pre>`,
+  memoryNoVisibleChange: "(поменялись только пустые строки или порядок)",
+  memoryMoreLines: (n) => `… и ещё строк изменено: ${n}`,
+  buttonUndo: "Отменить",
+  buttonUndoAnyway: "Всё равно отменить",
+  undone: "Отменено.",
+  undoGone: "Это изменение слишком старое, отменить нельзя.",
+  undoConfirm: (later) =>
+    `После этого память менялась ещё ${later} раз(а). Отмена вернёт её к состоянию до этого изменения и уберёт и их.`,
+  buttonMemory: "📝 Память",
+  buttonChatMemory: "📝 Память чата",
+  memoryListScreen: (lines) =>
+    lines.length
+      ? `<b>Память</b>\nЧто ассистенты помнят о каждом чате. Нажми, чтобы прочитать или удалить.\n\n${lines.join("\n")}`
+      : "<b>Память</b>\n\nПока пусто. Попроси ассистента запомнить что-нибудь о чате.",
+  memoryLine: (p) => `• <b>${escapeHtml(p.chat)}</b> — ${p.size} символов, ${p.date}`,
+  memoryDoc: (p) => `<b>Память: ${escapeHtml(p.chat)}</b>\n\n<pre>${escapeHtml(p.content)}</pre>`,
+  memoryAsFile: (chat) =>
+    `<b>Память: ${escapeHtml(chat)}</b>\n\nОна длинная, поэтому прислал её файлом.`,
+  memoryNone: (chat) =>
+    `<b>Память: ${escapeHtml(chat)}</b>\n\nОб этом чате пока ничего не сохранено.`,
+  buttonDelete: "🗑 Удалить",
+  confirmDeleteMemory: (chat) =>
+    `Удалить память «<b>${escapeHtml(chat)}</b>» вместе с историей? Отменить будет нельзя.`,
+  buttonConfirmDelete: "Да, удалить",
+  memoryDeleted: "Удалено.",
+  buttonWipe: "🗑 Стереть всю память",
+  confirmWipe: "Стереть память всех чатов вместе с историей? Отменить будет нельзя.",
+  buttonConfirmWipe: "Да, стереть всё",
+  memoryWiped: "Вся память стёрта.",
   buttonSignIns: "🔑 Входы",
   buttonSignOutAll: "Выйти везде",
   buttonConfirmSignOut: "Да, выйти везде",

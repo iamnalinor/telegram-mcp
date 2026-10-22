@@ -98,8 +98,12 @@ async function handleMcp(request: Request, env: Env, core: Base): Promise<Respon
     return tooManyRequests("Too many requests for this user. Wait a minute and try again.");
   }
 
-  const { userId, username, name } = authInfo.extra as unknown as McpAuth;
-  const toolCtx = await toolContext(core, publicOrigin(request), userId, { username, name });
+  const { userId, username, name, client } = authInfo.extra as unknown as McpAuth;
+  const toolCtx = await toolContext(core, publicOrigin(request), userId, {
+    username,
+    name,
+    client,
+  });
   return handler.fetch(request, {
     authInfo: { ...authInfo, extra: { ...authInfo.extra, toolContext: toolCtx } },
   });
@@ -172,6 +176,9 @@ export default {
     // Someone taken off ALLOWED_USER_IDS keeps no personal chats here, even if Telegram stays quiet.
     for (const userId of await core.store.businessUsers()) {
       if (!isAllowed(core.config, userId)) await core.store.dropPersonal(userId);
+    }
+    for (const userId of await core.store.memoryUsers()) {
+      if (!isAllowed(core.config, userId)) await core.store.wipeMemory(userId);
     }
 
     const origin = await core.store.getMeta("public_origin");
