@@ -103,6 +103,24 @@ export const topicArg = z
     "Forum topic (thread) id, from list_chats or a message's header. Omit for General / non-forum chats.",
   );
 
+/** `cse_…` (the environment) and `session_…` (links, get_session) name the same session. */
+const SESSION_ID = /^(?:session|cse)_([0-9A-Za-z]{16,64})$/;
+
+export const sessionArg = z
+  .string()
+  .regex(SESSION_ID, "A Claude Code session id: session_… or cse_…")
+  .optional()
+  .describe(
+    "If you are a Claude Code cloud session, your session id (CLAUDE_CODE_REMOTE_SESSION_ID, cse_… or " +
+      "session_…), so a reply to this message can be traced back to you. Omit otherwise.",
+  );
+
+/** One spelling in storage: session_…, as in claude.ai/code links. */
+export function sessionId(value: string | undefined): string | null {
+  const match = value ? SESSION_ID.exec(value) : null;
+  return match ? `session_${match[1]}` : null;
+}
+
 export const formatArg = z
   .enum(["markdown", "plain"])
   .optional()
@@ -203,6 +221,7 @@ export interface SendOptions {
   linkPreview?: boolean;
   topic?: number;
   markChoice?: boolean;
+  session?: string;
 }
 
 /** The forum topic to post in: given, or the one of the message being replied to. */
@@ -246,7 +265,7 @@ export async function recordSent(
   ctx: ToolContext,
   chat: ChatView,
   sent: Message,
-  extra: { text?: string; buttons?: string | null; markChoice?: boolean } = {},
+  extra: { text?: string; buttons?: string | null; markChoice?: boolean; session?: string } = {},
 ): Promise<void> {
   const personal = chat.account_id !== BOT_ACCOUNT;
   const stored = toStored(sent, ctx.bot, personal ? chat.account_id : undefined);
@@ -256,6 +275,7 @@ export async function recordSent(
   stored.buttons = extra.buttons ?? null;
   stored.mark_choice = extra.markChoice ?? false;
   stored.sent_by = ctx.userId;
+  stored.session_id = sessionId(extra.session);
   await ctx.store.insertMessage(stored, personal ? "personal" : "always");
 }
 
@@ -313,6 +333,7 @@ export async function sendText(
       text: part,
       buttons: last ? storedButtons(options.buttons) : null,
       markChoice: last ? options.markChoice : false,
+      session: options.session,
     });
     sent.push(message);
   }
@@ -338,6 +359,7 @@ export interface FileSendOptions {
   replyTo?: number;
   topic?: number;
   silent?: boolean;
+  session?: string;
 }
 
 /** A file to send: bytes in hand, or a stream of known size straight from the uploader. */
@@ -403,6 +425,7 @@ export async function sendUpload(
   await recordSent(ctx, chat, message, {
     text: caption ?? "",
     buttons: storedButtons(options.buttons),
+    session: options.session,
   });
   return message;
 }
