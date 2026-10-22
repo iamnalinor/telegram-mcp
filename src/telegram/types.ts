@@ -106,6 +106,33 @@ export interface Message {
   migrate_to_chat_id?: number;
   new_chat_title?: string;
   reply_markup?: InlineKeyboardMarkup;
+  /** Set on messages of a chat managed through a business connection. */
+  business_connection_id?: string;
+  /** On the account owner's outgoing messages: the bot that sent it on their behalf. */
+  sender_business_bot?: User;
+}
+
+/** What the account owner let the bot do, in Telegram's settings. Absent fields are false. */
+export interface BusinessBotRights {
+  can_reply?: boolean;
+  can_read_messages?: boolean;
+  can_delete_sent_messages?: boolean;
+  can_delete_all_messages?: boolean;
+}
+
+export interface BusinessConnection {
+  id: string;
+  user: User;
+  user_chat_id: number;
+  date: number;
+  rights?: BusinessBotRights;
+  is_enabled: boolean;
+}
+
+export interface BusinessMessagesDeleted {
+  business_connection_id: string;
+  chat: Chat;
+  message_ids: number[];
 }
 
 type ChatMemberStatus = "creator" | "administrator" | "member" | "restricted" | "left" | "kicked";
@@ -153,6 +180,10 @@ export interface Update {
   chat_member?: ChatMemberUpdated;
   callback_query?: CallbackQuery;
   message_reaction?: MessageReactionUpdated;
+  business_connection?: BusinessConnection;
+  business_message?: Message;
+  edited_business_message?: Message;
+  deleted_business_messages?: BusinessMessagesDeleted;
 }
 
 interface InlineKeyboardButton {

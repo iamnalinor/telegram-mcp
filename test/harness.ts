@@ -39,6 +39,8 @@ class FakeTelegram {
   chats = new Map<number, Record<string, unknown>>();
   files = new Map<string, { path: string; bytes: Uint8Array }>();
   privacyOn = false;
+  /** Business connection id → the account it acts for. */
+  businessOwners = new Map<string, { id: number; first_name: string }>();
   private nextId = 1000;
 
   constructor() {
@@ -59,6 +61,8 @@ class FakeTelegram {
       "setMessageReaction",
       "deleteMessage",
       "answerCallbackQuery",
+      "readBusinessMessage",
+      "deleteBusinessMessages",
     ]) {
       this.handlers.set(method, () => true);
     }
@@ -66,19 +70,27 @@ class FakeTelegram {
       url: `${ORIGIN}/telegram`,
       pending_update_count: 0,
     }));
-    const send = (params: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
-      message_id: this.nextId++,
-      date: Math.floor(Date.now() / 1000),
-      chat: {
-        id: Number(params.chat_id),
-        type: Number(params.chat_id) > 0 ? "private" : "supergroup",
-      },
-      from: { id: BOT_ID, is_bot: true, first_name: "Test", username: BOT_USERNAME },
-      ...(params.message_thread_id
-        ? { message_thread_id: Number(params.message_thread_id), is_topic_message: true }
-        : {}),
-      ...extra,
-    });
+    const bot = { id: BOT_ID, is_bot: true, first_name: "Test", username: BOT_USERNAME };
+    const send = (params: Record<string, unknown>, extra: Record<string, unknown> = {}) => {
+      // On behalf of a business account, the message is that account's, marked as sent by the bot.
+      const connection = params.business_connection_id as string | undefined;
+      const owner = connection ? this.businessOwners.get(connection) : undefined;
+      if (connection && !owner) throw new TgError(400, "Bad Request: BUSINESS_CONNECTION_INVALID");
+      return {
+        message_id: this.nextId++,
+        date: Math.floor(Date.now() / 1000),
+        chat: {
+          id: Number(params.chat_id),
+          type: Number(params.chat_id) > 0 ? "private" : "supergroup",
+        },
+        from: owner ? { is_bot: false, ...owner } : bot,
+        ...(owner ? { business_connection_id: connection, sender_business_bot: bot } : {}),
+        ...(params.message_thread_id
+          ? { message_thread_id: Number(params.message_thread_id), is_topic_message: true }
+          : {}),
+        ...extra,
+      };
+    };
     this.handlers.set("sendMessage", (params) => send(params, { text: params.text }));
     this.handlers.set("sendDocument", (params) =>
       send(params, {
@@ -327,6 +339,63 @@ export class Harness {
       ?.includes("json")
       ? await response.json()
       : null;
+    return message;
+  }
+
+  private businessIds = new Map<number, number>();
+
+  /** The user connects the bot to their account in Telegram's settings, or changes or ends that. */
+  async businessConnect(
+    owner: { id: number; first_name?: string; username?: string; language_code?: string },
+    rights: Record<string, boolean> = {},
+    enabled = true,
+  ): Promise<{ method: string; text: string } | null> {
+    const id = `bc-${owner.id}`;
+    const user = { is_bot: false, first_name: owner.first_name ?? `User${owner.id}`, ...owner };
+    this.telegram.businessOwners.set(id, { id: owner.id, first_name: user.first_name });
+    const response = await this.update({
+      business_connection: {
+        id,
+        user,
+        user_chat_id: owner.id,
+        date: Math.floor(Date.now() / 1000),
+        rights,
+        is_enabled: enabled,
+      },
+    });
+    return response.headers.get("content-type")?.includes("json") ? response.json() : null;
+  }
+
+  /**
+   * A message in the owner's personal chat with `peer`: from the peer, or with
+   * `outgoing`, written by the owner. Ids count per owner account, as in Telegram.
+   */
+  async businessSay(
+    owner: { id: number; first_name?: string },
+    peer: { id: number; first_name?: string; username?: string },
+    text: string,
+    options: { outgoing?: boolean; date?: number; edit?: number } = {},
+  ): Promise<Record<string, unknown>> {
+    const messageId = options.edit ?? (this.businessIds.get(owner.id) ?? 0) + 1;
+    if (!options.edit) this.businessIds.set(owner.id, messageId);
+    const author = options.outgoing ? owner : peer;
+    const message = {
+      message_id: messageId,
+      business_connection_id: `bc-${owner.id}`,
+      date: options.date ?? Math.floor(Date.now() / 1000),
+      ...(options.edit ? { edit_date: Math.floor(Date.now() / 1000) } : {}),
+      chat: {
+        id: peer.id,
+        type: "private",
+        first_name: peer.first_name ?? `User${peer.id}`,
+        ...(peer.username ? { username: peer.username } : {}),
+      },
+      from: { is_bot: false, first_name: author.first_name ?? `User${author.id}`, ...author },
+      text,
+    };
+    await this.update(
+      options.edit ? { edited_business_message: message } : { business_message: message },
+    );
     return message;
   }
 

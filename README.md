@@ -9,10 +9,12 @@ can:
 - **ask you something and wait**, with answer buttons ("ask me in Telegram before deploying"),
 - **read what you send the bot** ("I sent you a file in Telegram, take a look"),
 - **read groups you connect**: search by keywords, find every message where someone tagged the
-  bot, follow replies and walk the messages around them for context, work inside forum topics.
+  bot, follow replies and walk the messages around them for context, work inside forum topics,
+- **read your personal chats**, if you connect the bot to your account ("what did Anna write
+  yesterday?"), and reply in them as you — only if you allowed that in Telegram.
 
 It runs on Cloudflare Workers with D1. Each person who connects sees only their own private chat
-with the bot and the groups they connected.
+with the bot, the groups they connected and their own personal chats.
 
 > **What the bot can read is only what it received.** The Bot API has no history, so the bot
 > stores what Telegram delivers to it, for **14 days** (`RETENTION_DAYS`), and deletes the rest.
@@ -130,6 +132,43 @@ codex mcp login telegram
 Bot commands: `/start` (what this is, and your Telegram ID), `/connect`, `/groups`,
 `/disconnect` (signs out every assistant connected with your account).
 
+## Personal chats
+
+Telegram lets a user connect a bot to their own account (Telegram Business → Chatbots). The bot then
+receives the user's private chats with other people, and Claude can read and search them like any
+other chat.
+
+1. In [@BotFather](https://t.me/BotFather): your bot → Bot Settings → **Business Mode** → on. Once
+   per bot.
+2. Each user who wants it, in Telegram: Settings → Telegram Business → **Chatbots** → add the bot.
+   There they choose which chats it gets (all except some, or only some) and what it may do.
+
+**What Claude may do is exactly what you allowed there**, checked on every call:
+
+| Permission in Telegram | What it lets Claude do                                               |
+| ---------------------- | -------------------------------------------------------------------- |
+| (connected at all)     | read and search the chats you gave it                                |
+| Reply to messages      | send and edit messages as you: text, files, albums, locations, polls |
+| Mark messages as read  | `mark_read`                                                          |
+| Delete sent messages   | delete messages it sent (never yours or the other person's)          |
+
+Without a permission the tool refuses before anything reaches Telegram. Change it in Telegram and
+the next call follows; the bot tells you in its chat what Claude can do whenever it changes.
+Telegram also allows writing only within 24 hours of the other person's last message. Buttons,
+`ask_user`, reactions, pins and forwards are not used in personal chats. Claude is told that
+anything it sends there goes out as you, and to send only when you ask it to in the conversation.
+
+- **What the bot sees**: messages from the moment you connect it, in the chats you chose, including
+  your own replies. No history, no secret chats, no groups.
+- **Removing the bot** there deletes everything it stored from your personal chats. Storage starts
+  only once you have also signed an assistant in.
+- **Other people's privacy**: the people you talk to have not agreed to anything. Their messages sit
+  in the database for `RETENTION_DAYS`, readable by whoever runs the Worker. Give the bot only the
+  chats you need, and run your own deployment.
+- **Cost**: every message in a connected chat is a Worker request and about two D1 row writes, like
+  a busy group. With `ALLOWED_USER_IDS` empty, anyone can connect their account to your bot on your
+  quota.
+
 ## Files
 
 Models cannot attach files to MCP calls, so files travel through short-lived links instead:
@@ -166,7 +205,8 @@ allowlist.
 | `pin_message`         | Pin or unpin                                                               |
 | `react`               | An emoji reaction instead of a reply                                       |
 | `forward_message`     | Copy a message (with its file) into another chat you can access            |
-| `list_chats`          | Your chat and connected groups, topics, history windows, t.me links        |
+| `mark_read`           | Mark a personal chat's latest message read (needs that permission)         |
+| `list_chats`          | Your chat, groups, personal chats (with permissions), topics, t.me links   |
 | `search_messages`     | Keywords, sender, time, files, topic, or only messages that tag the bot    |
 | `get_recent_messages` | Latest messages in a chat, or the window around one message                |
 | `get_message`         | One message in full, with its reply chain, button presses and reactions    |
@@ -222,8 +262,10 @@ Increasing `RETENTION_DAYS` costs storage, not writes.
   uses PKCE, and codes only go to Claude's and ChatGPT's exact callback URLs or to loopback. Before
   Telegram's login, a page names the assistant that will get access, and the sign-in can only finish
   in the browser that saw it, so a link someone else started cannot be accepted by mistake.
-- **Access** is checked on every call: your own private chat, plus groups where you hold a grant and
-  are still a member. A model cannot post to or read any other chat. It can only edit or delete the
+- **Access** is checked on every call: your own private chat, groups where you hold a grant and are
+  still a member, and your personal chats while your business connection is on, with only the
+  permissions you gave it in Telegram. Personal messages are keyed by your account, so no query can
+  return them to anyone else. A model cannot post to or read any other chat. It can only edit or delete the
   bot's own messages, and in a shared group only those sent for the same user.
 - **Refresh tokens rotate**: each refresh returns a new one and retires the old. A retired token
   coming back after its successor was used, or more than 10 minutes later, means someone else holds

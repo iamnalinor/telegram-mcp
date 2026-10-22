@@ -6,17 +6,19 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
-import type { ChatView } from "../access";
+import { telegramChat, type ChatView } from "../access";
 import { uploadLink } from "../files";
 import { Fence, formatTime, person } from "../format";
-import { GROUP_NOTE } from "../prompts";
+import { GROUP_NOTE, PERSONAL_NOTE } from "../prompts";
 import type { PressRow, StoredMessage } from "../store";
 import type { Message } from "../telegram/types";
 import {
   buttonsArg,
   chatArg,
   formatArg,
+  mayPost,
   messageIdArg,
+  notPersonal,
   recordSent,
   sendText,
   sendUpload,
@@ -26,6 +28,7 @@ import {
   toolError,
   topicArg,
   UPLOAD_KINDS,
+  where,
   type ToolContext,
 } from "./common";
 
@@ -35,10 +38,6 @@ const INLINE_FILE_BYTES = 1024 * 1024;
 
 const silentArg = z.boolean().optional().describe("Deliver without a notification sound.");
 const replyToArg = z.number().int().positive().optional().describe("Reply to this message id.");
-
-function where(chat: ChatView): string {
-  return chat.kind === "dm" ? "the private chat" : `"${chat.title}"`;
-}
 
 export function sentSummary(ctx: ToolContext, chat: ChatView, messages: Message[]): string {
   const ids = messages.map((message) => `#${message.message_id}`).join(", ");
@@ -120,7 +119,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         'Message the user in Telegram — chat "me" by default — or a connected group. Use for "message me / ' +
         'ping me when done / tell me in Telegram". Markdown is converted; long text is split. Optional buttons ' +
         "(presses are recorded) and reply_to. Returns the message id and a t.me link to give the user. For a " +
-        `question that needs an answer, use ask_user instead. ${GROUP_NOTE}`,
+        `question that needs an answer, use ask_user instead. ${GROUP_NOTE} ${PERSONAL_NOTE}`,
       inputSchema: z.object({
         text: z.string().min(1).max(20_000),
         chat: chatArg,
@@ -188,6 +187,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     async (args) => {
       try {
         const chat = await ctx.access.resolve(args.chat);
+        notPersonal(chat, "ask_user asks the user, in their chat with the bot or a group.");
         const options = args.options ?? [];
         // Short labels share rows; long ones get a row each.
         const perRow = options.every((option) => option.length <= 12) ? 3 : 1;
@@ -236,8 +236,8 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     async (args) => {
       try {
         const chat = await ctx.access.resolve(args.chat);
-        const messageId =
-          args.message_id ?? (await ctx.store.lastOutgoing(chat.chat_id))?.message_id;
+        notPersonal(chat, "to see whether someone answered there, use get_recent_messages.");
+        const messageId = args.message_id ?? (await ctx.store.lastOutgoing(chat))?.message_id;
         if (!messageId)
           throw new ToolError(
             "The bot has sent nothing in that chat yet, so there is nothing to wait on.",
@@ -279,7 +279,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
       description:
         "The way to send a file you built when you have a shell: returns a one-time URL (valid 10 min) and the " +
         "curl command to run. The file is sent to the chat the moment the upload finishes, up to 50 MB, and curl " +
-        `prints the message link. Prefer this over send_file for anything but small text. ${GROUP_NOTE}`,
+        `prints the message link. Prefer this over send_file for anything but small text. ${GROUP_NOTE} ${PERSONAL_NOTE}`,
       inputSchema: z.object({
         filename: z.string().min(1).max(200).describe("Name the user sees, with extension."),
         ...fileOptions,
@@ -289,6 +289,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     async (args) => {
       try {
         const chat = await ctx.access.resolve(args.chat);
+        await mayPost(ctx, chat, args.buttons);
         const url = await uploadLink(ctx, chat, args.filename, {
           as: args.as,
           caption: args.caption,
@@ -316,7 +317,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
       description:
         "Send a file whose content you pass directly: `text` for text files (code, logs, CSV, Markdown), or " +
         "`content_base64` for small binaries (≤1 MB). Use when you have no shell; otherwise create_upload_url " +
-        `is cheaper and handles big files. ${GROUP_NOTE}`,
+        `is cheaper and handles big files. ${GROUP_NOTE} ${PERSONAL_NOTE}`,
       inputSchema: z.object({
         filename: z.string().min(1).max(200),
         text: z.string().optional().describe("File content as text (UTF-8)."),
@@ -372,7 +373,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
       description:
         "Group 2–10 photos/videos (or 2–10 documents) into one album. Items are files already in Telegram — " +
         "attachments of stored messages, by message id — or public URLs Telegram can fetch. To upload new files, " +
-        `send them one by one with create_upload_url. ${GROUP_NOTE}`,
+        `send them one by one with create_upload_url. ${GROUP_NOTE} ${PERSONAL_NOTE}`,
       inputSchema: z.object({
         items: z
           .array(
@@ -403,11 +404,12 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     async (args) => {
       try {
         const chat = await ctx.access.resolve(args.chat);
+        await mayPost(ctx, chat);
         const media = [];
         for (const item of args.items) {
           if (item.message_id) {
             const from = await ctx.access.resolve(item.from_chat);
-            const stored = await ctx.store.getMessage(from.chat_id, item.message_id);
+            const stored = await ctx.store.getMessage(from, item.message_id);
             if (!stored?.file_id || stored.date < from.visible_from) {
               throw new ToolError(`Message #${item.message_id} has no stored attachment.`);
             }
@@ -425,12 +427,12 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
           }
         }
         const sent = await ctx.api.call<Message[]>("sendMediaGroup", {
-          chat_id: chat.chat_id,
+          ...telegramChat(chat),
           media,
           ...(args.topic ? { message_thread_id: args.topic } : {}),
           ...(args.silent ? { disable_notification: true } : {}),
         });
-        for (const message of sent) await recordSent(ctx, message);
+        for (const message of sent) await recordSent(ctx, chat, message);
         return text(sentSummary(ctx, chat, sent));
       } catch (error) {
         return toolError(error, ctx);
@@ -442,7 +444,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     "send_location",
     {
       title: "Send a map pin",
-      description: `Send a location pin, optionally as a named venue. ${GROUP_NOTE}`,
+      description: `Send a location pin, optionally as a named venue. ${GROUP_NOTE} ${PERSONAL_NOTE}`,
       inputSchema: z.object({
         latitude: z.number().min(-90).max(90),
         longitude: z.number().min(-180).max(180),
@@ -460,15 +462,16 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     async (args) => {
       try {
         const chat = await ctx.access.resolve(args.chat);
+        await mayPost(ctx, chat);
         const venue = args.title && args.address;
         const message = await ctx.api.call<Message>(venue ? "sendVenue" : "sendLocation", {
-          chat_id: chat.chat_id,
+          ...telegramChat(chat),
           latitude: args.latitude,
           longitude: args.longitude,
           ...(venue ? { title: args.title, address: args.address } : {}),
           ...(args.topic ? { message_thread_id: args.topic } : {}),
         });
-        await recordSent(ctx, message, {
+        await recordSent(ctx, chat, message, {
           text: venue ? `[venue] ${args.title}, ${args.address}` : undefined,
         });
         return text(sentSummary(ctx, chat, [message]));
@@ -484,8 +487,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
       title: "Start a poll",
       description:
         'Post a native Telegram poll, typically in a group ("poll the team on Friday vs Monday"). Votes are ' +
-        "not reported back to you; for one person's decision, use ask_user. " +
-        GROUP_NOTE,
+        `not reported back to you; for one person's decision, use ask_user. ${GROUP_NOTE} ${PERSONAL_NOTE}`,
       inputSchema: z.object({
         question: z.string().min(1).max(300),
         options: z.array(z.string().min(1).max(100)).min(2).max(12),
@@ -499,15 +501,16 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     async (args) => {
       try {
         const chat = await ctx.access.resolve(args.chat);
+        await mayPost(ctx, chat);
         const message = await ctx.api.call<Message>("sendPoll", {
-          chat_id: chat.chat_id,
+          ...telegramChat(chat),
           question: args.question,
           options: args.options.map((option) => ({ text: option })),
           is_anonymous: args.anonymous ?? false,
           allows_multiple_answers: args.multiple_answers ?? false,
           ...(args.topic ? { message_thread_id: args.topic } : {}),
         });
-        await recordSent(ctx, message);
+        await recordSent(ctx, chat, message);
         return text(sentSummary(ctx, chat, [message]));
       } catch (error) {
         return toolError(error, ctx);
@@ -545,8 +548,9 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     async (args) => {
       try {
         const chat = await ctx.access.resolve(args.chat);
+        await mayPost(ctx, chat);
         await ctx.api.call("sendChatAction", {
-          chat_id: chat.chat_id,
+          ...telegramChat(chat),
           action: args.action ?? "typing",
           ...(args.topic ? { message_thread_id: args.topic } : {}),
         });

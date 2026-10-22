@@ -22,6 +22,8 @@ const en = {
       "/groups — see and revoke group access",
       "/disconnect — sign out every connected assistant",
       "",
+      "<b>Personal chats</b>: to let your assistant read your own chats with other people, add me in Settings → Telegram Business → Chatbots. Whether it may also reply for you is up to the permissions you give me there.",
+      "",
       `I keep messages for ${p.retention} days and only see chats I am in.` +
         (p.privacyOn
           ? " Privacy mode is on, so in groups I only see commands, mentions and replies to me — turn it off in @BotFather (/setprivacy) and re-add me to see everything."
@@ -63,7 +65,34 @@ const en = {
   pressed: (label: string) => `✓ ${label}`,
   alreadyAnswered: "Already answered.",
   unknownCommand: "Unknown command. Try /start.",
+  business: (p: BusinessStatus) =>
+    [
+      p.changed
+        ? "🔗 Permissions for your personal chats changed."
+        : "🔗 You connected me to your account. Your assistant can now read the personal chats you gave me in Telegram's settings, from this moment on. Secret chats, groups and older messages stay out of reach.",
+      "",
+      "What your assistant may do there:",
+      `${p.reply ? "✅" : "🚫"} reply on your behalf — people will see these messages as yours`,
+      `${p.read ? "✅" : "🚫"} mark messages as read`,
+      `${p.delete ? "✅" : "🚫"} delete messages it sent`,
+      "",
+      `Only you decide this: Settings → Telegram Business → Chatbots. I keep messages for ${p.retention} days; removing me there deletes them.` +
+        (p.signedIn
+          ? ""
+          : "\n\n⚠️ Connect your AI assistant to this bot first (add it as a connector and sign in with Telegram). Until then I store nothing."),
+    ].join("\n"),
+  businessOff:
+    "🔗 You disconnected me from your account. Everything I stored from your personal chats is deleted.",
 };
+
+interface BusinessStatus {
+  changed: boolean;
+  reply: boolean;
+  read: boolean;
+  delete: boolean;
+  retention: number;
+  signedIn: boolean;
+}
 
 type Texts = typeof en;
 
@@ -80,6 +109,8 @@ const ru: Texts = {
       "/connect — дать ассистенту доступ к группе (или отправь /connect в самой группе)",
       "/groups — посмотреть и отозвать доступ к группам",
       "/disconnect — отключить все подключённые ассистенты",
+      "",
+      "<b>Личные переписки</b>: чтобы ассистент читал твои переписки с другими людьми, добавь меня в Настройки → Telegram для бизнеса → Чат-боты. Может ли он ещё и отвечать за тебя — решают права, которые ты дашь мне там.",
       "",
       `Храню сообщения ${p.retention} дней и вижу только чаты, где я есть.` +
         (p.privacyOn
@@ -122,6 +153,24 @@ const ru: Texts = {
   pressed: (label) => `✓ ${label}`,
   alreadyAnswered: "Уже отвечено.",
   unknownCommand: "Не знаю такой команды. Попробуй /start.",
+  business: (p) =>
+    [
+      p.changed
+        ? "🔗 Права в личных переписках изменились."
+        : "🔗 Ты подключил(а) меня к своему аккаунту. Теперь ассистент может читать личные переписки, которые ты отдал(а) мне в настройках Telegram, начиная с этого момента. Секретные чаты, группы и старые сообщения недоступны.",
+      "",
+      "Что ассистент может делать в них:",
+      `${p.reply ? "✅" : "🚫"} отвечать от твоего имени — собеседники увидят это как твои сообщения`,
+      `${p.read ? "✅" : "🚫"} отмечать сообщения прочитанными`,
+      `${p.delete ? "✅" : "🚫"} удалять отправленные им сообщения`,
+      "",
+      `Решаешь только ты: Настройки → Telegram для бизнеса → Чат-боты. Храню сообщения ${p.retention} дней; если убрать меня там, всё удалю.` +
+        (p.signedIn
+          ? ""
+          : "\n\n⚠️ Сначала подключи AI-ассистента к этому боту (добавь коннектор и войди через Telegram). До этого я ничего не сохраняю."),
+    ].join("\n"),
+  businessOff:
+    "🔗 Ты отключил(а) меня от своего аккаунта. Всё, что я сохранил из личных переписок, удалено.",
 };
 
 export function texts(languageCode: string | null | undefined): Texts {

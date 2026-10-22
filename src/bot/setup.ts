@@ -20,6 +20,10 @@ const ALLOWED_UPDATES = [
   "chat_member",
   "callback_query",
   "message_reaction",
+  "business_connection",
+  "business_message",
+  "edited_business_message",
+  "deleted_business_messages",
 ];
 
 export const WEBHOOK_PATH = "/telegram";
