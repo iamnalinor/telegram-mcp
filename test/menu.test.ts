@@ -65,7 +65,7 @@ describe("menu", () => {
     const group = await press(ALICE, `m:g:${TEAM.id}`, "q2");
     expect(String(group!.text)).toContain("Team chat");
     const data = buttons(group!.reply_markup).map((b) => b.callback_data);
-    expect(data).toEqual([`m:mv:${TEAM.id}`, `m:rv:${TEAM.id}`, "m:groups"]);
+    expect(data).toEqual([`m:gc:${TEAM.id}`, `m:mv:${TEAM.id}`, `m:rv:${TEAM.id}`, "m:groups"]);
 
     const after = await press(ALICE, `m:rv:${TEAM.id}`, "q3");
     expect(String(after!.text)).not.toContain("Team chat");

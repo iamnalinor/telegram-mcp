@@ -41,6 +41,7 @@ import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { handleAssistantButton, handleChatShared, handleCommand, handleRevoke } from "./commands";
 import { handleMemoryUndo, handleMenu } from "./menu";
 import { handleSecret } from "./routine";
+import { maybeStart } from "./triggers";
 import { parseCommand, realReply, toStored, topicName, topicOf } from "./extract";
 import { texts } from "./texts";
 
@@ -136,6 +137,11 @@ async function onMessage(
   }
 
   const command = parseCommand(message, ctx.bot);
+  // A start that fails must not lose the update: it is told to the user, not retried.
+  await maybeStart(ctx, message, command).catch((error: unknown) =>
+    console.error(JSON.stringify({ event: "trigger_failed", error: String(error) })),
+  );
+  if (command?.name === "claude") return null;
   if (command) {
     return handleCommand(ctx, message, command);
   }

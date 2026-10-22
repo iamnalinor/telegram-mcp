@@ -87,6 +87,7 @@ export async function handleSecret(
     await say(ctx, message.chat.id, t.secretDropped(deleted) + after);
     return null;
   }
+  const first = !(await ctx.store.getRoutine(user.id));
   try {
     await saveRoutine(ctx.store, ctx.config.secretKey, user.id, routine);
   } catch (error) {
@@ -96,6 +97,8 @@ export async function handleSecret(
     await say(ctx, message.chat.id, t.routineNotSaved + after);
     return null;
   }
+  // Answering in the private chat comes on with the first routine; groups are turned on one by one.
+  if (first) await ctx.store.claimClaudeChat(user.id, user.id);
   await say(ctx, message.chat.id, t.routineSaved(routine.triggerId, deleted) + after);
   await testRoutine(ctx, user, message.message_id);
   return null;
