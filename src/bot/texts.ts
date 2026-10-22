@@ -11,12 +11,11 @@ export function escapeHtml(text: string): string {
 const en = {
   notAllowed: (id: number) =>
     `This bot is private. Your Telegram ID is <code>${id}</code> — ask its owner to add it to <code>ALLOWED_USER_IDS</code>.`,
-  start: (p: { id: number; connector: string; retention: number; privacyOn: boolean }) =>
+  start: (p: { id: number; retention: number; privacyOn: boolean }) =>
     [
       "Hi! I connect your AI assistant (Claude, ChatGPT, Codex) to Telegram: it can message you here, send files, ask you questions with buttons, and read what you send me or what is said in groups you connect.",
       "",
       `Your Telegram ID: <code>${p.id}</code>`,
-      `Connector URL: <code>${escapeHtml(p.connector)}</code>`,
       "",
       "<b>Commands</b>",
       "/connect — give your assistant access to a group (or send /connect in the group itself)",
@@ -29,6 +28,10 @@ const en = {
           : ""),
     ].join("\n"),
   pickGroup: "Pick the group to connect. I must already be a member there.",
+  connectFirst:
+    "Connect your AI assistant to this bot first (add it as a connector in Claude or ChatGPT and sign in with Telegram), then link groups.",
+  leavingNotConnected: (name: string) =>
+    `${escapeHtml(name)}, connect your AI assistant to this bot first, then add me again. Leaving for now.`,
   pickButton: "Choose a group",
   cannotResolve: (what: string) =>
     `I can't find ${escapeHtml(what)}. Use the button, or send a public @username. Invite links can't be resolved by bots.`,
@@ -43,7 +46,7 @@ const en = {
       : "Your assistant sees messages from now on. Older ones stay hidden because this group hides history from new members, or I'm not an admin and can't check — make me an admin with visible history to change that."),
   addedGreeting: (p: { name: string; retention: number; privacyOn: boolean; admin: boolean }) =>
     `👋 Hi! ${escapeHtml(p.name)} added me so their AI assistant can read and post here. ` +
-    `I keep messages for ${p.retention} days. Anyone else can send /connect to link their own assistant.` +
+    `I keep messages for ${p.retention} days.` +
     (p.privacyOn && !p.admin
       ? "\n\n⚠️ Privacy mode is on: I only see commands, mentions and replies. Make me an admin, or turn privacy off in @BotFather and re-add me."
       : ""),
@@ -72,7 +75,6 @@ const ru: Texts = {
       "Привет! Я связываю твоего AI-ассистента (Claude, ChatGPT, Codex) с Telegram: он может писать тебе сюда, присылать файлы, задавать вопросы с кнопками и читать, что ты мне пишешь или что пишут в подключённых группах.",
       "",
       `Твой Telegram ID: <code>${p.id}</code>`,
-      `URL коннектора: <code>${escapeHtml(p.connector)}</code>`,
       "",
       "<b>Команды</b>",
       "/connect — дать ассистенту доступ к группе (или отправь /connect в самой группе)",
@@ -85,6 +87,10 @@ const ru: Texts = {
           : ""),
     ].join("\n"),
   pickGroup: "Выбери группу. Я уже должен в ней состоять.",
+  connectFirst:
+    "Сначала подключи AI-ассистента к этому боту (добавь коннектор в Claude или ChatGPT и войди через Telegram), потом привязывай группы.",
+  leavingNotConnected: (name) =>
+    `${escapeHtml(name)}, сначала подключи AI-ассистента к этому боту, потом добавь меня снова. Пока выхожу.`,
   pickButton: "Выбрать группу",
   cannotResolve: (what) =>
     `Не нахожу ${escapeHtml(what)}. Нажми кнопку или пришли публичный @username — инвайт-ссылки боты открыть не могут.`,
@@ -99,7 +105,7 @@ const ru: Texts = {
       : "Ассистенту видны сообщения с этого момента. Старые скрыты: в группе история скрыта от новых участников, или я не админ и не могу это проверить — сделай меня админом с видимой историей, чтобы это изменить."),
   addedGreeting: (p) =>
     `👋 Привет! ${escapeHtml(p.name)} добавил(а) меня, чтобы AI-ассистент мог читать и писать здесь. ` +
-    `Храню сообщения ${p.retention} дней. Любой может отправить /connect, чтобы подключить своего ассистента.` +
+    `Храню сообщения ${p.retention} дней.` +
     (p.privacyOn && !p.admin
       ? "\n\n⚠️ Включён privacy mode: я вижу только команды, упоминания и ответы. Сделай меня админом или выключи privacy в @BotFather и добавь меня заново."
       : ""),

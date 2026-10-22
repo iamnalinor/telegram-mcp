@@ -127,7 +127,7 @@ codex mcp login telegram
 - **Replies**: when someone replies to a message, the bot keeps the original too (even one older than
   the bot), so "@bot what about this?" under a message shows Claude both.
 
-Bot commands: `/start` (what this is, your ID, the connector URL), `/connect`, `/groups`,
+Bot commands: `/start` (what this is, and your Telegram ID), `/connect`, `/groups`,
 `/disconnect` (signs out every assistant connected with your account).
 
 ## Files

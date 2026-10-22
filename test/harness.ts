@@ -298,11 +298,35 @@ export class Harness {
     return message;
   }
 
+  /** Tables exist only after the Worker's first request; tests poking SQL first need them now. */
+  async ensureSchema(): Promise<void> {
+    await this.fetch("/health");
+    const { ensureSchema } = await import("../src/schema");
+    await ensureSchema(this.env.DB);
+  }
+
+  /** As if the user had signed an assistant in (the precondition for linking groups). */
+  markConnected(...users: { id: number; first_name?: string }[]): void {
+    for (const user of users) {
+      this.db.raw
+        .query(
+          `INSERT INTO users (user_id, first_name, created_at, connected_at) VALUES (?, ?, 1, 1)
+           ON CONFLICT (user_id) DO UPDATE SET connected_at = COALESCE(connected_at, 1)`,
+        )
+        .run(user.id, user.first_name ?? null);
+    }
+  }
+
   async addBot(
     chat: { id: number; title: string; type?: string; is_forum?: boolean; username?: string },
     by: { id: number; first_name?: string },
     status = "member",
+    options: { connected?: boolean } = {},
   ) {
+    if (options.connected !== false) {
+      await this.ensureSchema();
+      this.markConnected(by);
+    }
     this.telegram.chats.set(chat.id, { type: "supergroup", ...chat });
     return this.update({
       my_chat_member: {

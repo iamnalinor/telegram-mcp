@@ -56,6 +56,7 @@ export interface UserRow {
   language: string | null;
   token_version: number;
   created_at: number;
+  connected_at: number | null;
 }
 
 export interface ChatRow {
@@ -289,6 +290,14 @@ export class Store {
 
   getUser(userId: number): Promise<UserRow | null> {
     return this.db.prepare("SELECT * FROM users WHERE user_id = ?").bind(userId).first<UserRow>();
+  }
+
+  /** Record that the user has signed an assistant in; written once. */
+  async markConnected(userId: number): Promise<void> {
+    await this.db
+      .prepare("UPDATE users SET connected_at = ? WHERE user_id = ? AND connected_at IS NULL")
+      .bind(nowSeconds(), userId)
+      .run();
   }
 
   async bumpTokenVersion(userId: number): Promise<void> {

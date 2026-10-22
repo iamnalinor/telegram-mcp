@@ -1,7 +1,7 @@
 /**
  * Bot commands and button presses: the bot's own settings UI.
  *
- *   /start, /help       what this is, the sender's Telegram ID, the connector URL
+ *   /start, /help       what this is, and the sender's Telegram ID
  *   /connect            in a group: link the sender; in DM: pick a group
  *   /groups             connected groups, each with a Revoke button
  *   /disconnect         sign out every assistant connected with this account
@@ -26,6 +26,16 @@ import { isChatGoneError } from "../access";
 import type { BotContext, WebhookReply } from "./context";
 import { topicOf, type Command } from "./extract";
 import { formatDate, texts } from "./texts";
+
+/**
+ * Only someone who has signed an assistant in to this deployment may link
+ * groups to it. Otherwise anyone could make the bot store their groups — on
+ * the deployer's quota — for an assistant that does not exist.
+ */
+export async function hasConnected(ctx: BotContext, userId: number): Promise<boolean> {
+  const row = await ctx.store.getUser(userId);
+  return row?.connected_at !== null && row?.connected_at !== undefined;
+}
 
 /** request_id for the KeyboardButtonRequestChat in /connect. */
 const PICK_GROUP_REQUEST = 1;
@@ -80,13 +90,13 @@ export async function handleCommand(
         message,
         t.start({
           id: user.id,
-          connector: `${ctx.origin}/`,
           retention: ctx.config.retentionDays,
           privacyOn: !ctx.bot.canReadAll,
         }),
       );
 
     case "connect":
+      if (!(await hasConnected(ctx, user.id))) return replyTo(message, t.connectFirst);
       if (!isPrivate) return connectHere(ctx, message, user);
       if (command.args) return connectByName(ctx, message, user, command.args);
       return replyTo(message, t.pickGroup, {
@@ -180,6 +190,7 @@ async function connectChat(
   options: { inGroup?: boolean } = {},
 ): Promise<string> {
   const t = texts(user.language_code);
+  if (!(await hasConnected(ctx, user.id))) return t.connectFirst;
 
   let chat: ChatFullInfo;
   try {

@@ -456,6 +456,7 @@ async function completeLogin(
 }
 
 async function issueTokens(deps: OAuthDeps, userId: number) {
+  await deps.store.markConnected(userId);
   const user = await deps.store.getUser(userId);
   const version = user?.token_version ?? 0;
   const payload = { u: userId, v: version };
@@ -472,6 +473,8 @@ async function issueTokens(deps: OAuthDeps, userId: number) {
 async function stillValid(deps: OAuthDeps, blob: TokenBlob): Promise<boolean> {
   if (!isAllowed(deps.config, blob.u)) return false;
   const user = await deps.store.getUser(blob.u);
+  // Sessions from before connected_at existed get it on their first call.
+  if (user && user.connected_at === null) await deps.store.markConnected(blob.u);
   return (user?.token_version ?? 0) === blob.v;
 }
 

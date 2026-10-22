@@ -243,3 +243,27 @@ describe("tool arguments", () => {
     expect(keywords('deploy "step 3" prod')).toEqual(["deploy", "step 3", "prod"]);
   });
 });
+
+describe("schema upgrade", () => {
+  it("adds connected_at to a database made by schema v1", async () => {
+    const { SqliteD1 } = await import("./sqlite-d1");
+    const { ensureSchema } = await import("../src/schema");
+    const db = new SqliteD1();
+    db.raw.exec(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;
+      INSERT INTO meta VALUES ('schema_version', '1');
+      CREATE TABLE users (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, language TEXT,
+        token_version INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+      INSERT INTO users (user_id, created_at) VALUES (1, 1);`);
+    await ensureSchema(db.asD1());
+    const columns = db.raw.query("PRAGMA table_info(users)").all() as { name: string }[];
+    expect(columns.map((c) => c.name)).toContain("connected_at");
+    expect(
+      (
+        db.raw.query("SELECT value FROM meta WHERE key = 'schema_version'").get() as {
+          value: string;
+        }
+      ).value,
+    ).toBe("2");
+    expect((db.raw.query("SELECT COUNT(*) AS n FROM users").get() as { n: number }).n).toBe(1);
+  });
+});

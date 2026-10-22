@@ -38,6 +38,7 @@ describe("isolation between users", () => {
 
   it("in a shared group, one user's assistant cannot edit or delete the other's messages", async () => {
     await h.addBot(TEAM, ALICE);
+    h.markConnected(BOB);
     await h.say(TEAM, BOB, "/connect");
     const alice = (await h.connect(ALICE)).access_token;
     const bob = (await h.connect(BOB)).access_token;

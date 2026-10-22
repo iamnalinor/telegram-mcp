@@ -55,6 +55,7 @@ describe("concurrent updates", () => {
 
   it("a revoke racing a /connect never takes the newcomer's grant", async () => {
     await h.addBot(TEAM, ALICE);
+    h.markConnected(BOB);
     await Promise.all([
       h.update({
         callback_query: { id: "r", from: { ...ALICE, is_bot: false }, data: `rv:${TEAM.id}` },
@@ -70,6 +71,7 @@ describe("concurrent updates", () => {
   it("revokeGrant purges history only when no grant is left at commit", async () => {
     const store = new Store(h.db.asD1());
     await h.addBot(TEAM, ALICE);
+    h.markConnected(BOB);
     await h.say(TEAM, BOB, "/connect");
     await h.say(TEAM, BOB, "hello");
     expect(await store.revokeGrant(ALICE.id, TEAM.id)).toBe(false);

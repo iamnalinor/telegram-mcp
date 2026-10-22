@@ -31,7 +31,13 @@ import {
 } from "../telegram/types";
 import type { Guard } from "../store";
 import type { BotContext, WebhookReply } from "./context";
-import { handleAssistantButton, handleChatShared, handleCommand, handleRevoke } from "./commands";
+import {
+  handleAssistantButton,
+  handleChatShared,
+  handleCommand,
+  handleRevoke,
+  hasConnected,
+} from "./commands";
 import { parseCommand, realReply, toStored, topicName, topicOf } from "./extract";
 import { texts } from "./texts";
 
@@ -129,6 +135,18 @@ async function onMyChatMember(
     // Just added. Whoever added the bot gets access, if they may use it at all.
     const adder = update.from;
     if (!isAllowed(ctx.config, adder.id) || adder.is_bot) {
+      await ctx.api.call("leaveChat", { chat_id: chat.id }).catch(() => undefined);
+      return null;
+    }
+    if (!(await hasConnected(ctx, adder.id))) {
+      // Say why before going, so the adder knows what to do.
+      await ctx.api
+        .call("sendMessage", {
+          chat_id: chat.id,
+          text: texts(adder.language_code).leavingNotConnected(displayName(adder)),
+          parse_mode: "HTML",
+        })
+        .catch(() => undefined);
       await ctx.api.call("leaveChat", { chat_id: chat.id }).catch(() => undefined);
       return null;
     }

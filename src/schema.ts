@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 const SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS meta (
@@ -28,7 +28,9 @@ const SCHEMA: string[] = [
     first_name TEXT,
     language TEXT,
     token_version INTEGER NOT NULL DEFAULT 0,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    -- When the user first signed an assistant in. Only such users may link groups.
+    connected_at INTEGER
   )`,
 
   `CREATE TABLE IF NOT EXISTS chats (
@@ -129,6 +131,11 @@ const SCHEMA: string[] = [
   ) WITHOUT ROWID`,
 ];
 
+/** Statements bringing a database from the version before `target` up to it. */
+const UPGRADES: [target: number, statements: string[]][] = [
+  [2, ["ALTER TABLE users ADD COLUMN connected_at INTEGER"]],
+];
+
 const ready = new WeakMap<D1Database, Promise<void>>();
 
 export function ensureSchema(db: D1Database): Promise<void> {
@@ -146,7 +153,22 @@ async function migrate(db: D1Database): Promise<void> {
     .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
     .first<{ value: string }>()
     .catch(() => null);
-  if (current && Number(current.value) >= SCHEMA_VERSION) return;
+  const version = current ? Number(current.value) : 0;
+  if (version >= SCHEMA_VERSION) return;
+
+  // A database made by an older version gets its missing columns. ALTER TABLE
+  // is not idempotent, so a racing isolate's "duplicate column" is fine.
+  for (const [target, statements] of UPGRADES) {
+    if (version === 0 || version >= target) continue;
+    for (const sql of statements) {
+      await db
+        .prepare(sql)
+        .run()
+        .catch((error: unknown) => {
+          if (!/duplicate column/i.test(String(error))) throw error;
+        });
+    }
+  }
 
   await db.batch([
     ...SCHEMA.map((sql) => db.prepare(sql)),

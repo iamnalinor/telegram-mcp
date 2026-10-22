@@ -28,7 +28,7 @@ describe("private chat", () => {
     const reply = start._reply as { method: string; text: string };
     expect(reply.method).toBe("sendMessage");
     expect(reply.text).toContain("<code>111</code>");
-    expect(reply.text).toContain(`${ORIGIN}/`);
+    expect(reply.text).not.toContain(ORIGIN);
     await h.say(dm(ALICE), ALICE, "the report is in the drive");
 
     const { access_token } = await h.connect(ALICE);
@@ -75,6 +75,8 @@ describe("groups", () => {
   it("/connect in the group gives a second user access from now on when history visibility is unknown", async () => {
     await h.addBot(TEAM, ALICE);
     await h.say(TEAM, ALICE, "old secret plan");
+    h.markConnected(BOB);
+    h.markConnected(BOB);
     const reply = (await h.say(TEAM, BOB, "/connect"))._reply as { text: string };
     expect(reply.text).toContain("from now on");
 
@@ -89,12 +91,15 @@ describe("groups", () => {
     h.telegram.chats.set(TEAM.id, { ...TEAM, has_visible_history: true });
     await h.addBot(TEAM, ALICE);
     h.telegram.chats.set(TEAM.id, { ...TEAM, has_visible_history: true });
+    h.markConnected(BOB);
+    h.markConnected(BOB);
     const reply = (await h.say(TEAM, BOB, "/connect"))._reply as { text: string };
     expect(reply.text).toContain("sees everything");
   });
 
   it("revoking the last grant forgets the chat, but another user's grant keeps it", async () => {
     await h.addBot(TEAM, ALICE);
+    h.markConnected(BOB);
     await h.say(TEAM, BOB, "/connect");
     await h.say(TEAM, BOB, "keep me");
 
@@ -163,6 +168,31 @@ describe("groups", () => {
 
     await h.tool(alice, "send_message", { chat: FORUM.id, text: "on it", topic: 7 });
     expect(h.telegram.called("sendMessage").at(-1)!.params.message_thread_id).toBe(7);
+  });
+});
+
+describe("linking groups needs a connected assistant", () => {
+  it("refuses /connect and leaves a group added by someone who never connected", async () => {
+    await h.addBot(TEAM, ALICE);
+    const reply = (await h.say(TEAM, BOB, "/connect"))._reply as { text: string };
+    expect(reply.text).toContain("Connect your AI assistant");
+    const grants = h.db.raw
+      .query("SELECT COUNT(*) AS n FROM grants WHERE user_id = ?")
+      .get(BOB.id) as { n: number };
+    expect(grants.n).toBe(0);
+
+    await h.addBot({ id: -1009999, title: "Other" }, BOB, "member", { connected: false });
+    expect(h.telegram.called("leaveChat")).toHaveLength(1);
+    expect(String(h.telegram.called("sendMessage").at(-1)!.params.text)).toContain(
+      "connect your AI assistant",
+    );
+  });
+
+  it("signing in through OAuth is what counts as connected", async () => {
+    await h.connect(BOB);
+    await h.addBot(TEAM, ALICE);
+    const reply = (await h.say(TEAM, BOB, "/connect"))._reply as { text: string };
+    expect(reply.text).toContain("is connected");
   });
 });
 

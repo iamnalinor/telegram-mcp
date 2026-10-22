@@ -21,8 +21,8 @@
     "RETENTION_DAYS": "14",
   },
 
-  // Created on first deploy; no id to copy anywhere. The schema is applied by the
-  // Worker itself on first use, see src/schema.ts.
+  // Created on first deploy and found by name afterwards; no id to copy anywhere.
+  // The schema is applied by the Worker itself on first use, see src/schema.ts.
   "d1_databases": [
     {
       "binding": "DB",
