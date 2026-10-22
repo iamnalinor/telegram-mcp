@@ -59,6 +59,7 @@ const en = {
   memoryNotice: (p: { client: string; chat: string; diff: string }) =>
     `📝 <b>${escapeHtml(p.client)}</b> changed the memory of <b>${escapeHtml(p.chat)}</b>\n\n<pre>${p.diff}</pre>`,
   memoryNoVisibleChange: "(only blank lines or order changed)",
+  memoryMoreLines: (n: number) => `… and ${n} more changed line(s)`,
   buttonUndo: "Undo",
   buttonUndoAnyway: "Undo anyway",
   undone: "Undone.",
@@ -80,7 +81,8 @@ const en = {
   memoryNone: (chat: string) =>
     `<b>Memory: ${escapeHtml(chat)}</b>\n\nNothing kept for this chat yet.`,
   buttonDelete: "🗑 Delete",
-  confirmDeleteMemory: (chat: string) => `Delete the memory of <b>${escapeHtml(chat)}</b>?`,
+  confirmDeleteMemory: (chat: string) =>
+    `Delete the memory of <b>${escapeHtml(chat)}</b>, with its history? This cannot be undone.`,
   buttonConfirmDelete: "Yes, delete",
   memoryDeleted: "Deleted.",
   buttonWipe: "🗑 Erase all memory",
@@ -214,6 +216,7 @@ const ru: Texts = {
   memoryNotice: (p) =>
     `📝 <b>${escapeHtml(p.client)}</b> изменил память «<b>${escapeHtml(p.chat)}</b>»\n\n<pre>${p.diff}</pre>`,
   memoryNoVisibleChange: "(поменялись только пустые строки или порядок)",
+  memoryMoreLines: (n) => `… и ещё строк изменено: ${n}`,
   buttonUndo: "Отменить",
   buttonUndoAnyway: "Всё равно отменить",
   undone: "Отменено.",
@@ -233,7 +236,8 @@ const ru: Texts = {
   memoryNone: (chat) =>
     `<b>Память: ${escapeHtml(chat)}</b>\n\nОб этом чате пока ничего не сохранено.`,
   buttonDelete: "🗑 Удалить",
-  confirmDeleteMemory: (chat) => `Удалить память «<b>${escapeHtml(chat)}</b>»?`,
+  confirmDeleteMemory: (chat) =>
+    `Удалить память «<b>${escapeHtml(chat)}</b>» вместе с историей? Отменить будет нельзя.`,
   buttonConfirmDelete: "Да, удалить",
   memoryDeleted: "Удалено.",
   buttonWipe: "🗑 Стереть всю память",

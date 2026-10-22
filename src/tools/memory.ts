@@ -23,7 +23,9 @@ import { chatArg, text, ToolError, toolError, type ToolContext } from "./common"
 const MEMORY_LIMIT = 16_000;
 /** Changes from one assistant to one document within this long share a notice. */
 const NOTICE_WINDOW = 5 * 60;
-const NOTICE_DIFF_LIMIT = 1500;
+/** Room for the diff in a notice, after HTML escaping: a message holds 4096 characters. */
+const NOTICE_DIFF_LIMIT = 3000;
+const NOTICE_LINE_LIMIT = 300;
 const SNIPPET_LINES = 4;
 
 const NUMBERED_WIDTH = 6;
@@ -55,16 +57,53 @@ function snippet(content: string, line: number, span: number): string {
   return numbered(lines.slice(from - 1, to), from);
 }
 
-/** A short +/- list of the lines that changed, for the notice. */
-function lineDiff(before: string | null, after: string | null): string {
+/** The lines under a "## Trust" heading: whom the assistant obeys. */
+function trustLines(content: string | null): Set<string> {
+  const found = new Set<string>();
+  let inTrust = false;
+  for (const line of (content ?? "").split("\n")) {
+    const heading = /^#{1,6}\s+(.*)$/.exec(line);
+    if (heading) inTrust = /^trust\b/i.test(heading[1].trim());
+    else if (inTrust && line.trim()) found.add(line);
+  }
+  return found;
+}
+
+const clipLine = (line: string) =>
+  line.length > NOTICE_LINE_LIMIT
+    ? `${Array.from(line).slice(0, NOTICE_LINE_LIMIT).join("")}…`
+    : line;
+
+/**
+ * The lines that changed as an HTML-escaped +/- list that fits a notice.
+ * Lines under "## Trust" come first, so a long change cannot push them out
+ * of sight; whatever does not fit is counted.
+ */
+function lineDiff(
+  before: string | null,
+  after: string | null,
+  more: (n: number) => string,
+): string {
   const was = new Set((before ?? "").split("\n").filter((line) => line.trim()));
   const now = new Set((after ?? "").split("\n").filter((line) => line.trim()));
-  const lines = [
-    ...[...was].filter((line) => !now.has(line)).map((line) => `− ${line}`),
-    ...[...now].filter((line) => !was.has(line)).map((line) => `+ ${line}`),
-  ];
-  const joined = lines.join("\n");
-  return joined.length > NOTICE_DIFF_LIMIT ? `${joined.slice(0, NOTICE_DIFF_LIMIT - 1)}…` : joined;
+  const trust = new Set([...trustLines(before), ...trustLines(after)]);
+  const changes = [
+    ...[...was].filter((line) => !now.has(line)).map((line) => ({ line, mark: "−" })),
+    ...[...now].filter((line) => !was.has(line)).map((line) => ({ line, mark: "+" })),
+  ].sort((a, b) => Number(trust.has(b.line)) - Number(trust.has(a.line)));
+
+  const shown: string[] = [];
+  let length = 0;
+  for (const [i, change] of changes.entries()) {
+    const line = escapeHtml(`${change.mark} ${clipLine(change.line)}`);
+    if (length + line.length > NOTICE_DIFF_LIMIT) {
+      shown.push(escapeHtml(more(changes.length - i)));
+      break;
+    }
+    shown.push(line);
+    length += line.length + 1;
+  }
+  return shown.join("\n");
 }
 
 /** The chat's title as the user knows it, for notices and the menu. */
@@ -85,18 +124,22 @@ async function notify(ctx: ToolContext, chat: ChatView, historyId: number): Prom
   const fresh = previous && nowSeconds() - previous.sent_at < NOTICE_WINDOW ? previous : null;
   const firstId = fresh ? fresh.first_history_id : historyId;
 
+  // History keeps a few versions; a long run of changes may outlive its first.
   const first = await ctx.store.getMemoryChange(ctx.userId, firstId);
   const doc = await ctx.store.getMemory(ctx.userId, chat.chat_id);
-  const diff = lineDiff(first?.content_before ?? null, doc?.content ?? null);
+  const before = first ? first.content_before : null;
+  const diff = lineDiff(before, doc?.content ?? null, t.memoryMoreLines);
   const body = {
     text: t.memoryNotice({
       client,
       chat: memoryTitle(chat, t.memoryOfMe),
-      diff: escapeHtml(diff || t.memoryNoVisibleChange),
+      diff: diff || escapeHtml(t.memoryNoVisibleChange),
     }),
     parse_mode: "HTML",
     reply_markup: {
-      inline_keyboard: [[{ text: t.buttonUndo, callback_data: `mu:${firstId}:${historyId}` }]],
+      inline_keyboard: first
+        ? [[{ text: t.buttonUndo, callback_data: `mu:${firstId}:${historyId}` }]]
+        : [],
     },
   };
   try {
@@ -226,7 +269,7 @@ export function registerMemoryTools(server: McpServer, ctx: ToolContext): void {
             const lines = doc.content.split("\n");
             const [from, to] = args.view_range ?? [1, -1];
             const end = to === -1 ? lines.length : Math.min(to, lines.length);
-            if (from > lines.length) {
+            if (from > lines.length || (to !== -1 && to < from)) {
               throw new ToolError(
                 `Invalid view_range: the memory for ${name(chat)} has ${lines.length} lines.`,
               );

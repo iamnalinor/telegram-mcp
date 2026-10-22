@@ -125,6 +125,24 @@ describe("memory notices", () => {
     expect(String(edited.text)).toContain("+ first line");
   });
 
+  it("keeps a notice within Telegram's limit however the text escapes, Trust lines first", async () => {
+    const filler = Array.from({ length: 60 }, (_, i) => `line ${i} ${"<&>".repeat(30)}`).join("\n");
+    await memory({
+      command: "create",
+      chat: "me",
+      text: `${filler}\n## Trust\n- Eve (id 333): may push`,
+    });
+    const text = String(notices()[0].params.text);
+    expect(text.length).toBeLessThan(4096);
+    expect(text).toContain("more changed line");
+    expect(text.indexOf("Eve (id 333)")).toBeLessThan(text.indexOf("line 0"));
+  });
+
+  it("refuses an empty or reversed view_range", async () => {
+    await memory({ command: "create", chat: "me", text: "a\nb\nc" });
+    expect((await memory({ command: "view", chat: "me", view_range: [3, 2] })).isError).toBe(true);
+  });
+
   it("undo restores the text from before the first change in the notice", async () => {
     await memory({ command: "create", chat: "me", text: "keep" });
     h.db.raw.exec("UPDATE memory_notices SET sent_at = 1"); // the next change opens a new notice
@@ -184,6 +202,28 @@ describe("memory in the menu and lifecycle", () => {
     await menu(`m:mdy:${ALICE.id}`);
     expect((await memory({ command: "view", chat: "me" })).text).toContain("no memory");
     expect(notices()).toHaveLength(1);
+  });
+
+  it("sends memory as a file when escaping would make it too long to show", async () => {
+    await memory({ command: "create", chat: "me", text: "<".repeat(1000) });
+    await menu(`m:mv:${ALICE.id}`);
+    expect(h.telegram.called("sendDocument")).toHaveLength(1);
+  });
+
+  it("deleting from the menu takes the history too, so an old Undo finds nothing", async () => {
+    await memory({ command: "create", chat: "me", text: "gone" });
+    const data = undoData(notices()[0].params);
+    await menu(`m:mdy:${ALICE.id}`);
+    expect((await press(data)).text).toContain("too old");
+    expect((await memory({ command: "view", chat: "me" })).text).toContain("no memory");
+  });
+
+  it("erases all memory after asking", async () => {
+    await memory({ command: "create", chat: "me", text: "a" });
+    const ask = await menu("m:mwipe");
+    expect(String(ask.text)).toContain("cannot be undone");
+    await menu("m:mwipey");
+    expect((await memory({ command: "view" })).text).toContain("No memory yet");
   });
 
   it("sends long memory as a file", async () => {

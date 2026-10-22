@@ -127,8 +127,8 @@ async function memoryListScreen(ctx: BotContext, user: User): Promise<Screen> {
   };
 }
 
-/** Memory longer than this goes as a file: a message holds 4096 characters. */
-const MEMORY_INLINE = 3500;
+/** Memory whose screen would be longer than this goes as a file: a message holds 4096. */
+const MEMORY_INLINE = 3900;
 
 async function memoryScreen(
   ctx: BotContext,
@@ -141,7 +141,7 @@ async function memoryScreen(
   const back = [button(t.buttonBack, "mem")];
   if (!doc) return { text: t.memoryNone(title), reply_markup: { inline_keyboard: [back] } };
   let shown = t.memoryDoc({ chat: title, content: doc.content });
-  if (doc.content.length > MEMORY_INLINE) {
+  if (shown.length > MEMORY_INLINE) {
     await ctx.api.upload(
       "sendDocument",
       { chat_id: user.id, disable_notification: true },
@@ -243,9 +243,7 @@ async function render(
       };
     }
     if (memory[1] === "mdy") {
-      if (await ctx.store.getMemory(user.id, chatId)) {
-        await ctx.store.writeMemory(user.id, chatId, null, null);
-      }
+      await ctx.store.deleteMemory(user.id, chatId);
       return { ...(await memoryListScreen(ctx, user)), note: t.memoryDeleted };
     }
     return memoryScreen(ctx, user, chatId, title);
@@ -318,8 +316,8 @@ async function render(
 /**
  * Undo from a memory notice: `mu:<first>:<last>` covers the changes from
  * history entry `first` to `last`; `mu!:<first>` confirms dropping what came
- * after. Undoing is a change of its own, so it can be undone from the menu's
- * history in turn — but it sends no notice: the user made it.
+ * after. Undoing is a change of its own, kept in history like any other, but
+ * it sends no notice: the user made it.
  */
 export async function handleMemoryUndo(
   ctx: BotContext,

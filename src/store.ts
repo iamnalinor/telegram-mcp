@@ -1264,6 +1264,17 @@ export class Store {
     return row?.n ?? 0;
   }
 
+  /** One chat's memory, with its history and notices: nothing left to undo. */
+  async deleteMemory(userId: number, chatId: number): Promise<void> {
+    await this.db.batch(
+      USER_CHAT_TABLES.map((table) =>
+        this.db
+          .prepare(`DELETE FROM ${table} WHERE user_id = ? AND chat_id = ?`)
+          .bind(userId, chatId),
+      ),
+    );
+  }
+
   /** The user's whole memory, with its history and notices. */
   async wipeMemory(userId: number): Promise<void> {
     await this.db.batch(
