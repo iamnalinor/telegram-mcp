@@ -20,7 +20,7 @@ import { ensureWebhook, WEBHOOK_PATH } from "./bot/setup";
 import { handleWebhook } from "./bot/webhook";
 import { base, botContext, toolContext, type Base } from "./context";
 import { nowSeconds } from "./crypto";
-import type { Env } from "./env";
+import { isAllowed, type Env } from "./env";
 import { handleDownload, handleUpload } from "./files";
 import { allow, tokenKey, tooManyRequests } from "./limits";
 import { createServer } from "./mcp";
@@ -168,6 +168,11 @@ export default {
     const cutoff = nowSeconds() - core.config.retentionDays * 86_400;
     const purged = await core.store.purge(cutoff);
     console.log(JSON.stringify({ event: "retention_purge", purged, cutoff }));
+
+    // Someone taken off ALLOWED_USER_IDS keeps no personal chats here, even if Telegram stays quiet.
+    for (const userId of await core.store.businessUsers()) {
+      if (!isAllowed(core.config, userId)) await core.store.dropPersonal(userId);
+    }
 
     const origin = await core.store.getMeta("public_origin");
     if (origin) {

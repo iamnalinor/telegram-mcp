@@ -257,8 +257,9 @@ export async function recordSent(
 /** Where a message went, for the model. */
 export function where(chat: ChatView): string {
   if (chat.kind === "dm") return "the private chat";
-  if (chat.kind === "personal") return `the user's personal chat with "${chat.title}", as the user`;
-  return `"${chat.title}"`;
+  if (chat.kind === "personal")
+    return `the user's personal chat with ${JSON.stringify(chat.title)}, as the user`;
+  return JSON.stringify(chat.title);
 }
 
 export function sentLink(ctx: ToolContext, chat: ChatView, message: Message): string | null {

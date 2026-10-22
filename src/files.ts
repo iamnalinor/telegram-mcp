@@ -25,7 +25,9 @@ import {
 } from "./telegram/api";
 import {
   sendUpload,
+  mayPost,
   sentLink,
+  ToolError,
   where,
   type Buttons,
   type FileSendOptions,
@@ -150,8 +152,11 @@ export async function handleUpload(
   let chat: ChatView;
   try {
     chat = await ctx.access.resolve(link.c);
+    // Rights can change within the link's life; check before the nonce is spent.
+    await mayPost(ctx, chat, link.b);
   } catch (error) {
-    if (error instanceof AccessError) return plain(error.message, 403);
+    if (error instanceof AccessError || error instanceof ToolError)
+      return plain(error.message, 403);
     throw error;
   }
 
@@ -209,6 +214,8 @@ export async function handleUpload(
         502,
       );
     }
+    if (error instanceof AccessError || error instanceof ToolError)
+      return plain(error.message, 403);
     throw error;
   }
 }

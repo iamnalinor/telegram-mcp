@@ -219,9 +219,9 @@ export class Access {
    * other person must have written within the last 24 hours. Other chats pass.
    */
   async allow(chat: ChatView, action: PersonalAction): Promise<void> {
-    if (chat.kind !== "personal" || !chat.business) return;
+    if (chat.kind !== "personal") return;
     const { right, toggle } = RIGHTS[action];
-    if (!chat.business.rights[right]) {
+    if (!chat.business?.rights[right]) {
       throw new AccessError(
         `The user has not allowed this in their personal chats: "${toggle}" is off for the bot in Telegram ` +
           "(Settings → Telegram Business → Chatbots). Nothing was done. Only the user can turn it on there; " +
@@ -232,7 +232,7 @@ export class Access {
     const last = (await this.store.lastIncoming(chat))?.date ?? null;
     if (last === null || nowSeconds() - last > PERSONAL_REPLY_WINDOW) {
       throw new AccessError(
-        `Telegram lets the bot act in "${chat.title}" only within 24 hours of their last message` +
+        `Telegram lets the bot act in ${JSON.stringify(chat.title)} only within 24 hours of their last message` +
           (last === null ? ", and none is stored." : ` (the last was ${formatTime(last)} UTC).`) +
           " Nothing was done.",
       );
@@ -258,7 +258,7 @@ export class Access {
       const named = (list: ChatView[]) =>
         list
           .slice(0, 30)
-          .map((chat) => `${chat.chat_id} "${chat.title}"`)
+          .map((chat) => `${chat.chat_id} ${JSON.stringify(chat.title)}`)
           .join(", ") + (list.length > 30 ? ` and ${list.length - 30} more (list_chats)` : "");
       const parts = ['"me" (the private chat with the bot)'];
       if (groups.length) parts.push(`groups: ${named(groups)}`);

@@ -192,7 +192,8 @@ export function toStored(message: Message, bot: BotIdentity, owner?: number): St
   const sender = senderOf(message);
   const body = message.text ?? message.caption ?? "";
   const text = body || describeNonText(message);
-  const viaBot = owner !== undefined && message.sender_business_bot?.id === bot.id;
+  const viaBot =
+    owner !== undefined && message.from?.id === owner && message.sender_business_bot?.id === bot.id;
 
   return {
     account_id: owner ?? BOT_ACCOUNT,

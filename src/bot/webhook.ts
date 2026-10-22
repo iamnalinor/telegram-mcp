@@ -363,7 +363,13 @@ async function onBusinessMessage(
 ): Promise<void> {
   if (message.chat.type !== "private") return;
   const owner = await ownerOf(ctx, message.business_connection_id);
-  if (owner === null || !isAllowed(ctx.config, owner)) return;
+  if (owner === null) return;
+  if (!isAllowed(ctx.config, owner)) {
+    // Taken off the allowlist since connecting: nothing of theirs may stay.
+    connectionOwners.delete(message.business_connection_id!);
+    await ctx.store.dropPersonal(owner);
+    return;
+  }
 
   // No per-isolate cache here: the row goes when the connection ends or the
   // chat falls out of retention, and must come back with the next message.

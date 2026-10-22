@@ -60,8 +60,8 @@ export function keywords(query: string | undefined): string[] {
 /** How a chat is named in results. */
 function label(chat: ChatView): string {
   if (chat.kind === "dm") return 'chat "me"';
-  if (chat.kind === "personal") return `personal chat with "${chat.title}"`;
-  return `"${chat.title}"`;
+  if (chat.kind === "personal") return `personal chat with ${JSON.stringify(chat.title)}`;
+  return JSON.stringify(chat.title);
 }
 
 /** A renderer that knows the chats, their topics, and what each message replies to. */
@@ -127,7 +127,7 @@ function personalChats(
   if (!chats.length) return `${header}\nNo messages received yet.`;
   const lines = chats.map((chat) => {
     const seen = last.get(refKey(chat));
-    return `- "${chat.title}" — chat ${chat.chat_id}${chat.username ? ` (@${chat.username})` : ""} · ${
+    return `- ${JSON.stringify(chat.title)} — chat ${chat.chat_id}${chat.username ? ` (@${chat.username})` : ""} · ${
       seen ? `last message ${formatTime(seen)} UTC` : "no messages stored"
     }`;
   });
@@ -172,7 +172,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
           const parts = [
             chat.kind === "dm"
               ? 'Private chat with the bot — chat "me"'
-              : `"${chat.title}" — chat ${chat.chat_id}`,
+              : `${JSON.stringify(chat.title)} — chat ${chat.chat_id}`,
             chat.kind === "dm" ? null : chat.is_forum ? "forum with topics" : chat.type,
             chat.kind === "dm"
               ? null
@@ -392,7 +392,7 @@ export function registerReadTools(server: McpServer, ctx: ToolContext): void {
         if (!messages.length) return text(nothingFound(ctx, label(chat)));
 
         const render = await renderer(ctx, [chat], messages);
-        const heading = `${chat.kind === "dm" ? "Private chat with the bot" : chat.kind === "personal" ? `Personal chat with "${chat.title}"` : `"${chat.title}"`}${
+        const heading = `${chat.kind === "dm" ? "Private chat with the bot" : chat.kind === "personal" ? `Personal chat with ${JSON.stringify(chat.title)}` : JSON.stringify(chat.title)}${
           args.topic ? ` › ${render.topicName(chat.chat_id, args.topic)}` : ""
         } — ${messages.length} message${messages.length === 1 ? "" : "s"}, oldest first, UTC.\n${render.fence.note()}`;
         const older = `\n\n(Older: before_message_id ${messages[0].message_id}.)`;

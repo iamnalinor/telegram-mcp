@@ -222,10 +222,15 @@ export function ensureSchema(db: D1Database): Promise<void> {
 }
 
 async function migrate(db: D1Database): Promise<void> {
+  // Only a missing meta table means a fresh database. Any other failure must
+  // stop here: taken for "fresh", it would stamp the latest version on old tables.
   const current = await db
     .prepare("SELECT value FROM meta WHERE key = 'schema_version'")
     .first<{ value: string }>()
-    .catch(() => null);
+    .catch((error: unknown) => {
+      if (/no such table/i.test(String(error))) return null;
+      throw error;
+    });
   const version = current ? Number(current.value) : 0;
   if (version >= SCHEMA_VERSION) return;
 

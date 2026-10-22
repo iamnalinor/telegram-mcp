@@ -1063,6 +1063,14 @@ export class Store {
     ]);
   }
 
+  /** Users with a stored business connection, for dropping those no longer allowed. */
+  async businessUsers(): Promise<number[]> {
+    const { results } = await this.db
+      .prepare("SELECT user_id FROM business_connections")
+      .all<{ user_id: number }>();
+    return results.map((row) => row.user_id);
+  }
+
   /** Who a personal chat is with. Costs a write only when the name changed. */
   async upsertPersonalChat(chat: PersonalChatRow): Promise<void> {
     await this.db
