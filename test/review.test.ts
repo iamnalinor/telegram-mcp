@@ -1,8 +1,8 @@
 /** Cases raised in review: isolation between users, OAuth misuse, files, markup. */
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, setSystemTime } from "bun:test";
 
-import { nowSeconds, sha256Base64Url } from "../src/crypto";
+import { nowSeconds, sha256Base64Url, sign } from "../src/crypto";
 import { markdownToHtml } from "../src/markdown";
 import { safeFilename } from "../src/tools/read";
 import { consentLink, Harness } from "./harness";
@@ -64,6 +64,54 @@ describe("isolation between users", () => {
     });
     const grants = h.db.raw.query("SELECT COUNT(*) AS n FROM grants").get() as { n: number };
     expect(grants.n).toBe(1);
+  });
+});
+
+describe("refresh rotation", () => {
+  afterEach(() => setSystemTime());
+
+  it("hands out a new refresh token each time and retires the old one", async () => {
+    const first = await h.connect(ALICE);
+    const second = await h.refresh(first.refresh_token);
+    expect(second.status).toBe(200);
+    expect(second.body.refresh_token).not.toBe(first.refresh_token);
+    expect((await h.mcp(second.body.access_token!, "tools/list")).status).toBe(200);
+
+    const third = await h.refresh(second.body.refresh_token!);
+    expect(third.status).toBe(200);
+    expect((await h.refresh(third.body.refresh_token!)).status).toBe(200);
+  });
+
+  it("answers a doubled refresh within the grace with the current token", async () => {
+    const first = await h.connect(ALICE);
+    const a = await h.refresh(first.refresh_token);
+    const b = await h.refresh(first.refresh_token);
+    expect(b.status).toBe(200);
+    expect((await h.refresh(b.body.refresh_token!)).status).toBe(200);
+    expect(a.status).toBe(200);
+  });
+
+  it("revokes the whole session when a retired token comes back later", async () => {
+    const first = await h.connect(ALICE);
+    const second = await h.refresh(first.refresh_token);
+    setSystemTime(new Date(Date.now() + 5 * 60_000));
+
+    expect((await h.refresh(first.refresh_token)).status).toBe(400);
+    expect((await h.refresh(second.body.refresh_token!)).status).toBe(400);
+
+    // Other sign-ins of the same user are untouched.
+    const other = await h.connect(ALICE);
+    expect((await h.refresh(other.refresh_token)).status).toBe(200);
+  });
+
+  it("rotates a token from before rotation once, then treats it as retired", async () => {
+    await h.connect(ALICE);
+    const legacy = await sign(await h.signingKey(), "refresh", { u: ALICE.id, v: 0 }, 3600);
+    const next = await h.refresh(legacy);
+    expect(next.status).toBe(200);
+    setSystemTime(new Date(Date.now() + 5 * 60_000));
+    expect((await h.refresh(legacy)).status).toBe(400);
+    expect((await h.refresh(next.body.refresh_token!)).status).toBe(400);
   });
 });
 

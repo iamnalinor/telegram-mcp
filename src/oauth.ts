@@ -9,10 +9,16 @@
  *                    and returns to the client with a code
  *   /token           code (+ PKCE verifier) → access and refresh tokens
  *
- * Nothing here touches the database except to record the user and check their
- * token version: clients, codes and tokens are all signed blobs (see
- * src/crypto.ts). Revocation is the token version — /disconnect in the bot
- * bumps it, and every token minted before stops working.
+ * Clients, codes and tokens are all signed blobs (see src/crypto.ts), so the
+ * database is touched only to record the user, check their token version and
+ * rotate refresh tokens. Revocation is the token version — /disconnect in the
+ * bot bumps it, and every token minted before stops working.
+ *
+ * Refresh tokens rotate: each use returns a new one and retires the old. A
+ * sign-in is a session with a current generation; presenting an older one
+ * means two parties hold the session's tokens — one of them a thief — so the
+ * whole session is revoked. A client that sends one refresh twice at once
+ * (retries, two tabs) gets the current token back within a short grace.
  *
  * Telegram Login needs the Worker's domain set on the bot: @BotFather →
  * /setdomain. Without it Telegram shows "Bot domain invalid".
@@ -29,7 +35,7 @@ import {
 } from "@modelcontextprotocol/server";
 
 import { escapeHtml } from "./bot/texts";
-import { nowSeconds, sha256Base64Url, sign, verify } from "./crypto";
+import { nowSeconds, randomId, sha256Base64Url, sign, verify } from "./crypto";
 import { isAllowed, type Config, type Env } from "./env";
 import { allow, clientIp, RETRY_AFTER_HEADERS } from "./limits";
 import type { Store } from "./store";
@@ -41,6 +47,8 @@ const STATE_TTL = 15 * 60;
 const CODE_TTL = 5 * 60;
 const ACCESS_TTL = 24 * 60 * 60;
 const REFRESH_TTL = 90 * 24 * 60 * 60;
+/** How long a just-retired refresh token still gets the current one back. */
+const ROTATION_GRACE = 60;
 
 /**
  * The exact callbacks of Claude and ChatGPT. Any other page on those sites —
@@ -81,6 +89,16 @@ interface CodeBlob extends StateBlob {
 interface TokenBlob {
   u: number;
   v: number;
+}
+interface RefreshBlob extends TokenBlob {
+  /** Session id. Absent on tokens from before rotation: the token's hash stands in. */
+  s?: string;
+  /** Generation within the session; absent means 0. */
+  g?: number;
+}
+interface RefreshSession {
+  id: string;
+  generation: number;
 }
 
 // --- helpers ---------------------------------------------------------------
@@ -496,7 +514,7 @@ async function completeLogin(
   return target.toString();
 }
 
-async function issueTokens(deps: OAuthDeps, userId: number) {
+async function issueTokens(deps: OAuthDeps, userId: number, session: RefreshSession) {
   await deps.store.markConnected(userId);
   const user = await deps.store.getUser(userId);
   const version = user?.token_version ?? 0;
@@ -506,8 +524,44 @@ async function issueTokens(deps: OAuthDeps, userId: number) {
     token_type: "Bearer",
     expires_in: ACCESS_TTL,
     scope: SCOPE,
-    refresh_token: await sign<TokenBlob>(deps.config.signingKey, "refresh", payload, REFRESH_TTL),
+    refresh_token: await sign<RefreshBlob>(
+      deps.config.signingKey,
+      "refresh",
+      { ...payload, s: session.id, g: session.generation },
+      REFRESH_TTL,
+    ),
   };
+}
+
+/**
+ * Retire the presented refresh token: the session and generation to issue
+ * next, or null when the token was already used and the session is now
+ * revoked.
+ */
+async function rotate(
+  deps: OAuthDeps,
+  token: string,
+  blob: RefreshBlob,
+): Promise<RefreshSession | null> {
+  const id = blob.s ?? (await sha256Base64Url(token));
+  const presented = blob.g ?? 0;
+  const expiresAt = nowSeconds() + REFRESH_TTL;
+  if (await deps.store.advanceRefresh(id, blob.u, presented, expiresAt)) {
+    return { id, generation: presented + 1 };
+  }
+  const current = await deps.store.getRefreshSession(id);
+  if (
+    current &&
+    !current.revoked &&
+    current.user_id === blob.u &&
+    current.generation === presented + 1 &&
+    nowSeconds() - current.rotated_at <= ROTATION_GRACE
+  ) {
+    return { id, generation: current.generation };
+  }
+  await deps.store.revokeRefreshSession(id, blob.u, expiresAt);
+  console.warn(JSON.stringify({ event: "refresh_reuse", user: blob.u }));
+  return null;
 }
 
 /** Whether a token minted for `blob` still stands: user still allowed, version not bumped. */
@@ -536,15 +590,13 @@ async function handleToken(request: Request, deps: OAuthDeps): Promise<Response>
   const grantType = form.get("grant_type");
 
   if (grantType === "refresh_token") {
-    const blob = await verify<TokenBlob>(
-      deps.config.signingKey,
-      "refresh",
-      form.get("refresh_token") ?? "",
-    );
-    if (!blob || !(await stillValid(deps, blob))) {
+    const presented = form.get("refresh_token") ?? "";
+    const blob = await verify<RefreshBlob>(deps.config.signingKey, "refresh", presented);
+    const session = blob && (await stillValid(deps, blob)) && (await rotate(deps, presented, blob));
+    if (!blob || !session) {
       return oauthError("invalid_grant", "The refresh token is not valid any more. Connect again.");
     }
-    return jsonResponse(await issueTokens(deps, blob.u));
+    return jsonResponse(await issueTokens(deps, blob.u, session));
   }
 
   if (grantType !== "authorization_code") {
@@ -575,7 +627,7 @@ async function handleToken(request: Request, deps: OAuthDeps): Promise<Response>
     return oauthError("access_denied", "This Telegram account may not use this connector.", 403);
   }
 
-  return jsonResponse(await issueTokens(deps, code.u));
+  return jsonResponse(await issueTokens(deps, code.u, { id: randomId(), generation: 0 }));
 }
 
 // --- public surface --------------------------------------------------------

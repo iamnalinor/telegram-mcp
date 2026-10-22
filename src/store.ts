@@ -49,6 +49,15 @@ interface MessageRow extends Omit<StoredMessage, "mentions_bot" | "outgoing" | "
   mark_choice: number;
 }
 
+export interface RefreshSessionRow {
+  id: string;
+  user_id: number;
+  generation: number;
+  rotated_at: number;
+  expires_at: number;
+  revoked: number;
+}
+
 export interface UserRow {
   user_id: number;
   username: string | null;
@@ -895,6 +904,56 @@ export class Store {
     return (result.meta.changes ?? 0) > 0;
   }
 
+  // --- refresh sessions ----------------------------------------------------
+
+  /**
+   * Move a session from `generation` to the next, if that is still current
+   * and it is not revoked. A session with no row yet is at generation 0.
+   * False when another refresh got there first, or the token is stale.
+   */
+  async advanceRefresh(
+    id: string,
+    userId: number,
+    generation: number,
+    expiresAt: number,
+  ): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        `INSERT INTO refresh_sessions (id, user_id, generation, rotated_at, expires_at)
+         VALUES (?1, ?2, ?3 + 1, ?4, ?5)
+         ON CONFLICT (id) DO UPDATE SET
+           generation = excluded.generation,
+           rotated_at = excluded.rotated_at,
+           expires_at = excluded.expires_at
+         WHERE refresh_sessions.generation = ?3
+           AND refresh_sessions.user_id = ?2
+           AND refresh_sessions.revoked = 0
+         RETURNING generation`,
+      )
+      .bind(id, userId, generation, nowSeconds(), expiresAt)
+      .first<{ generation: number }>();
+    return row !== null;
+  }
+
+  getRefreshSession(id: string): Promise<RefreshSessionRow | null> {
+    return this.db
+      .prepare("SELECT * FROM refresh_sessions WHERE id = ?")
+      .bind(id)
+      .first<RefreshSessionRow>();
+  }
+
+  /** Every refresh token of the session stops working. */
+  async revokeRefreshSession(id: string, userId: number, expiresAt: number): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO refresh_sessions (id, user_id, generation, rotated_at, expires_at, revoked)
+         VALUES (?1, ?2, 0, ?3, ?4, 1)
+         ON CONFLICT (id) DO UPDATE SET revoked = 1`,
+      )
+      .bind(id, userId, nowSeconds(), expiresAt)
+      .run();
+  }
+
   // --- retention -----------------------------------------------------------
 
   async purge(cutoff: number): Promise<number> {
@@ -903,6 +962,7 @@ export class Store {
       this.db.prepare("DELETE FROM button_presses WHERE date < ?").bind(cutoff),
       this.db.prepare("DELETE FROM reactions WHERE date < ?").bind(cutoff),
       this.db.prepare("DELETE FROM upload_nonces WHERE expires_at < ?").bind(nowSeconds()),
+      this.db.prepare("DELETE FROM refresh_sessions WHERE expires_at < ?").bind(nowSeconds()),
       this.db.prepare("DELETE FROM day_marks WHERE day < ?").bind(Math.floor(cutoff / DAY)),
     ]);
     return results[0].meta.changes ?? 0;

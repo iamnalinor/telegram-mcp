@@ -321,7 +321,7 @@ describe("tool arguments", () => {
 });
 
 describe("schema upgrade", () => {
-  it("adds connected_at to a database made by schema v1", async () => {
+  it("brings a database made by schema v1 up to date", async () => {
     const { SqliteD1 } = await import("./sqlite-d1");
     const { ensureSchema } = await import("../src/schema");
     const db = new SqliteD1();
@@ -339,7 +339,10 @@ describe("schema upgrade", () => {
           value: string;
         }
       ).value,
-    ).toBe("2");
+    ).toBe("3");
+    expect(
+      db.raw.query("SELECT name FROM sqlite_master WHERE name = 'refresh_sessions'").get(),
+    ).not.toBeNull();
     expect((db.raw.query("SELECT COUNT(*) AS n FROM users").get() as { n: number }).n).toBe(1);
   });
 });

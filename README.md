@@ -225,6 +225,10 @@ Increasing `RETENTION_DAYS` costs storage, not writes.
 - **Access** is checked on every call: your own private chat, plus groups where you hold a grant and
   are still a member. A model cannot post to or read any other chat. It can only edit or delete the
   bot's own messages, and in a shared group only those sent for the same user.
+- **Refresh tokens rotate**: each refresh returns a new one and retires the old. A retired token
+  coming back (after a 60-second grace for doubled requests) means someone else holds a copy, and
+  that sign-in is revoked. Access tokens last a day; an assistant used at least once in 90 days
+  never has to reconnect.
 - **`/disconnect`** revokes every token you issued. Removing an ID from `ALLOWED_USER_IDS` cuts
   access on the next call.
 - **What is stored**: message text and attachment metadata (Telegram file ids, not the files), for

@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 const SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS meta (
@@ -128,6 +128,17 @@ const SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS upload_nonces (
     nonce TEXT PRIMARY KEY,
     expires_at INTEGER NOT NULL
+  ) WITHOUT ROWID`,
+
+  // One row per sign-in that has refreshed at least once: which generation of
+  // its refresh token is current. Written once per refresh, about daily.
+  `CREATE TABLE IF NOT EXISTS refresh_sessions (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    generation INTEGER NOT NULL,
+    rotated_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    revoked INTEGER NOT NULL DEFAULT 0
   ) WITHOUT ROWID`,
 ];
 

@@ -254,6 +254,24 @@ export class Harness {
     return response;
   }
 
+  /** The key the Worker signs its tokens with. */
+  async signingKey(): Promise<CryptoKey> {
+    return hmacKey(await hmac(await hmacKey(BOT_TOKEN), "telegram-mcp/sign"));
+  }
+
+  /** POST /token with a refresh grant. */
+  async refresh(refreshToken: string) {
+    const response = await this.fetch("/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken }),
+    });
+    return {
+      status: response.status,
+      body: await response.json<{ access_token?: string; refresh_token?: string }>(),
+    };
+  }
+
   async webhookSecret(): Promise<string> {
     const root = await hmacKey(BOT_TOKEN);
     return bytesToHex(await hmac(root, "telegram-mcp/webhook"));
