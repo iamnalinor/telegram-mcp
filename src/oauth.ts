@@ -619,13 +619,20 @@ async function rotate(
   return null;
 }
 
-/** Whether a token minted for `blob` still stands: user still allowed, version not bumped. */
-async function stillValid(deps: OAuthDeps, blob: TokenBlob): Promise<boolean> {
-  if (!isAllowed(deps.config, blob.u)) return false;
+/**
+ * Whether a token minted for `blob` still stands — user still allowed,
+ * version not bumped — and if so, how the user is named in Telegram.
+ */
+async function stillValid(
+  deps: OAuthDeps,
+  blob: TokenBlob,
+): Promise<{ username: string | null; name: string | null } | null> {
+  if (!isAllowed(deps.config, blob.u)) return null;
   const user = await deps.store.getUser(blob.u);
   // Sessions from before connected_at existed get it on their first call.
   if (user && user.connected_at === null) await deps.store.markConnected(blob.u);
-  return (user?.token_version ?? 0) === blob.v;
+  if ((user?.token_version ?? 0) !== blob.v) return null;
+  return { username: user?.username ?? null, name: user?.first_name ?? null };
 }
 
 async function handleToken(request: Request, deps: OAuthDeps): Promise<Response> {
@@ -742,6 +749,8 @@ export function isOAuthPath(pathname: string): boolean {
 
 export interface McpAuth {
   userId: number;
+  username: string | null;
+  name: string | null;
 }
 
 /** Bearer gate for the MCP endpoint: the verified user, or a ready 401. */
@@ -755,7 +764,8 @@ export function authorizeMcpRequest(
     verifier: {
       async verifyAccessToken(token: string): Promise<AuthInfo> {
         const blob = await verify<TokenBlob>(deps.config.signingKey, "access", token);
-        if (!blob || !(await stillValid(deps, blob))) {
+        const profile = blob && (await stillValid(deps, blob));
+        if (!blob || !profile) {
           throw new OAuthError(
             OAuthErrorCode.InvalidToken,
             "Access token is not valid or expired.",
@@ -766,7 +776,10 @@ export function authorizeMcpRequest(
           clientId: "telegram",
           scopes: [SCOPE],
           expiresAt: blob.exp,
-          extra: { userId: blob.u } satisfies McpAuth as unknown as Record<string, unknown>,
+          extra: { userId: blob.u, ...profile } satisfies McpAuth as unknown as Record<
+            string,
+            unknown
+          >,
         };
       },
     },

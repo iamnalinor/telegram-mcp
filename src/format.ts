@@ -21,7 +21,7 @@
 import type { ChatView } from "./access";
 import { randomId } from "./crypto";
 import { messageLink } from "./links";
-import { untrustedNote } from "./prompts";
+import { untrustedNote, type UserRef } from "./prompts";
 import {
   BOT_ACCOUNT,
   refKey,
@@ -54,18 +54,21 @@ function clip(text: string, length: number): string {
 /**
  * `"Alice" (@alice, id 111, the user)`: who, and whether it is the user. The
  * name is quoted, so one like `Alice (id 111, the user)` cannot pass for the
- * marker that follows it.
+ * marker that follows it. `marks` follow: what about the message is not the
+ * sender's own words.
  */
 export function person(
   name: string | null,
   username: string | null,
   id: number | null,
   userId: number,
+  marks: string[] = [],
 ): string {
   const details = [
     username ? `@${username}` : null,
     id === null ? null : `id ${id}`,
     id === userId ? "the user" : null,
+    ...marks,
   ].filter(Boolean);
   const quoted = JSON.stringify(name ?? "unknown");
   return details.length ? `${quoted} (${details.join(", ")})` : quoted;
@@ -78,7 +81,12 @@ function sender(message: StoredMessage, botUsername: string, userId: number): st
     return message.sent_by !== null ? `${who}, sent by you` : who;
   }
   if (message.outgoing) return `bot (@${botUsername}, you)`;
-  return person(message.from_name, message.from_username, message.from_id, userId);
+  const marks = [
+    message.forwarded_from ? "forwarding" : null,
+    message.via_bot ? `via @${message.via_bot}` : null,
+    message.as_chat ? "posting as the chat" : null,
+  ].filter((mark): mark is string => mark !== null);
+  return person(message.from_name, message.from_username, message.from_id, userId, marks);
 }
 
 const FENCE_TRIES = 5;
@@ -91,6 +99,7 @@ function authored(message: StoredMessage): string[] {
     message.from_name,
     message.from_username,
     message.forwarded_from,
+    message.via_bot,
     message.file_name,
     message.file_mime,
     message.buttons,
@@ -107,7 +116,7 @@ export class Fence {
   readonly tag: string;
 
   constructor(
-    private readonly userId: number,
+    private readonly user: UserRef,
     contents: string[],
     nextTag = () => `tg-${randomId(3)}`,
   ) {
@@ -124,7 +133,7 @@ export class Fence {
 
   /** The line that heads a result, saying what the fence means. */
   note(): string {
-    return untrustedNote(this.tag, this.userId);
+    return untrustedNote(this.tag, this.user);
   }
 }
 
@@ -132,10 +141,11 @@ export class Renderer {
   private readonly chats: Map<string, ChatView>;
   private readonly topics = new Map<string, string>();
   readonly fence: Fence;
+  private readonly userId: number;
 
   constructor(
     private readonly botUsername: string,
-    private readonly userId: number,
+    user: UserRef,
     chats: ChatView[],
     topics: TopicRow[] = [],
     /** Every message the result shows, keyed `account:chat:message`, for reply previews. */
@@ -143,9 +153,10 @@ export class Renderer {
     /** Other content the result carries inside the fence. */
     extra: string[] = [],
   ) {
+    this.userId = user.id;
     this.chats = new Map(chats.map((chat) => [refKey(chat), chat]));
     for (const topic of topics) this.topics.set(`${topic.chat_id}:${topic.thread_id}`, topic.name);
-    this.fence = new Fence(userId, [
+    this.fence = new Fence(user, [
       ...[...replyTargets.values()].flatMap(authored),
       ...chats.map((chat) => chat.title),
       ...topics.map((topic) => topic.name),
@@ -192,7 +203,9 @@ export class Renderer {
     ].join(" · ");
 
     const lines = [header];
-    if (message.forwarded_from) lines.push(`  ↪ forwarded from ${message.forwarded_from}`);
+    if (message.forwarded_from) {
+      lines.push(`  ↪ from ${message.forwarded_from} — forwarded, not the sender's words`);
+    }
     if (message.reply_to_id) {
       const target = this.replyTargets.get(`${refKey(message)}:${message.reply_to_id}`);
       lines.push(
@@ -201,7 +214,11 @@ export class Renderer {
           : `  ↩ #${message.reply_to_id} (not stored)`,
       );
     }
-    if (message.quote) lines.push(`  ❝${clip(message.quote, REPLY_PREVIEW_LENGTH)}❞`);
+    if (message.quote) {
+      lines.push(
+        `  ❝${clip(message.quote, REPLY_PREVIEW_LENGTH)}❞ — quoted, not the sender's words`,
+      );
+    }
 
     const text = options.full ? message.text : clip(message.text, SNIPPET_LENGTH);
     if (text) {

@@ -317,6 +317,8 @@ export function registerEditTools(server: McpServer, ctx: ToolContext): void {
             buttons: null,
             mark_choice: false,
             sent_by: ctx.userId,
+            via_bot: null,
+            as_chat: false,
           },
           "always",
         );

@@ -219,6 +219,8 @@ export function toStored(message: Message, bot: BotIdentity, owner?: number): St
     buttons: null,
     mark_choice: false,
     sent_by: viaBot ? owner : null,
+    via_bot: message.via_bot ? (message.via_bot.username ?? displayName(message.via_bot)) : null,
+    as_chat: message.sender_chat !== undefined,
   };
 }
 

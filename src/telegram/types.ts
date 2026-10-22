@@ -80,6 +80,8 @@ export interface Message {
   edit_date?: number;
   chat: Chat;
   forward_origin?: MessageOrigin;
+  /** Sent through an inline bot: the sender picked its result, did not write it. */
+  via_bot?: User;
   /** Service message: a member left or was removed. */
   left_chat_member?: User;
   reply_to_message?: Message;

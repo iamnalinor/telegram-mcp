@@ -37,6 +37,10 @@ export interface StoredMessage {
   mark_choice: boolean;
   /** For the bot's own messages: whose assistant sent it. Only they may edit or delete it. */
   sent_by: number | null;
+  /** The inline bot the text came from ("via @gif"): the sender picked it, did not write it. */
+  via_bot: string | null;
+  /** Posted as the chat (an anonymous admin, a linked channel): no person is known. */
+  as_chat: boolean;
 }
 
 export interface StoredButton {
@@ -45,10 +49,14 @@ export interface StoredButton {
   url?: string;
 }
 
-interface MessageRow extends Omit<StoredMessage, "mentions_bot" | "outgoing" | "mark_choice"> {
+interface MessageRow extends Omit<
+  StoredMessage,
+  "mentions_bot" | "outgoing" | "mark_choice" | "as_chat"
+> {
   mentions_bot: number;
   outgoing: number;
   mark_choice: number;
+  as_chat: number;
 }
 
 export interface RefreshSessionRow {
@@ -178,6 +186,7 @@ function toMessage(row: MessageRow): StoredMessage {
     mentions_bot: row.mentions_bot === 1,
     outgoing: row.outgoing === 1,
     mark_choice: row.mark_choice === 1,
+    as_chat: row.as_chat === 1,
   };
 }
 
@@ -215,6 +224,8 @@ const MESSAGE_COLUMNS = [
   "buttons",
   "mark_choice",
   "sent_by",
+  "via_bot",
+  "as_chat",
 ] as const;
 
 function messageValues(message: StoredMessage): unknown[] {
@@ -243,6 +254,8 @@ function messageValues(message: StoredMessage): unknown[] {
     message.buttons,
     message.mark_choice ? 1 : 0,
     message.sent_by,
+    message.via_bot,
+    message.as_chat ? 1 : 0,
   ];
 }
 

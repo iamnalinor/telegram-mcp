@@ -98,8 +98,8 @@ async function handleMcp(request: Request, env: Env, core: Base): Promise<Respon
     return tooManyRequests("Too many requests for this user. Wait a minute and try again.");
   }
 
-  const { userId } = authInfo.extra as unknown as McpAuth;
-  const toolCtx = await toolContext(core, publicOrigin(request), userId);
+  const { userId, username, name } = authInfo.extra as unknown as McpAuth;
+  const toolCtx = await toolContext(core, publicOrigin(request), userId, { username, name });
   return handler.fetch(request, {
     authInfo: { ...authInfo, extra: { ...authInfo.extra, toolContext: toolCtx } },
   });
