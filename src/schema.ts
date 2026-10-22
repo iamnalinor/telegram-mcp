@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -218,6 +218,7 @@ const SCHEMA: string[] = [
     chat_id INTEGER PRIMARY KEY,
     user_id INTEGER NOT NULL,
     others INTEGER NOT NULL DEFAULT 0,
+    others_limit INTEGER NOT NULL DEFAULT 20,
     since INTEGER NOT NULL
   )`,
 
@@ -309,6 +310,10 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
       "ALTER TABLE routines ADD COLUMN test_session TEXT",
       "ALTER TABLE routines ADD COLUMN test_at INTEGER",
     ],
+  },
+  {
+    target: 12,
+    alter: ["ALTER TABLE claude_chats ADD COLUMN others_limit INTEGER NOT NULL DEFAULT 20"],
   },
 ];
 

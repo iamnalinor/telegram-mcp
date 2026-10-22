@@ -78,6 +78,8 @@ export interface ClaudeChat {
   chat_id: number;
   user_id: number;
   others: number;
+  /** Other members' starts allowed per hour. */
+  others_limit: number;
   since: number;
 }
 
@@ -1485,6 +1487,13 @@ export class Store {
       .run();
   }
 
+  async setClaudeOthersLimit(userId: number, chatId: number, limit: number): Promise<void> {
+    await this.db
+      .prepare("UPDATE claude_chats SET others_limit = ? WHERE chat_id = ? AND user_id = ?")
+      .bind(limit, chatId, userId)
+      .run();
+  }
+
   async setClaudeOthers(userId: number, chatId: number, others: boolean): Promise<void> {
     await this.db
       .prepare("UPDATE claude_chats SET others = ? WHERE chat_id = ? AND user_id = ?")
@@ -1535,10 +1544,10 @@ export class Store {
       .prepare(
         `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at)
          SELECT ?1, ?2, ?3, ?4, 'pending', ?5
-         WHERE (SELECT COUNT(*) FROM fires WHERE user_id = ?3 AND at >= ?6 AND status != 'failed') < ?7
+         WHERE (SELECT COUNT(*) FROM fires WHERE user_id = ?3 AND at >= ?6 AND status IN ('pending', 'started')) < ?7
            AND (?4 = 0 OR (SELECT COUNT(*) FROM fires
                 WHERE user_id = ?3 AND at >= ?6 AND chat_id = ?1 AND by_other = 1
-                  AND status != 'failed') < ?8)
+                  AND status IN ('pending', 'started')) < ?8)
          ON CONFLICT (chat_id, message_id) DO NOTHING`,
       )
       .bind(
@@ -1569,6 +1578,26 @@ export class Store {
       .prepare("UPDATE fires SET status = ?, session_id = ? WHERE chat_id = ? AND message_id = ?")
       .bind(outcome.status, "sessionId" in outcome ? outcome.sessionId : null, chatId, messageId)
       .run();
+  }
+
+  /**
+   * Record a start held back by the limit. True when it is the first in this
+   * chat within the hour: the holder hears about it once, not per message.
+   */
+  async noteLimited(chatId: number, messageId: number, userId: number): Promise<boolean> {
+    const now = nowSeconds();
+    const [earlier] = await this.db.batch([
+      this.db
+        .prepare("SELECT 1 FROM fires WHERE chat_id = ? AND status = 'limited' AND at >= ? LIMIT 1")
+        .bind(chatId, now - 3600),
+      this.db
+        .prepare(
+          `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at)
+           VALUES (?, ?, ?, 1, 'limited', ?) ON CONFLICT (chat_id, message_id) DO NOTHING`,
+        )
+        .bind(chatId, messageId, userId, now),
+    ]);
+    return earlier.results.length === 0;
   }
 
   /** Whether other members' starts already failed in this chat since `since`: the holder heard once. */

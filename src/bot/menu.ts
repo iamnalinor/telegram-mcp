@@ -25,6 +25,7 @@
  *   m:cldm        Claude in the private chat: on or off
  *   m:gc:<id>     Claude in that group: on (taking it over from a holder who left) or off
  *   m:go:<id>     other members too: asks first; m:goy:<id> turns it on
+ *   m:gl:<id>     their hourly limit: steps through 5, 10, 20, 50
  *
  * Every press is checked again: anyone can send any callback_data.
  */
@@ -265,6 +266,9 @@ function guideScreen(user: User): Screen {
   };
 }
 
+/** What "Others too" may cost per hour in one chat; a press steps to the next. */
+const OTHERS_LIMITS = [5, 10, 20, 50];
+
 async function groupScreen(
   ctx: BotContext,
   user: User,
@@ -284,12 +288,20 @@ async function groupScreen(
         full: grant.visible_from === 0,
         since: formatDate(grant.visible_from),
       }) +
-      t.groupClaude({ on, others: on && claim.others === 1, heldBy }) +
+      t.groupClaude({
+        on,
+        others: on && claim.others === 1,
+        limit: claim?.others_limit ?? 0,
+        heldBy,
+      }) +
       (blind ? `\n${t.privacyHint}` : ""),
     reply_markup: {
       inline_keyboard: [
         [button(t.claudeToggle(on), `gc:${chatId}`)],
         ...(on ? [[button(t.othersToggle(claim.others === 1), `go:${chatId}`)]] : []),
+        ...(on && claim.others === 1
+          ? [[button(t.othersLimitButton(claim.others_limit), `gl:${chatId}`)]]
+          : []),
         [button(t.buttonChatMemory, `mv:${chatId}`)],
         [button(t.buttonRevoke, `rv:${chatId}`)],
         [button(t.buttonBack, "groups")],
@@ -465,7 +477,7 @@ async function render(
     };
   }
 
-  const group = /^(g|rv|gc|go|goy):(-?\d+)$/.exec(name);
+  const group = /^(g|rv|gc|go|goy|gl):(-?\d+)$/.exec(name);
   if (group) {
     const chatId = Number(group[2]);
     const grant = (await ctx.store.listGrants(user.id)).find((g) => g.chat_id === chatId);
@@ -495,6 +507,11 @@ async function render(
       await ctx.store.setClaudeOthers(user.id, chatId, false);
     }
     if (group[1] === "goy" && mine) await ctx.store.setClaudeOthers(user.id, chatId, true);
+    if (group[1] === "gl" && mine) {
+      const next =
+        OTHERS_LIMITS[(OTHERS_LIMITS.indexOf(claim.others_limit) + 1) % OTHERS_LIMITS.length];
+      await ctx.store.setClaudeOthersLimit(user.id, chatId, next);
+    }
     return { ...(await groupScreen(ctx, user, grant)), note };
   }
   return mainScreen(ctx, user);
