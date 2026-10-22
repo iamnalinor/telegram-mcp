@@ -182,14 +182,16 @@ export default {
       if (!isAllowed(core.config, userId)) await core.store.wipeMemory(userId);
     }
     for (const userId of await core.store.routineUsers()) {
-      if (!isAllowed(core.config, userId)) {
-        await core.store.deleteRoutine(userId);
-        await core.store.dropClaudeChats(userId);
-      }
+      if (!isAllowed(core.config, userId)) await core.store.deleteRoutine(userId);
     }
-    // A holder who left a group quietly must not keep it from the others.
-    for (const claim of await core.store.claimedGroups()) {
-      if ((await stillMember(core, claim.chat_id, claim.user_id)) === false) {
+    // Claims of users no longer allowed go; a holder who left a group quietly
+    // must not keep it from the others.
+    for (const claim of await core.store.someClaudeChats(40)) {
+      if (!isAllowed(core.config, claim.user_id)) await core.store.dropClaudeChats(claim.user_id);
+      else if (
+        claim.chat_id < 0 &&
+        (await stillMember(core, claim.chat_id, claim.user_id)) === false
+      ) {
         await core.store.revokeGrant(claim.user_id, claim.chat_id);
       }
     }

@@ -231,6 +231,7 @@ const SCHEMA: string[] = [
     at INTEGER NOT NULL,
     PRIMARY KEY (chat_id, message_id)
   ) WITHOUT ROWID`,
+  `CREATE INDEX IF NOT EXISTS fires_by_user ON fires (user_id, at)`,
 
   // A user's Telegram Business connection: the bot reads their private chats,
   // and acts in them only as far as `rights` (set by the user in Telegram) allow.

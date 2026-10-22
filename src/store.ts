@@ -1467,10 +1467,15 @@ export class Store {
       .run();
   }
 
-  /** Groups where Claude answers, for checking now and then that their holder is still a member. */
-  async claimedGroups(): Promise<ClaudeChat[]> {
+  /**
+   * Some of the chats where Claude answers, for the daily check of their
+   * holders. Random, and capped: each check of a group is a Bot API call, and
+   * a Worker run makes only so many.
+   */
+  async someClaudeChats(limit: number): Promise<ClaudeChat[]> {
     const { results } = await this.db
-      .prepare("SELECT * FROM claude_chats WHERE chat_id < 0")
+      .prepare("SELECT * FROM claude_chats ORDER BY RANDOM() LIMIT ?")
+      .bind(limit)
       .all<ClaudeChat>();
     return results;
   }
@@ -1481,21 +1486,44 @@ export class Store {
 
   // --- starts --------------------------------------------------------------
 
-  /** Claim the start for this message. False when it was claimed already (a retried webhook). */
+  /**
+   * Claim the start for this message, within the hourly limits, in one
+   * statement: Telegram delivers updates in parallel, and a burst of tags
+   * checked first and written after would all pass. Failed starts do not
+   * count against the limits.
+   */
   async beginFire(
-    chatId: number,
-    messageId: number,
-    userId: number,
-    byOther: boolean,
-  ): Promise<boolean> {
+    fire: { chatId: number; messageId: number; userId: number; byOther: boolean },
+    limits: { user: number; others: number },
+  ): Promise<"claimed" | "again" | "limit"> {
+    const now = nowSeconds();
     const result = await this.db
       .prepare(
         `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at)
-         VALUES (?, ?, ?, ?, 'pending', ?) ON CONFLICT (chat_id, message_id) DO NOTHING`,
+         SELECT ?1, ?2, ?3, ?4, 'pending', ?5
+         WHERE (SELECT COUNT(*) FROM fires WHERE user_id = ?3 AND at >= ?6 AND status != 'failed') < ?7
+           AND (?4 = 0 OR (SELECT COUNT(*) FROM fires
+                WHERE user_id = ?3 AND at >= ?6 AND chat_id = ?1 AND by_other = 1
+                  AND status != 'failed') < ?8)
+         ON CONFLICT (chat_id, message_id) DO NOTHING`,
       )
-      .bind(chatId, messageId, userId, byOther ? 1 : 0, nowSeconds())
+      .bind(
+        fire.chatId,
+        fire.messageId,
+        fire.userId,
+        fire.byOther ? 1 : 0,
+        now,
+        now - 3600,
+        limits.user,
+        limits.others,
+      )
       .run();
-    return (result.meta.changes ?? 0) > 0;
+    if ((result.meta.changes ?? 0) > 0) return "claimed";
+    const seen = await this.db
+      .prepare("SELECT 1 FROM fires WHERE chat_id = ? AND message_id = ?")
+      .bind(fire.chatId, fire.messageId)
+      .first();
+    return seen ? "again" : "limit";
   }
 
   async endFire(
@@ -1509,22 +1537,16 @@ export class Store {
       .run();
   }
 
-  /** Starts since `since`: the user's, and how many of them came from other members of this chat. */
-  async fireCounts(
-    userId: number,
-    chatId: number,
-    since: number,
-  ): Promise<{ user: number; others: number; othersFailed: number }> {
+  /** Whether other members' starts already failed in this chat since `since`: the holder heard once. */
+  async othersFailedSince(userId: number, chatId: number, since: number): Promise<boolean> {
     const row = await this.db
       .prepare(
-        `SELECT COUNT(*) AS user,
-           COALESCE(SUM(chat_id = ?2 AND by_other = 1), 0) AS others,
-           COALESCE(SUM(chat_id = ?2 AND by_other = 1 AND status = 'failed'), 0) AS othersFailed
-         FROM fires WHERE user_id = ?1 AND at >= ?3`,
+        `SELECT 1 FROM fires WHERE user_id = ? AND at >= ? AND chat_id = ? AND by_other = 1
+         AND status = 'failed' LIMIT 1`,
       )
-      .bind(userId, chatId, since)
-      .first<{ user: number; others: number; othersFailed: number }>();
-    return row ?? { user: 0, others: 0, othersFailed: 0 };
+      .bind(userId, since, chatId)
+      .first();
+    return row !== null;
   }
 
   async routineUsers(): Promise<number[]> {

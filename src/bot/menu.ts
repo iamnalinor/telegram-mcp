@@ -422,6 +422,8 @@ async function render(
   }
   if (name === "cldely") {
     await ctx.store.deleteRoutine(user.id);
+    // Nothing would start in them any more, and others could not turn Claude on there.
+    await ctx.store.dropClaudeChats(user.id);
     return { ...(await routineScreen(ctx, user)), note: t.routineDeleted };
   }
   if (name === "add") {

@@ -225,6 +225,39 @@ describe("in a group", () => {
     expect(claims()).toBe(0);
   });
 
+  it("a burst of others' tags still starts five, and their failures reach the holder once", async () => {
+    h.telegram.members.set(`${TEAM.id}:${BOB.id}`, "member");
+    await press(ALICE, `m:goy:${TEAM.id}`);
+    await Promise.all(Array.from({ length: 8 }, (_, i) => h.say(TEAM, BOB, `${BOT} go ${i}`)));
+    expect(h.fires).toHaveLength(5);
+
+    h.db.raw.exec("DELETE FROM fires");
+    h.fires.length = 0;
+    h.fireAnswer = () => new Response("{}", { status: 401 });
+    const before = h.telegram
+      .called("sendMessage")
+      .filter((c) => c.params.chat_id === ALICE.id).length;
+    for (let i = 0; i < 3; i++) await h.say(TEAM, BOB, `${BOT} again ${i}`);
+    const notices = h.telegram
+      .called("sendMessage")
+      .filter((c) => c.params.chat_id === ALICE.id)
+      .slice(before);
+    expect(notices).toHaveLength(1);
+    expect(String(notices[0].params.text)).toContain("token was refused");
+  });
+
+  it("a bare /claude in the group starts nothing", async () => {
+    await h.say(TEAM, ALICE, "/claude@test_mcp_bot");
+    expect(h.fires).toHaveLength(0);
+  });
+
+  it("removing the routine lets go of every chat", async () => {
+    await press(ALICE, "m:cldely");
+    expect(h.db.raw.query("SELECT * FROM claude_chats").get()).toBeNull();
+    await h.say(TEAM, ALICE, `${BOT} hi`);
+    expect(h.fires).toHaveLength(0);
+  });
+
   it("needs the routine first", async () => {
     await press(ALICE, `m:gc:${TEAM.id}`);
     await press(ALICE, "m:cldely");

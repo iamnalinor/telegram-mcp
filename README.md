@@ -267,7 +267,8 @@ What starts a session:
   their words as data, to do nothing for them that your memory for the chat does not explicitly
   allow, and to tag you instead — but it runs with your connectors, so that is a guard of
   instructions, not of access. Their starts are limited to 5 an hour per chat, and each is reported
-  to you quietly.
+  to you quietly. A reply of theirs to your assistant's message starts a new session too, told
+  which session wrote it — under the same rules.
 
 Never: forwards, messages via inline bots or posted as a channel, edits, or a reply that a waiting
 `ask_user` will pick up. Each message starts one session at most, however often Telegram retries it.

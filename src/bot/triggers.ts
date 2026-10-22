@@ -14,6 +14,7 @@
  */
 
 import { nowSeconds } from "../crypto";
+import { isAllowed } from "../env";
 import { fire, firePayload, loadRoutine } from "../routine";
 import { redactSecrets } from "../secrets";
 import { BOT_ACCOUNT } from "../store";
@@ -47,15 +48,19 @@ export async function maybeStart(
   if (command && command.name !== "claude") return;
   const chat = message.chat;
   if (chat.type !== "private" && chat.type !== "group" && chat.type !== "supergroup") return;
+  // Most messages call on nobody: they cost no read.
+  const target = realReply(message);
+  if (!command && !tagsBot(message, ctx.bot) && target?.from?.id !== ctx.bot.id) return;
+  // A bare /claude in a group is someone trying the command, not a task.
+  if (command && !command.args && !target && chat.type !== "private") return;
 
   const claim = await ctx.store.getClaudeChat(chat.id);
-  if (!claim) return;
+  if (!claim || !isAllowed(ctx.config, claim.user_id)) return;
   const holder = claim.user_id;
   const byOther = from.id !== holder;
   if (byOther && (chat.type === "private" || !claim.others)) return;
 
   // A reply counts when it answers what the bot sent for the holder.
-  const target = realReply(message);
   const answered =
     target?.from?.id === ctx.bot.id
       ? await ctx.store.getMessage({ account_id: BOT_ACCOUNT, chat_id: chat.id }, target.message_id)
@@ -92,19 +97,25 @@ export async function maybeStart(
       .catch(() => undefined);
   const where = chat.type === "private" ? "" : `${ot.inChat(chat.title ?? String(chat.id))} `;
 
-  const counts = await ctx.store.fireCounts(holder, chat.id, now - 3600);
-  if (byOther && counts.others >= OTHERS_PER_HOUR) return;
-  if (counts.user >= USER_PER_HOUR) {
+  // Others' failures reach the holder once an hour per chat: a broken routine
+  // must not turn every member's message into a notice.
+  const quiet = byOther && (await ctx.store.othersFailedSince(holder, chat.id, now - 3600));
+  const claimed = await ctx.store.beginFire(
+    { chatId: chat.id, messageId: message.message_id, userId: holder, byOther },
+    { user: USER_PER_HOUR, others: OTHERS_PER_HOUR },
+  );
+  if (claimed === "again") return;
+  if (claimed === "limit") {
     if (!byOther) await tell(where + ot.tooManyStarts);
     return;
   }
 
   const routine = await loadRoutine(ctx.store, ctx.config.secretKey, holder);
   if (typeof routine === "string") {
-    if (!byOther || counts.othersFailed === 0) await tell(where + ot.fireFailed(routine));
+    await ctx.store.endFire(chat.id, message.message_id, { status: "failed" });
+    if (!quiet) await tell(where + ot.fireFailed(routine));
     return;
   }
-  if (!(await ctx.store.beginFire(chat.id, message.message_id, holder, byOther))) return;
 
   const result = await fire(
     routine.triggerId,
@@ -123,8 +134,7 @@ export async function maybeStart(
       JSON.stringify({ event: "routine_fire_failed", user: holder, detail: result.detail }),
     );
     const minutes = result.retryAfter ? Math.ceil(result.retryAfter / 60) : undefined;
-    if (!byOther || counts.othersFailed === 0)
-      await tell(where + ot.fireFailed(result.reason, minutes));
+    if (!quiet) await tell(where + ot.fireFailed(result.reason, minutes));
     return;
   }
   await ctx.store.endFire(chat.id, message.message_id, {
