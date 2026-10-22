@@ -35,6 +35,19 @@
     "crons": ["17 3 * * *"],
   },
 
+  // Branch builds on Cloudflare run `wrangler preview`, which inherits no
+  // bindings or secrets from the settings above. Previews get no database and
+  // no bot token on purpose: one holding the production bot's token could
+  // take its webhook, and one on the production database would act on real
+  // chats. Such a preview only builds and answers /health; to make it a
+  // working stand, give it its own test bot (`wrangler preview secret put
+  // BOT_TOKEN`) and its own D1 database here.
+  "previews": {
+    "vars": {
+      "RETENTION_DAYS": "14",
+    },
+  },
+
   // Rate limiters. Nothing to provision. Counting is per-colo with a 60 s
   // window, so these are a ceiling on abuse rather than a guarantee.
   "ratelimits": [
