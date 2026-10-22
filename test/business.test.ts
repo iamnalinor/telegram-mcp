@@ -371,7 +371,7 @@ describe("personal chats: review fixes", () => {
     await h.businessSay(ALICE, ANNA, "kept for now");
     h.env.ALLOWED_USER_IDS = String(BOB.id);
     const worker = (await import("../src/index")).default;
-    await worker.scheduled({} as ScheduledController, h.env, {});
+    await worker.scheduled({} as ScheduledController, h.env);
     const left = h.db.raw
       .query("SELECT COUNT(*) AS n FROM messages WHERE account_id = ?")
       .get(ALICE.id) as { n: number };
