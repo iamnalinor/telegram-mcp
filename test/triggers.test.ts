@@ -43,6 +43,8 @@ async function press(user: typeof ALICE, data: string) {
 }
 
 const payload = () => h.fires.at(-1)!.body.text;
+/** Moves past starts back in time, as if `seconds` had passed. */
+const age = (seconds: number) => h.db.raw.exec(`UPDATE fires SET at = at - ${seconds}`);
 const lastTo = (chatId: number) =>
   h.telegram
     .called("sendMessage")
@@ -51,11 +53,11 @@ const lastTo = (chatId: number) =>
     .at(-1);
 
 describe("in the private chat", () => {
-  it("starts on /run, an explicit mention or a reply to the assistant — not on plain messages", async () => {
-    await h.say(dm(ALICE), ALICE, "just a file for later");
+  it("starts on every message but commands, with 👀", async () => {
+    await h.say(dm(ALICE), ALICE, "/run check the build");
     expect(h.fires).toHaveLength(0);
 
-    const asked = await h.say(dm(ALICE), ALICE, "/run check the build");
+    const asked = await h.say(dm(ALICE), ALICE, "check the build");
     expect(h.fires).toHaveLength(1);
     expect(payload()).toContain(`chat: ${ALICE.id}`);
     expect(payload()).toContain(`message: ${String(asked.message_id)}`);
@@ -67,14 +69,35 @@ describe("in the private chat", () => {
     // The user's own start needs no notice: 👀 says it.
     expect(lastTo(ALICE.id)).not.toContain("Claude is on it");
 
-    await h.say(dm(ALICE), ALICE, `${BOT} and the tests`);
+    // Without a relay, each later message starts its own session.
+    age(60);
+    await h.say(dm(ALICE), ALICE, "and the tests");
     expect(h.fires).toHaveLength(2);
   });
 
-  it("explains /run without a task", async () => {
-    await h.say(dm(ALICE), ALICE, "/run");
-    expect(h.fires).toHaveLength(0);
-    expect(lastTo(ALICE.id)).toContain("Write the task after /run");
+  it("lets a message right after a start join it: a forward, then what to do with it", async () => {
+    await h.say(dm(ALICE), ALICE, "", {
+      text: "Meeting moved to Friday",
+      forward_origin: { type: "hidden_user", sender_user_name: "Eve", date: 1 },
+    });
+    await h.say(dm(ALICE), ALICE, "put it in my calendar");
+    expect(h.fires).toHaveLength(1);
+    const statuses = h.db.raw.query("SELECT status FROM fires ORDER BY message_id").all();
+    expect(statuses).toEqual([{ status: "started" }, { status: "joined" }]);
+
+    // The session sees both, the one after the forward too.
+    const around = (
+      await h.tool(alice, "get_recent_messages", {
+        around_message_id: (
+          h.db.raw.query("SELECT message_id FROM fires ORDER BY message_id").get() as {
+            message_id: number;
+          }
+        ).message_id,
+      })
+    ).text;
+    expect(around).toContain("Meeting moved to Friday");
+    expect(around).toContain("forwarding");
+    expect(around).toContain("put it in my calendar");
   });
 
   it("starts once per message, however often Telegram retries it", async () => {
@@ -83,7 +106,7 @@ describe("in the private chat", () => {
       date: Math.floor(Date.now() / 1000),
       chat: { ...dm(ALICE), first_name: "Alice" },
       from: { ...ALICE, is_bot: false },
-      text: "/run once",
+      text: "once",
     };
     await h.update({ message });
     await h.update({ message });
@@ -151,22 +174,18 @@ describe("in the private chat", () => {
     expect(h.fires).toHaveLength(1);
   });
 
-  it("does nothing for a forward, or once turned off", async () => {
-    await h.say(dm(ALICE), ALICE, `/run ${BOT} look`, {
-      forward_origin: { type: "hidden_user", sender_user_name: "Eve", date: 1 },
-    });
+  it("does nothing once turned off", async () => {
+    await press(ALICE, "m:cldm");
+    await h.say(dm(ALICE), ALICE, "look");
     expect(h.fires).toHaveLength(0);
     await press(ALICE, "m:cldm");
-    await h.say(dm(ALICE), ALICE, "/run look");
-    expect(h.fires).toHaveLength(0);
-    await press(ALICE, "m:cldm");
-    await h.say(dm(ALICE), ALICE, "/run look");
+    await h.say(dm(ALICE), ALICE, "look");
     expect(h.fires).toHaveLength(1);
   });
 
   it("tells the user, not the chat, why it could not start", async () => {
     h.fireAnswer = () => new Response("{}", { status: 401 });
-    await h.say(dm(ALICE), ALICE, "/run look");
+    await h.say(dm(ALICE), ALICE, "look");
     expect(lastTo(ALICE.id)).toContain("token was refused");
     expect(h.telegram.called("setMessageReaction")).toHaveLength(0);
   });

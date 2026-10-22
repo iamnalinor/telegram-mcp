@@ -141,7 +141,6 @@ async function onMessage(
   await maybeStart(ctx, message, command).catch((error: unknown) =>
     console.error(JSON.stringify({ event: "trigger_failed", error: String(error) })),
   );
-  if (command?.name === "run" && message.chat.type === "private") return null;
   if (command) {
     return handleCommand(ctx, message, command);
   }

@@ -4,6 +4,7 @@
  *
  *   curl -fsSL https://<worker>/relay/install.sh | RELAY_TOKEN=relay_… bash
  *
+ * Run again without RELAY_TOKEN, it updates the relay and keeps its token.
  * It installs curl, jq and Claude Code if missing, writes ~/.tg-relay/relay.sh
  * and a systemd service running it as the current user, and starts it. The
  * relay only asks the Worker for work, so it needs no open port, domain or
@@ -11,7 +12,7 @@
  * (`claude`, then /login) — the relay writes to sessions as that account.
  *
  * The shell's own `${…}` would clash with the template, so the scripts do
- * without it (the one use is spelled out).
+ * without it (where it must, it is spelled ${"$"}{…}).
  */
 
 const RELAY_LOOP = String.raw`#!/usr/bin/env bash
@@ -24,7 +25,9 @@ trap 'rm -f "$AUTH"' EXIT
 printf 'Authorization: Bearer %s\n' "$RELAY_TOKEN" >"$AUTH"
 START=1
 while true; do
-  JOBS=$(curl -fsS --max-time 30 -H @"$AUTH" "$API/jobs?start=$START") || { sleep 20; continue; }
+  # The Worker holds the request until a job comes, up to 25 s: no busy polling, no delay.
+  ASKED=$(date +%s)
+  JOBS=$(curl -fsS --max-time 40 -H @"$AUTH" "$API/jobs?wait=25&start=$START") || { sleep 20; continue; }
   START=0
   COUNT=$(printf '%s' "$JOBS" | jq 'length' 2>/dev/null || echo 0)
   for ((i = 0; i < COUNT; i++)); do
@@ -45,7 +48,8 @@ while true; do
     printf '%s' "$REPORT" | curl -fsS --max-time 30 -X POST -H @"$AUTH" -H 'Content-Type: application/json' --data-binary @- "$API/jobs/$ID" >/dev/null || true
     echo "$(date -u +%FT%TZ) $ID -> $SESSION: $REPORT"
   done
-  [ "$COUNT" -gt 0 ] 2>/dev/null || sleep 10
+  # An empty answer that came at once means the Worker did not wait (signed out, say): slow down.
+  if ! [ "$COUNT" -gt 0 ] 2>/dev/null && [ $(($(date +%s) - ASKED)) -lt 5 ]; then sleep 10; fi
 done
 `;
 
@@ -56,6 +60,10 @@ export function installScript(origin: string): string {
 set -euo pipefail
 main() {
 ORIGIN='${origin.replaceAll("'", "")}'
+# Run again without a token, it updates the relay and keeps the one it has.
+if [ -z "${"$"}{RELAY_TOKEN:-}" ] && [ -f "$HOME/.tg-relay/env" ]; then
+  RELAY_TOKEN=$(sed -n 's/^RELAY_TOKEN=//p' "$HOME/.tg-relay/env")
+fi
 if [ -z "${"$"}{RELAY_TOKEN:-}" ]; then
   echo "Run it as: curl -fsSL $ORIGIN/relay/install.sh | RELAY_TOKEN=relay_... bash" >&2
   exit 1

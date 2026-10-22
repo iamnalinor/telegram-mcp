@@ -261,9 +261,11 @@ stored, in any chat.
 
 What starts a session:
 
-- **Your private chat with the bot** (on once the routine is set): `/run <task>`, an explicit
-  @mention, or a reply to a message your assistant sent there. Other messages stay what they are —
-  files and notes for your assistant.
+- **Your private chat with the bot** (on once the routine is set; 💬 Here turns it off): every
+  message, forwards too — commands aside, and an answer a waiting `ask_user` picks up. With the
+  relay (below) the day's messages, from 00:00 UTC, go to one session; without it each message
+  starts its own. A message right after a start — a forward, then what to do with it — joins that
+  session, which reads the messages around its own.
 - **A group**, once you turn it on in the group's screen: a mention of the bot, or a reply to a
   message your assistant sent there. One person per group: whoever turned it on first. If they leave
   the group, it passes to the next who asks.
@@ -279,19 +281,21 @@ What starts a session:
 
 Every start goes into the group's 📜 Starts: who, when, the first words and a link to the session.
 
-Never: forwards, messages via inline bots, edits, commands in groups, or a
-reply that a waiting `ask_user` will pick up. Each message starts one session at most, however often
-Telegram retries it. The bot reacts 👀 to the message; sessions answer by replying to it rather than
-tagging anyone. Failures go to your private chat, never to the group. Each start is a billed session that counts toward the
+Never: commands, edits, answers to the bot's own prompts, a reply that a waiting `ask_user` will
+pick up, and — in groups — forwards and messages via inline bots. Each message starts one session at
+most, however often Telegram retries it. The bot reacts 👀 when a new session starts (not when a
+message goes into one already running); sessions answer by replying to it rather than tagging
+anyone. Failures go to your private chat, never to the group. Each start is a billed session that counts toward the
 routine's own limits.
 
 ### Talking to other sessions
 
 Sessions cannot write to one another by themselves: only a full Claude Code sign-in can put a
 message into a cloud session. A **relay** can — any always-on Linux machine of yours (an Oracle free
-VM will do) signed in to Claude Code. The bot queues messages; the relay asks for them every 10
-seconds — about 8,600 Worker requests a day, under a tenth of the free plan — and passes each one on
-with `claude -p --cloud <session>`. It needs no open port or domain.
+VM will do) signed in to Claude Code. The bot queues messages; the relay asks for them and the
+Worker holds the request until one comes, up to 25 s, so a message is on its way within a couple of
+seconds — about 3,500 Worker requests a day, a few percent of the free plan. The relay passes each
+one on with `claude -p --cloud <session>`. It needs no open port or domain.
 
 Set it up in the menu: 🤖 Claude → 🛰 Relay → 📋 Install command, and run what it sends on the
 machine:
@@ -301,11 +305,13 @@ curl -fsSL https://<your worker>/relay/install.sh | RELAY_TOKEN=relay_… bash
 ```
 
 It installs curl, jq and Claude Code if missing and runs the relay as a systemd service. Then sign
-Claude Code in there once (`claude`, then `/login`) and `sudo systemctl restart tg-relay`.
+Claude Code in there once (`claude`, then `/login`) and `sudo systemctl restart tg-relay`. To update
+the relay later, run the same `curl … | bash` without `RELAY_TOKEN`: it keeps the token it has.
 
 With the relay:
 
-- A reply to a session's message goes into **that** session instead of starting a new one.
+- A reply to a session's message goes into **that** session instead of starting a new one; so do
+  your private-chat messages of the day. Nothing new starts, so the bot puts no 👀 on them.
 - `list_sessions` shows the sessions the bot knows of (started by a tag, wrote through the bot, or
   were messaged). `message_session` asks one of them something — "how is the migration going?" —
   or hands it a request, by id or link; the session answers with `answer_session`. A session the

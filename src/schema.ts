@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -267,6 +267,7 @@ const SCHEMA: string[] = [
     status TEXT NOT NULL,
     error TEXT,
     wants_answer INTEGER NOT NULL DEFAULT 0,
+    kind TEXT NOT NULL DEFAULT 'reply',
     answer TEXT,
     answered_at INTEGER,
     created_at INTEGER NOT NULL,
@@ -362,6 +363,10 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
       "ALTER TABLE fires ADD COLUMN album TEXT",
       "ALTER TABLE messages ADD COLUMN album TEXT",
     ],
+  },
+  {
+    target: 15,
+    alter: ["ALTER TABLE relay_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply'"],
   },
 ];
 

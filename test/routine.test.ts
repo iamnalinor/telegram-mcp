@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import { aesKey, decrypt, encrypt } from "../src/crypto";
-import { parseRoutine } from "../src/routine";
+import { parseRoutine, routinePrompt } from "../src/routine";
 import { Harness, TgError } from "./harness";
 
 const ALICE = { id: 111, first_name: "Alice", username: "alice", language_code: "en" };
@@ -173,6 +173,11 @@ describe("pieces", () => {
     expect(await decrypt(key, sealed, "routine:2")).toBeNull();
     expect(await decrypt(other, sealed, "routine:1")).toBeNull();
     expect(await decrypt(key, "not base64!", "routine:1")).toBeNull();
+  });
+
+  it("keeps the prompt within one Telegram message, with room for the longest username", () => {
+    // The menu sends it in one message with a one-line intro: Telegram allows 4096 characters.
+    expect(routinePrompt("a".repeat(32)).length + 120).toBeLessThan(4096);
   });
 
   it("finds the trigger and the token anywhere in the message", () => {

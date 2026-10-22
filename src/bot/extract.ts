@@ -106,6 +106,18 @@ function originName(message: Message): string | null {
   return chat?.title ?? chat?.username ?? "unknown";
 }
 
+/** Whether a message says or carries anything: not a service message. */
+export function hasContent(message: Message): boolean {
+  return Boolean(
+    message.text ||
+    message.caption ||
+    fileOf(message) ||
+    message.location ||
+    message.contact ||
+    message.poll,
+  );
+}
+
 /**
  * In a forum, every message that is not an explicit reply arrives with
  * `reply_to_message` set to the topic's creation message. That is the

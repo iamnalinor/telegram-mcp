@@ -152,6 +152,7 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
             message_id: null,
             thread_id: null,
             wants_answer: expectAnswer ? 1 : 0,
+            kind: "ask",
           },
           (id) =>
             sessionEnvelope({
