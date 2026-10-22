@@ -38,12 +38,18 @@ export async function botContext(core: Base, origin: string): Promise<BotContext
   };
 }
 
-/** `profile`: how the user is named in Telegram, when the caller already has it. */
+/**
+ * `profile`: how the user is named in Telegram, and which assistant is
+ * calling, when the caller already has them.
+ */
 export async function toolContext(
   core: Base,
   origin: string,
   userId: number,
-  profile: { username: string | null; name: string | null } = { username: null, name: null },
+  profile: { username: string | null; name: string | null; client?: string | null } = {
+    username: null,
+    name: null,
+  },
 ): Promise<ToolContext> {
   const me = await botIdentity(core.api);
   const username = me.username ?? "";
@@ -51,7 +57,8 @@ export async function toolContext(
     ...core,
     origin,
     userId,
-    user: { id: userId, ...profile },
+    user: { id: userId, username: profile.username, name: profile.name },
+    client: profile.client ?? null,
     bot: { id: me.id, username, canReadAll: me.can_read_all_group_messages === true },
     access: new Access(core.store, core.api, userId, username),
   };

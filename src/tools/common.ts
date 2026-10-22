@@ -24,6 +24,8 @@ export interface ToolContext {
   userId: number;
   /** The same user, with how Telegram names them — for the head of results. */
   user: UserRef;
+  /** The calling assistant by its sign-in: "Claude", "ChatGPT"… Null when unknown. */
+  client: string | null;
   /** Public origin of the Worker, for upload and download links. */
   origin: string;
   bot: { id: number; username: string; canReadAll: boolean };

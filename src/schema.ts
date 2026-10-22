@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -164,6 +164,40 @@ const SCHEMA: string[] = [
     client_name TEXT,
     created_at INTEGER
 ) WITHOUT ROWID`,
+
+  // Memory: one Markdown document per user and chat, written by their
+  // assistants. The private chat with the bot is the user's own id.
+  `CREATE TABLE IF NOT EXISTS memory_docs (
+    user_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    content TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    updated_by TEXT,
+    PRIMARY KEY (user_id, chat_id)
+  ) WITHOUT ROWID`,
+
+  // What each document read before a change: for undo. A few per document.
+  `CREATE TABLE IF NOT EXISTS memory_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    content_before TEXT,
+    changed_at INTEGER NOT NULL,
+    changed_by TEXT
+  )`,
+  `CREATE INDEX IF NOT EXISTS memory_history_by_doc ON memory_history (user_id, chat_id, id)`,
+
+  // The last notice about changes to a document, so changes in quick
+  // succession edit one message instead of sending many.
+  `CREATE TABLE IF NOT EXISTS memory_notices (
+    user_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    client TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    first_history_id INTEGER NOT NULL,
+    sent_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, chat_id, client)
+  ) WITHOUT ROWID`,
 
   // A user's Telegram Business connection: the bot reads their private chats,
   // and acts in them only as far as `rights` (set by the user in Telegram) allow.

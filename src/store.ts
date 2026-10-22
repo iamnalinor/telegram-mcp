@@ -59,6 +59,34 @@ interface MessageRow extends Omit<
   as_chat: number;
 }
 
+export interface MemoryDoc {
+  user_id: number;
+  chat_id: number;
+  content: string;
+  updated_at: number;
+  /** The assistant that last wrote it, by its sign-in name. */
+  updated_by: string | null;
+}
+
+export interface MemoryChange {
+  id: number;
+  user_id: number;
+  chat_id: number;
+  /** Null when the document did not exist before the change. */
+  content_before: string | null;
+  changed_at: number;
+  changed_by: string | null;
+}
+
+export interface MemoryNotice {
+  user_id: number;
+  chat_id: number;
+  client: string;
+  message_id: number;
+  first_history_id: number;
+  sent_at: number;
+}
+
 export interface RefreshSessionRow {
   id: string;
   user_id: number;
@@ -79,6 +107,8 @@ export interface TokenState {
   first_name: string | null;
   /** Null when the token names no sign-in, or that sign-in has no row. */
   session_revoked: number | null;
+  /** Who that sign-in went to, when known. */
+  client_name: string | null;
 }
 
 export interface UserRow {
@@ -308,6 +338,10 @@ const GROUP_TABLES = ["grants", "button_presses", "reactions", "topics", "chats"
 /** Tables keyed by account too; a group's rows sit under the bot's account. */
 const ACCOUNT_TABLES = ["messages", "day_marks"];
 const HISTORY_TABLES = ["button_presses", "reactions", "topics", "chats"];
+/** Tables keyed by user and chat: what one user keeps about one chat. */
+const USER_CHAT_TABLES = ["memory_docs", "memory_history", "memory_notices"];
+/** How many earlier versions of a memory document are kept for undo. */
+const MEMORY_VERSIONS = 20;
 
 const DAY = 86_400;
 
@@ -443,6 +477,9 @@ export class Store {
   /** Forget a group entirely: the bot left, or nobody has access any more. */
   async deleteChat(chatId: number): Promise<void> {
     await this.db.batch([
+      ...USER_CHAT_TABLES.map((table) =>
+        this.db.prepare(`DELETE FROM ${table} WHERE chat_id = ?`).bind(chatId),
+      ),
       ...GROUP_TABLES.map((table) =>
         this.db.prepare(`DELETE FROM ${table} WHERE chat_id = ?`).bind(chatId),
       ),
@@ -457,7 +494,7 @@ export class Store {
   /** A group became a supergroup and got a new id; carry everything over. */
   async migrateChat(from: number, to: number): Promise<void> {
     await this.db.batch([
-      ...["grants", "button_presses", "reactions", "topics"].map((table) =>
+      ...["grants", "button_presses", "reactions", "topics", ...USER_CHAT_TABLES].map((table) =>
         this.db
           .prepare(`UPDATE OR IGNORE ${table} SET chat_id = ?2 WHERE chat_id = ?1`)
           .bind(from, to),
@@ -477,7 +514,7 @@ export class Store {
            ON CONFLICT (chat_id) DO NOTHING`,
         )
         .bind(from, to),
-      ...GROUP_TABLES.map((table) =>
+      ...[...GROUP_TABLES, ...USER_CHAT_TABLES].map((table) =>
         this.db.prepare(`DELETE FROM ${table} WHERE chat_id = ?`).bind(from),
       ),
       ...ACCOUNT_TABLES.map((table) =>
@@ -544,6 +581,12 @@ export class Store {
    */
   async revokeGrant(userId: number, chatId: number): Promise<boolean> {
     const results = await this.db.batch([
+      // What the user kept about the group goes with their access to it.
+      ...USER_CHAT_TABLES.map((table) =>
+        this.db
+          .prepare(`DELETE FROM ${table} WHERE user_id = ? AND chat_id = ?`)
+          .bind(userId, chatId),
+      ),
       this.db.prepare("DELETE FROM grants WHERE user_id = ? AND chat_id = ?").bind(userId, chatId),
       ...this.purgeOrphanStatements(chatId),
     ]);
@@ -1137,6 +1180,143 @@ export class Store {
     return (result.meta.changes ?? 0) > 0;
   }
 
+  // --- memory ---------------------------------------------------------------
+
+  getMemory(userId: number, chatId: number): Promise<MemoryDoc | null> {
+    return this.db
+      .prepare("SELECT * FROM memory_docs WHERE user_id = ? AND chat_id = ?")
+      .bind(userId, chatId)
+      .first<MemoryDoc>();
+  }
+
+  async listMemory(
+    userId: number,
+  ): Promise<{ chat_id: number; length: number; updated_at: number }[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT chat_id, length(content) AS length, updated_at FROM memory_docs
+         WHERE user_id = ? ORDER BY updated_at DESC`,
+      )
+      .bind(userId)
+      .all<{ chat_id: number; length: number; updated_at: number }>();
+    return results;
+  }
+
+  /**
+   * Replace a document (null deletes it), keeping what it read before for
+   * undo. Returns the id of that history entry.
+   */
+  async writeMemory(
+    userId: number,
+    chatId: number,
+    content: string | null,
+    by: string | null,
+  ): Promise<number> {
+    const now = nowSeconds();
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `INSERT INTO memory_history (user_id, chat_id, content_before, changed_at, changed_by)
+           VALUES (?1, ?2, (SELECT content FROM memory_docs WHERE user_id = ?1 AND chat_id = ?2), ?3, ?4)
+           RETURNING id`,
+        )
+        .bind(userId, chatId, now, by),
+      content === null
+        ? this.db
+            .prepare("DELETE FROM memory_docs WHERE user_id = ? AND chat_id = ?")
+            .bind(userId, chatId)
+        : this.db
+            .prepare(
+              `INSERT INTO memory_docs (user_id, chat_id, content, updated_at, updated_by)
+               VALUES (?1, ?2, ?3, ?4, ?5)
+               ON CONFLICT (user_id, chat_id) DO UPDATE SET
+                 content = excluded.content,
+                 updated_at = excluded.updated_at,
+                 updated_by = excluded.updated_by`,
+            )
+            .bind(userId, chatId, content, now, by),
+      this.db
+        .prepare(
+          `DELETE FROM memory_history WHERE user_id = ?1 AND chat_id = ?2 AND id NOT IN (
+             SELECT id FROM memory_history WHERE user_id = ?1 AND chat_id = ?2
+             ORDER BY id DESC LIMIT ?3)`,
+        )
+        .bind(userId, chatId, MEMORY_VERSIONS),
+    ]);
+    return (results[0].results[0] as { id: number }).id;
+  }
+
+  getMemoryChange(userId: number, id: number): Promise<MemoryChange | null> {
+    return this.db
+      .prepare("SELECT * FROM memory_history WHERE id = ? AND user_id = ?")
+      .bind(id, userId)
+      .first<MemoryChange>();
+  }
+
+  /** How many changes the document had after history entry `id`. */
+  async memoryChangesAfter(userId: number, chatId: number, id: number): Promise<number> {
+    const row = await this.db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM memory_history WHERE user_id = ? AND chat_id = ? AND id > ?",
+      )
+      .bind(userId, chatId, id)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  /** The user's whole memory, with its history and notices. */
+  async wipeMemory(userId: number): Promise<void> {
+    await this.db.batch(
+      USER_CHAT_TABLES.map((table) =>
+        this.db.prepare(`DELETE FROM ${table} WHERE user_id = ?`).bind(userId),
+      ),
+    );
+  }
+
+  getMemoryNotice(userId: number, chatId: number, client: string): Promise<MemoryNotice | null> {
+    return this.db
+      .prepare("SELECT * FROM memory_notices WHERE user_id = ? AND chat_id = ? AND client = ?")
+      .bind(userId, chatId, client)
+      .first<MemoryNotice>();
+  }
+
+  async setMemoryNotice(notice: MemoryNotice): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO memory_notices (user_id, chat_id, client, message_id, first_history_id, sent_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT (user_id, chat_id, client) DO UPDATE SET
+           message_id = excluded.message_id,
+           first_history_id = excluded.first_history_id,
+           sent_at = excluded.sent_at`,
+      )
+      .bind(
+        notice.user_id,
+        notice.chat_id,
+        notice.client,
+        notice.message_id,
+        notice.first_history_id,
+        notice.sent_at,
+      )
+      .run();
+  }
+
+  /** A notice was acted on: the next change gets a notice of its own. */
+  async dropMemoryNotice(userId: number, messageId: number): Promise<void> {
+    await this.db
+      .prepare("DELETE FROM memory_notices WHERE user_id = ? AND message_id = ?")
+      .bind(userId, messageId)
+      .run();
+  }
+
+  /** Users with any memory, for dropping those no longer allowed. */
+  async memoryUsers(): Promise<number[]> {
+    const { results } = await this.db
+      .prepare("SELECT DISTINCT user_id FROM memory_docs")
+      .all<{ user_id: number }>();
+    return results.map((row) => row.user_id);
+  }
+
   // --- refresh sessions ----------------------------------------------------
 
   /**
@@ -1189,7 +1369,8 @@ export class Store {
   tokenState(userId: number, sessionId: string | null): Promise<TokenState | null> {
     return this.db
       .prepare(
-        `SELECT u.token_version, u.connected_at, u.username, u.first_name, s.revoked AS session_revoked
+        `SELECT u.token_version, u.connected_at, u.username, u.first_name,
+                s.revoked AS session_revoked, s.client_name
          FROM users u
          LEFT JOIN refresh_sessions s ON s.id = ?2 AND s.user_id = u.user_id
          WHERE u.user_id = ?1`,

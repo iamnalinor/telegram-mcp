@@ -6,6 +6,10 @@
  *   m:groups      connected groups, a button each
  *   m:g:<id>      one group: what the assistant sees there, revoke
  *   m:rv:<id>     revoke that group, back to the list
+ *   m:mem         memory: the chats that have one
+ *   m:mv:<id>     one chat's memory (sent as a file when long)
+ *   m:md:<id>     delete it: asks first; m:mdy:<id> does it
+ *   m:mwipe       erase all memory: asks first; m:mwipey does it
  *   m:si          sign-ins, a sign-out button each
  *   m:sx:<id>     sign that one out
  *   m:out         sign out everywhere: asks first
@@ -18,10 +22,11 @@
  */
 
 import { isAllowed } from "../env";
+import { memoryTitle } from "../tools/memory";
 import { TelegramError } from "../telegram/api";
 import type { CallbackQuery, InlineKeyboardMarkup, User } from "../telegram/types";
 import { hasConnected, type BotContext, type WebhookReply } from "./context";
-import { formatDate, texts } from "./texts";
+import { escapeHtml, formatDate, texts } from "./texts";
 
 export interface Screen {
   text: string;
@@ -48,8 +53,8 @@ export async function mainScreen(ctx: BotContext, user: User): Promise<Screen> {
     reply_markup: {
       inline_keyboard: [
         [button(t.buttonGroups, "groups"), button(t.buttonAdd, "add")],
-        [button(t.buttonSignIns, "si"), button(t.buttonPersonal, "personal")],
-        [button(t.buttonHelp, "help")],
+        [button(t.buttonMemory, "mem"), button(t.buttonSignIns, "si")],
+        [button(t.buttonPersonal, "personal"), button(t.buttonHelp, "help")],
       ],
     },
   };
@@ -82,6 +87,73 @@ async function groupsScreen(ctx: BotContext, user: User): Promise<Screen> {
         back,
       ],
     },
+  };
+}
+
+/** The title of a chat whose memory the user may see, or null when it is not theirs. */
+async function memoryChatTitle(
+  ctx: BotContext,
+  user: User,
+  chatId: number,
+): Promise<string | null> {
+  const t = texts(user.language_code);
+  if (chatId === user.id) return t.memoryOfMe;
+  const grant = (await ctx.store.listGrants(user.id)).find((g) => g.chat_id === chatId);
+  return grant ? memoryTitle({ kind: "group", title: grant.title }, t.memoryOfMe) : null;
+}
+
+async function memoryListScreen(ctx: BotContext, user: User): Promise<Screen> {
+  const t = texts(user.language_code);
+  const docs = await ctx.store.listMemory(user.id);
+  const titled = await Promise.all(
+    docs.map(async (doc) => ({ ...doc, title: await memoryChatTitle(ctx, user, doc.chat_id) })),
+  );
+  const shown = titled.filter((doc) => doc.title !== null);
+  return {
+    text: t.memoryListScreen(
+      shown.map((doc) =>
+        t.memoryLine({ chat: doc.title!, size: doc.length, date: formatDate(doc.updated_at) }),
+      ),
+    ),
+    reply_markup: {
+      inline_keyboard: [
+        ...shown.map((doc) => [
+          button(Array.from(doc.title!).slice(0, 60).join(""), `mv:${doc.chat_id}`),
+        ]),
+        ...(shown.length ? [[button(t.buttonWipe, "mwipe")]] : []),
+        [button(t.buttonBack, "main")],
+      ],
+    },
+  };
+}
+
+/** Memory longer than this goes as a file: a message holds 4096 characters. */
+const MEMORY_INLINE = 3500;
+
+async function memoryScreen(
+  ctx: BotContext,
+  user: User,
+  chatId: number,
+  title: string,
+): Promise<Screen> {
+  const t = texts(user.language_code);
+  const doc = await ctx.store.getMemory(user.id, chatId);
+  const back = [button(t.buttonBack, "mem")];
+  if (!doc) return { text: t.memoryNone(title), reply_markup: { inline_keyboard: [back] } };
+  let shown = t.memoryDoc({ chat: title, content: doc.content });
+  if (doc.content.length > MEMORY_INLINE) {
+    await ctx.api.upload(
+      "sendDocument",
+      { chat_id: user.id, disable_notification: true },
+      "document",
+      new Blob([doc.content], { type: "text/markdown" }),
+      `memory-${chatId}.md`,
+    );
+    shown = t.memoryAsFile(title);
+  }
+  return {
+    text: shown,
+    reply_markup: { inline_keyboard: [[button(t.buttonDelete, `md:${chatId}`)], back] },
   };
 }
 
@@ -141,6 +213,43 @@ async function render(
 
   if (name === "groups") return groupsScreen(ctx, user);
   if (name === "si") return signInsScreen(ctx, user);
+  if (name === "mem") return memoryListScreen(ctx, user);
+  if (name === "mwipe") {
+    return {
+      text: t.confirmWipe,
+      reply_markup: {
+        inline_keyboard: [[button(t.buttonConfirmWipe, "mwipey")], [button(t.buttonCancel, "mem")]],
+      },
+    };
+  }
+  if (name === "mwipey") {
+    await ctx.store.wipeMemory(user.id);
+    return { ...(await memoryListScreen(ctx, user)), note: t.memoryWiped };
+  }
+  const memory = /^(mv|md|mdy):(-?\d+)$/.exec(name);
+  if (memory) {
+    const chatId = Number(memory[2]);
+    const title = await memoryChatTitle(ctx, user, chatId);
+    if (title === null) return { ...(await memoryListScreen(ctx, user)), note: t.menuGone };
+    if (memory[1] === "md") {
+      return {
+        text: t.confirmDeleteMemory(title),
+        reply_markup: {
+          inline_keyboard: [
+            [button(t.buttonConfirmDelete, `mdy:${chatId}`)],
+            [button(t.buttonCancel, `mv:${chatId}`)],
+          ],
+        },
+      };
+    }
+    if (memory[1] === "mdy") {
+      if (await ctx.store.getMemory(user.id, chatId)) {
+        await ctx.store.writeMemory(user.id, chatId, null, null);
+      }
+      return { ...(await memoryListScreen(ctx, user)), note: t.memoryDeleted };
+    }
+    return memoryScreen(ctx, user, chatId, title);
+  }
   if (name === "out") {
     return {
       text: t.confirmSignOutAll,
@@ -196,6 +305,7 @@ async function render(
       }),
       reply_markup: {
         inline_keyboard: [
+          [button(t.buttonChatMemory, `mv:${chatId}`)],
           [button(t.buttonRevoke, `rv:${chatId}`)],
           [button(t.buttonBack, "groups")],
         ],
@@ -203,6 +313,59 @@ async function render(
     };
   }
   return mainScreen(ctx, user);
+}
+
+/**
+ * Undo from a memory notice: `mu:<first>:<last>` covers the changes from
+ * history entry `first` to `last`; `mu!:<first>` confirms dropping what came
+ * after. Undoing is a change of its own, so it can be undone from the menu's
+ * history in turn — but it sends no notice: the user made it.
+ */
+export async function handleMemoryUndo(
+  ctx: BotContext,
+  query: CallbackQuery,
+  first: number,
+  last: number | null,
+): Promise<WebhookReply> {
+  const t = texts(query.from.language_code);
+  const answer = (text: string): WebhookReply => ({
+    method: "answerCallbackQuery",
+    callback_query_id: query.id,
+    text,
+  });
+  const message = query.message;
+  if (!message || message.chat.id !== query.from.id || !isAllowed(ctx.config, query.from.id)) {
+    return answer(t.alreadyAnswered);
+  }
+  const change = await ctx.store.getMemoryChange(query.from.id, first);
+  if (!change) return answer(t.undoGone);
+
+  const edit = (text: string, reply_markup: object) =>
+    ctx.api
+      .call("editMessageText", {
+        chat_id: message.chat.id,
+        message_id: message.message_id,
+        text,
+        parse_mode: "HTML",
+        reply_markup,
+      })
+      .catch(() => undefined);
+
+  if (last !== null) {
+    const later = await ctx.store.memoryChangesAfter(query.from.id, change.chat_id, last);
+    if (later > 0) {
+      await edit(`${message.text ? escapeHtml(message.text) : ""}\n\n${t.undoConfirm(later)}`, {
+        inline_keyboard: [[{ text: t.buttonUndoAnyway, callback_data: `mu!:${first}` }]],
+      });
+      return answer(t.undoConfirm(later));
+    }
+  }
+  await ctx.store.writeMemory(query.from.id, change.chat_id, change.content_before, null);
+  await ctx.store.dropMemoryNotice(query.from.id, message.message_id);
+  await edit(`${message.text ? escapeHtml(message.text) : ""}\n\n↩ ${t.undone}`, {
+    inline_keyboard: [],
+  });
+  return answer(t.undone);
 }
 
 /** A press on a menu button: swap the screen in place, or send it anew if that fails. */

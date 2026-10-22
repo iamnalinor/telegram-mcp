@@ -654,7 +654,7 @@ async function stillValid(
   deps: OAuthDeps,
   blob: TokenBlob,
   kind: "access" | "refresh",
-): Promise<{ username: string | null; name: string | null } | null> {
+): Promise<{ username: string | null; name: string | null; client: string | null } | null> {
   if (!isAllowed(deps.config, blob.u)) return null;
   const state = await deps.store.tokenState(blob.u, blob.s ?? null);
   // Sessions from before connected_at existed get it on their first call.
@@ -662,7 +662,11 @@ async function stillValid(
   if ((state?.token_version ?? 0) !== blob.v) return null;
   if (blob.s && state?.session_revoked === 1) return null;
   if (blob.s && kind === "access" && state?.session_revoked !== 0) return null;
-  return { username: state?.username ?? null, name: state?.first_name ?? null };
+  return {
+    username: state?.username ?? null,
+    name: state?.first_name ?? null,
+    client: state?.client_name ?? null,
+  };
 }
 
 async function handleToken(request: Request, deps: OAuthDeps): Promise<Response> {
@@ -784,6 +788,8 @@ export interface McpAuth {
   userId: number;
   username: string | null;
   name: string | null;
+  /** Who the sign-in went to ("Claude", "ChatGPT"…), when known. */
+  client: string | null;
 }
 
 /** Bearer gate for the MCP endpoint: the verified user, or a ready 401. */
