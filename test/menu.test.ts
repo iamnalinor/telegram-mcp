@@ -78,17 +78,32 @@ describe("menu", () => {
     const screen = await press(ALICE, "m:add");
     const link = buttons(screen!.reply_markup).find((b) => b.url);
     expect(link!.url).toBe("https://t.me/test_mcp_bot?startgroup=connect");
-    expect(String(screen!.text)).toContain("/connect");
+    expect(String(screen!.text)).toContain("/connect@test_mcp_bot");
   });
 
-  it("refuses a group the presser has no access to, without editing", async () => {
+  it("shows the list, not the group, to someone without access to it", async () => {
     await h.addBot(TEAM, ALICE);
     h.markConnected(BOB);
-    await press(BOB, `m:g:${TEAM.id}`);
+    const screen = await press(BOB, `m:g:${TEAM.id}`);
+    expect(String(screen!.text)).not.toContain("Team chat");
     await press(BOB, `m:rv:${TEAM.id}`, "q2");
-    expect(h.telegram.called("editMessageText")).toHaveLength(0);
     const grants = h.db.raw.query("SELECT COUNT(*) AS n FROM grants").get() as { n: number };
     expect(grants.n).toBe(1);
+  });
+
+  it("ignores menu presses on messages outside the presser's private chat", async () => {
+    h.markConnected(ALICE, BOB);
+    for (const chat of [TEAM, dm(BOB)]) {
+      await h.update({
+        callback_query: {
+          id: "x",
+          from: { ...ALICE, is_bot: false },
+          data: "m:groups",
+          message: { message_id: 5, date: 1, chat },
+        },
+      });
+    }
+    expect(h.telegram.called("editMessageText")).toHaveLength(0);
   });
 
   it("refuses presses from users who may not use the bot", async () => {

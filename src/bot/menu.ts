@@ -87,8 +87,12 @@ function staticScreen(text: string, back: string, user: User): Screen {
   };
 }
 
-/** The screen for `name`, or a short answer to show instead when it is not this user's. */
-async function render(ctx: BotContext, user: User, name: string): Promise<Screen | string> {
+/** The screen for `name`, and a short note to show with it. */
+async function render(
+  ctx: BotContext,
+  user: User,
+  name: string,
+): Promise<Screen & { note?: string }> {
   const t = texts(user.language_code);
   const connected = await hasConnected(ctx, user.id);
   if (name === "help") {
@@ -104,7 +108,7 @@ async function render(ctx: BotContext, user: User, name: string): Promise<Screen
   if (name === "personal") return staticScreen(t.personalScreen, "main", user);
   if (name === "add") {
     return {
-      text: t.addScreen,
+      text: t.addScreen(ctx.bot.username),
       reply_markup: {
         inline_keyboard: [
           [{ text: t.buttonAddToGroup, url: addToGroupUrl(ctx) }],
@@ -118,10 +122,11 @@ async function render(ctx: BotContext, user: User, name: string): Promise<Screen
   if (group) {
     const chatId = Number(group[2]);
     const grant = (await ctx.store.listGrants(user.id)).find((g) => g.chat_id === chatId);
-    if (!grant) return t.menuGone;
+    // Gone already (left, or revoked from /groups): the list, not a stale screen.
+    if (!grant) return { ...(await groupsScreen(ctx, user)), note: t.menuGone };
     if (group[1] === "rv") {
       await ctx.store.revokeGrant(user.id, chatId);
-      return groupsScreen(ctx, user);
+      return { ...(await groupsScreen(ctx, user)), note: t.revoked };
     }
     return {
       text: t.groupScreen({
@@ -161,7 +166,6 @@ export async function handleMenu(
   }
 
   const screen = await render(ctx, query.from, name);
-  if (typeof screen === "string") return answer(screen);
 
   const body = {
     text: screen.text,
@@ -179,8 +183,10 @@ export async function handleMenu(
     if (!(error instanceof TelegramError)) throw error;
     // Pressing the same button twice changes nothing; Telegram calls that an error.
     if (!/message is not modified/i.test(error.description)) {
-      await ctx.api.call("sendMessage", { chat_id: message.chat.id, ...body });
+      await ctx.api
+        .call("sendMessage", { chat_id: message.chat.id, ...body })
+        .catch(() => undefined);
     }
   }
-  return answer();
+  return answer(screen.note);
 }

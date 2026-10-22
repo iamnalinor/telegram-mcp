@@ -33,10 +33,12 @@ const en = {
     ].join("\n"),
   personalScreen:
     "<b>Personal chats</b>\n\nTo let your assistant read your own chats with other people, add me in Settings → Telegram Business → Chatbots. Whether it may also reply for you is up to the permissions you give me there.",
-  addScreen:
-    "<b>Connect a group</b>\n\nAdd me with the button below — whoever adds me gets access right away.\n\nAlready in the group? Send /connect there.",
-  connectInPrivate:
-    "Add me to a group with the button below, or send /connect in a group I'm already in.",
+  // Spelled with the bot's name: with privacy mode on and other bots in the
+  // group, a bare /connect may never reach this one.
+  addScreen: (bot: string) =>
+    `<b>Connect a group</b>\n\nAdd me with the button below — whoever adds me gets access right away.\n\nAlready in the group? Send <code>/connect@${bot}</code> there.`,
+  connectInPrivate: (bot: string) =>
+    `Add me to a group with the button below, or send <code>/connect@${bot}</code> in a group I'm already in.`,
   groupScreen: (p: { title: string; full: boolean; since: string }) =>
     `<b>${escapeHtml(p.title)}</b>\n\n` +
     (p.full
@@ -71,8 +73,7 @@ const en = {
     (p.privacyOn && !p.admin
       ? "\n\n⚠️ Privacy mode is on: I only see commands, mentions and replies. Make me an admin, or turn privacy off in @BotFather and re-add me."
       : ""),
-  noGroups:
-    "No groups connected. Add me to a group, or send /connect here or in a group I'm already in.",
+  noGroups: "No groups connected. Add me to a group, or send /connect in a group I'm already in.",
   groupsHeader: "<b>Connected groups</b>",
   groupLine: (p: { title: string; full: boolean; since: string }) =>
     `• <b>${escapeHtml(p.title)}</b> — ${p.full ? "full stored history" : `from ${p.since}`}`,
@@ -140,10 +141,10 @@ const ru: Texts = {
     ].join("\n"),
   personalScreen:
     "<b>Личные переписки</b>\n\nЧтобы ассистент читал твои переписки с другими людьми, добавь меня в Настройки → Telegram для бизнеса → Чат-боты. Может ли он ещё и отвечать за тебя — решают права, которые ты дашь мне там.",
-  addScreen:
-    "<b>Подключить группу</b>\n\nДобавь меня кнопкой ниже — тот, кто добавляет, сразу получает доступ.\n\nЯ уже в группе? Отправь /connect прямо там.",
-  connectInPrivate:
-    "Добавь меня в группу кнопкой ниже или отправь /connect в группе, где я уже есть.",
+  addScreen: (bot) =>
+    `<b>Подключить группу</b>\n\nДобавь меня кнопкой ниже — тот, кто добавляет, сразу получает доступ.\n\nЯ уже в группе? Отправь <code>/connect@${bot}</code> прямо там.`,
+  connectInPrivate: (bot) =>
+    `Добавь меня в группу кнопкой ниже или отправь <code>/connect@${bot}</code> в группе, где я уже есть.`,
   groupScreen: (p) =>
     `<b>${escapeHtml(p.title)}</b>\n\n` +
     (p.full
@@ -179,7 +180,7 @@ const ru: Texts = {
       ? "\n\n⚠️ Включён privacy mode: я вижу только команды, упоминания и ответы. Сделай меня админом или выключи privacy в @BotFather и добавь меня заново."
       : ""),
   noGroups:
-    "Нет подключённых групп. Добавь меня в группу или отправь /connect здесь или в группе, где я уже есть.",
+    "Нет подключённых групп. Добавь меня в группу или отправь /connect в группе, где я уже есть.",
   groupsHeader: "<b>Подключённые группы</b>",
   groupLine: (p) =>
     `• <b>${escapeHtml(p.title)}</b> — ${p.full ? "вся сохранённая история" : `с ${p.since}`}`,

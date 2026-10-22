@@ -80,7 +80,7 @@ export async function handleCommand(
     case "connect":
       if (!(await hasConnected(ctx, user.id))) return replyTo(message, t.connectFirst);
       if (!isPrivate) return connectHere(ctx, message, user);
-      return replyTo(message, t.connectInPrivate, {
+      return replyTo(message, t.connectInPrivate(ctx.bot.username), {
         reply_markup: {
           inline_keyboard: [[{ text: t.buttonAddToGroup, url: addToGroupUrl(ctx) }]],
         },
