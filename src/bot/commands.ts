@@ -1,8 +1,8 @@
 /**
  * Bot commands and button presses: the bot's own settings UI.
  *
- *   /start, /help       what this is, and the sender's Telegram ID
- *   /connect            in a group: link the sender; in DM: pick a group
+ *   /start, /help       the menu (src/bot/menu.ts)
+ *   /connect            in a group: link the sender; in DM: how to do that
  *   /groups             connected groups, each with a Revoke button
  *   /disconnect         sign out every assistant connected with this account
  *
@@ -14,32 +14,18 @@ import { isAllowed } from "../env";
 import { TelegramError } from "../telegram/api";
 import {
   displayName,
-  isMember,
   type CallbackQuery,
   type ChatFullInfo,
-  type ChatMember,
   type InlineKeyboardMarkup,
   type Message,
   type User,
 } from "../telegram/types";
 import { isChatGoneError } from "../access";
 import { BOT_ACCOUNT } from "../store";
-import type { BotContext, WebhookReply } from "./context";
+import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { topicOf, type Command } from "./extract";
+import { addToGroupUrl, mainScreen } from "./menu";
 import { formatDate, texts } from "./texts";
-
-/**
- * Only someone who has signed an assistant in to this deployment may link
- * groups to it. Otherwise anyone could make the bot store their groups — on
- * the deployer's quota — for an assistant that does not exist.
- */
-export async function hasConnected(ctx: BotContext, userId: number): Promise<boolean> {
-  const row = await ctx.store.getUser(userId);
-  return row?.connected_at !== null && row?.connected_at !== undefined;
-}
-
-/** request_id for the KeyboardButtonRequestChat in /connect. */
-const PICK_GROUP_REQUEST = 1;
 
 /** Answer in the same chat, in the same forum topic, as a reply in groups. */
 function replyTo(message: Message, text: string, extra: object = {}): WebhookReply {
@@ -80,44 +66,23 @@ export async function handleCommand(
 
   switch (command.name) {
     case "start":
-    case "help":
+    case "help": {
       await ctx.store.upsertUser({
         user_id: user.id,
         username: user.username,
         first_name: user.first_name,
         language: user.language_code,
       });
-      return replyTo(
-        message,
-        t.start({
-          id: user.id,
-          retention: ctx.config.retentionDays,
-          privacyOn: !ctx.bot.canReadAll,
-        }),
-      );
+      const screen = await mainScreen(ctx, user);
+      return replyTo(message, screen.text, { reply_markup: screen.reply_markup });
+    }
 
     case "connect":
       if (!(await hasConnected(ctx, user.id))) return replyTo(message, t.connectFirst);
       if (!isPrivate) return connectHere(ctx, message, user);
-      if (command.args) return connectByName(ctx, message, user, command.args);
-      return replyTo(message, t.pickGroup, {
+      return replyTo(message, t.connectInPrivate(ctx.bot.username), {
         reply_markup: {
-          keyboard: [
-            [
-              {
-                text: t.pickButton,
-                request_chat: {
-                  request_id: PICK_GROUP_REQUEST,
-                  chat_is_channel: false,
-                  bot_is_member: true,
-                  request_title: true,
-                  request_username: true,
-                },
-              },
-            ],
-          ],
-          one_time_keyboard: true,
-          resize_keyboard: true,
+          inline_keyboard: [[{ text: t.buttonAddToGroup, url: addToGroupUrl(ctx) }]],
         },
       });
 
@@ -133,17 +98,13 @@ export async function handleCommand(
   }
 }
 
-/** The answer to the /connect group picker. */
-export async function handleChatShared(
-  ctx: BotContext,
-  message: Message,
-): Promise<WebhookReply | null> {
+/** A press on the group picker keyboard older versions sent: put it away. */
+export function handleChatShared(message: Message): WebhookReply | null {
   const user = message.from;
-  const shared = message.chat_shared;
-  if (!user || !shared || shared.request_id !== PICK_GROUP_REQUEST) return null;
-  if (!isAllowed(ctx.config, user.id)) return notAllowed(message, user);
-  const text = await connectChat(ctx, user, shared.chat_id);
-  return replyTo(message, text, { reply_markup: { remove_keyboard: true } });
+  if (!user || !message.chat_shared) return null;
+  return replyTo(message, texts(user.language_code).useMenu, {
+    reply_markup: { remove_keyboard: true },
+  });
 }
 
 /** /connect sent inside the group: the sender is a member by definition. */
@@ -154,54 +115,21 @@ async function connectHere(
 ): Promise<WebhookReply | null> {
   // An anonymous admin posts as the group; there is no person to link.
   if (message.sender_chat) return null;
-  const text = await connectChat(ctx, user, message.chat.id, { inGroup: true });
+  const text = await connectChat(ctx, user, message.chat.id);
   return replyTo(message, text);
 }
 
-/** /connect @username or /connect https://t.me/name in DM. */
-async function connectByName(
-  ctx: BotContext,
-  message: Message,
-  user: User,
-  args: string,
-): Promise<WebhookReply> {
-  const t = texts(user.language_code);
-  const match = /^(?:https?:\/\/)?(?:t\.me\/|@)?([a-zA-Z][a-zA-Z0-9_]{3,31})\/?$/.exec(args.trim());
-  if (!match) return replyTo(message, t.cannotResolve(args));
-
-  let chat: ChatFullInfo;
-  try {
-    chat = await ctx.api.call<ChatFullInfo>("getChat", { chat_id: `@${match[1]}` });
-  } catch (error) {
-    if (error instanceof TelegramError) return replyTo(message, t.cannotResolve(args));
-    throw error;
-  }
-  return replyTo(message, await connectChat(ctx, user, chat.id));
-}
-
 /**
- * Grant `user` access to a group, after checking they are in it and deciding
- * how much of the stored history they may see: all of it only when the group
+ * Grant `user` access to a group they just wrote /connect in, deciding how
+ * much of the stored history they may see: all of it only when the group
  * shows history to new members, which only an admin bot can tell.
  */
-async function connectChat(
-  ctx: BotContext,
-  user: User,
-  chatId: number,
-  options: { inGroup?: boolean } = {},
-): Promise<string> {
+async function connectChat(ctx: BotContext, user: User, chatId: number): Promise<string> {
   const t = texts(user.language_code);
   if (!(await hasConnected(ctx, user.id))) return t.connectFirst;
 
   let chat: ChatFullInfo;
   try {
-    if (!options.inGroup) {
-      const member = await ctx.api.call<ChatMember>("getChatMember", {
-        chat_id: chatId,
-        user_id: user.id,
-      });
-      if (!isMember(member)) return t.notMember;
-    }
     chat = await ctx.api.call<ChatFullInfo>("getChat", { chat_id: chatId });
   } catch (error) {
     if (error instanceof TelegramError) {
@@ -238,7 +166,7 @@ async function connectChat(
     title: chat.title ?? String(chat.id),
     full: grant.visible_from === 0,
     retention: ctx.config.retentionDays,
-    name: options.inGroup ? displayName(user) : undefined,
+    name: displayName(user),
   });
 }
 

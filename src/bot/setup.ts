@@ -28,29 +28,17 @@ const ALLOWED_UPDATES = [
 
 export const WEBHOOK_PATH = "/telegram";
 
-const PRIVATE_COMMANDS = [
-  { command: "start", description: "What this bot does, and your Telegram ID" },
-  { command: "connect", description: "Give your assistant access to a group" },
-  { command: "groups", description: "See and revoke group access" },
-  { command: "disconnect", description: "Sign out every connected assistant" },
-];
+// Only /start is advertised: the rest lives in its menu. Groups get no list at
+// all — /connect still works there, it just does not crowd the suggestions.
+const PRIVATE_COMMANDS = [{ command: "start", description: "Menu and your Telegram ID" }];
 
-const PRIVATE_COMMANDS_RU = [
-  { command: "start", description: "Что умеет бот, и твой Telegram ID" },
-  { command: "connect", description: "Дать ассистенту доступ к группе" },
-  { command: "groups", description: "Посмотреть и отозвать доступ к группам" },
-  { command: "disconnect", description: "Отключить все ассистенты" },
-];
-
-const GROUP_COMMANDS = [
-  { command: "connect", description: "Link your own assistant to this group" },
-];
+const PRIVATE_COMMANDS_RU = [{ command: "start", description: "Меню и твой Telegram ID" }];
 
 /** The last fingerprint this isolate registered, so a warm isolate skips even the D1 read. */
 let registered: string | undefined;
 
 async function fingerprint(config: Config, url: string): Promise<string> {
-  const material = [url, config.webhookSecret, ALLOWED_UPDATES.join(","), "commands-v1"].join("\n");
+  const material = [url, config.webhookSecret, ALLOWED_UPDATES.join(","), "commands-v2"].join("\n");
   return bytesToBase64Url(await sha256(material));
 }
 
@@ -87,10 +75,7 @@ export async function ensureWebhook(
         scope: { type: "all_private_chats" },
         language_code: "ru",
       }),
-      api.call("setMyCommands", {
-        commands: GROUP_COMMANDS,
-        scope: { type: "all_group_chats" },
-      }),
+      api.call("deleteMyCommands", { scope: { type: "all_group_chats" } }),
     ]);
     await store.setMeta("webhook_fingerprint", wanted);
   }

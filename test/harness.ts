@@ -54,6 +54,7 @@ class FakeTelegram {
     for (const method of [
       "setWebhook",
       "setMyCommands",
+      "deleteMyCommands",
       "sendChatAction",
       "leaveChat",
       "pinChatMessage",
@@ -186,7 +187,7 @@ class FakeTelegram {
   }
 }
 
-class TgError extends Error {
+export class TgError extends Error {
   constructor(
     readonly code: number,
     readonly description: string,

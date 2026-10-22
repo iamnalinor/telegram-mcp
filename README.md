@@ -73,7 +73,7 @@ bot's webhook and shows what is left to do:
 By default anyone may connect their own Telegram account to your deployment. Each person still sees
 only their own chat and groups, but to keep it to yourself:
 
-1. Send `/start` to your bot. It replies with **your Telegram ID** (or ask
+1. Send `/start` to your bot. Its menu shows **your Telegram ID** (or ask
    [@userinfobot](https://t.me/userinfobot)).
 2. Set `ALLOWED_USER_IDS` to that number (comma-separate several):
    `bunx wrangler secret put ALLOWED_USER_IDS`, or in the Cloudflare dashboard → Worker → Settings
@@ -112,25 +112,27 @@ codex mcp login telegram
 
 ## Groups
 
-- **Adding the bot** to a group gives you (whoever added it) access straight away.
-- **Anyone else** in the group links their own assistant with `/connect` in the group, or `/connect`
-  in a private chat with the bot, which shows a group picker. A public `@groupname` works too.
+- **Adding the bot** to a group gives you (whoever added it) access straight away. The menu's
+  **Connect a group** button opens Telegram's own picker for that.
+- **Anyone else** in the group links their own assistant by sending `/connect` in the group.
 - **Two people, one group**: access is per person. Each connects and revokes on their own; messages
   are stored once.
 - **History for later connectors**: someone who connects after the bot joined sees the stored
   history only if the group shows history to new members, which the bot can only check as an admin.
   Otherwise they see messages from the moment they connect, and the bot says which applies.
-- **`/groups`** in the private chat lists your groups, each with a **Revoke** button. When the last
+- **Groups** in the menu (or `/groups`) lists your groups; revoke any of them there. When the last
   person revokes a group, its stored history is deleted.
-- **Leaving** a group drops your access: the bot re-checks membership at least hourly before reading
-  a group.
+- **Leaving** a group drops your access: the bot notices the leave when Telegram tells it (always as
+  an admin, otherwise unless the group hides join and leave messages), and re-checks membership at
+  least hourly before reading a group anyway.
 - **Forum topics** are kept apart: messages carry their topic, `list_chats` names the topics, and
   Claude can read or post within one.
 - **Replies**: when someone replies to a message, the bot keeps the original too (even one older than
   the bot), so "@bot what about this?" under a message shows Claude both.
 
-Bot commands: `/start` (what this is, and your Telegram ID), `/connect`, `/groups`,
-`/disconnect` (signs out every assistant connected with your account).
+Bot commands: `/start` opens the menu (groups, connecting a group, personal chats, how it works,
+your Telegram ID). `/connect` in a group, `/groups` and `/disconnect` (signs out every assistant
+connected with your account) work too; only `/start` is listed in Telegram's command suggestions.
 
 ## Personal chats
 

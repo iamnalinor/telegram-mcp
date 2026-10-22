@@ -80,6 +80,8 @@ export interface Message {
   edit_date?: number;
   chat: Chat;
   forward_origin?: MessageOrigin;
+  /** Service message: a member left or was removed. */
+  left_chat_member?: User;
   reply_to_message?: Message;
   /** The part of the replied-to message the sender highlighted. */
   quote?: { text: string };

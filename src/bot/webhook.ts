@@ -33,16 +33,12 @@ import {
   type Message,
   type MessageReactionUpdated,
   type Update,
+  type User,
 } from "../telegram/types";
 import { BOT_ACCOUNT, type Guard } from "../store";
-import type { BotContext, WebhookReply } from "./context";
-import {
-  handleAssistantButton,
-  handleChatShared,
-  handleCommand,
-  handleRevoke,
-  hasConnected,
-} from "./commands";
+import { hasConnected, type BotContext, type WebhookReply } from "./context";
+import { handleAssistantButton, handleChatShared, handleCommand, handleRevoke } from "./commands";
+import { handleMenu } from "./menu";
 import { parseCommand, realReply, toStored, topicName, topicOf } from "./extract";
 import { texts } from "./texts";
 
@@ -122,7 +118,11 @@ async function onMessage(
   }
 
   if (edited) return null;
-  if (message.chat_shared) return handleChatShared(ctx, message);
+  if (message.chat_shared) return handleChatShared(message);
+  if (message.left_chat_member) {
+    await onMemberLeft(ctx, message.chat.id, message.left_chat_member);
+    return null;
+  }
 
   const command = parseCommand(message, ctx.bot);
   if (command) {
@@ -230,9 +230,18 @@ async function onChatMember(ctx: BotContext, update: ChatMemberUpdated): Promise
     (status === "restricted" && update.new_chat_member.is_member === false);
   if (!left) return;
 
-  const userId = update.new_chat_member.user.id;
-  if (!(await ctx.store.getGrant(userId, update.chat.id))) return;
-  await ctx.store.revokeGrant(userId, update.chat.id);
+  await onMemberLeft(ctx, update.chat.id, update.new_chat_member.user);
+}
+
+/**
+ * Someone left or was removed: their access to the group goes with them. The
+ * bot itself leaving is my_chat_member's business. Reached through chat_member
+ * when the bot is an admin, and through the service message when it is not.
+ */
+async function onMemberLeft(ctx: BotContext, chatId: number, user: User): Promise<void> {
+  if (user.id === ctx.bot.id) return;
+  if (!(await ctx.store.getGrant(user.id, chatId))) return;
+  await ctx.store.revokeGrant(user.id, chatId);
 }
 
 async function onCallback(ctx: BotContext, query: CallbackQuery): Promise<WebhookReply | null> {
@@ -251,6 +260,9 @@ async function onCallback(ctx: BotContext, query: CallbackQuery): Promise<Webhoo
     }
     return handleRevoke(ctx, query, Number(revoke[1]));
   }
+
+  const menu = /^m:([\w:-]{1,40})$/.exec(data);
+  if (menu) return handleMenu(ctx, query, menu[1]);
 
   const press = /^cb:(\d+)\.(\d+)$/.exec(data);
   if (press) return handleAssistantButton(ctx, query, Number(press[1]), Number(press[2]));

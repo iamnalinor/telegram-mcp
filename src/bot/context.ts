@@ -21,3 +21,13 @@ export interface BotContext {
  * result is never seen, so anything whose outcome matters goes through fetch.
  */
 export type WebhookReply = { method: string } & Record<string, unknown>;
+
+/**
+ * Only someone who has signed an assistant in to this deployment may link
+ * groups to it. Otherwise anyone could make the bot store their groups — on
+ * the deployer's quota — for an assistant that does not exist.
+ */
+export async function hasConnected(ctx: BotContext, userId: number): Promise<boolean> {
+  const row = await ctx.store.getUser(userId);
+  return row?.connected_at !== null && row?.connected_at !== undefined;
+}
