@@ -155,6 +155,9 @@ describe("redirects", () => {
     expect(allowedRedirect("https://sub.claude.ai/api/mcp/auth_callback")).toBe(false);
     expect(allowedRedirect("https://chat.openai.com/x")).toBe(false);
     expect(allowedRedirect("https://claude.ai/__proto__")).toBe(false);
+    // Only the exact spelling: what is checked is what gets stored and redirected to.
+    expect(allowedRedirect("https://CLAUDE.ai/api/mcp/auth_callback")).toBe(false);
+    expect(allowedRedirect("https://claude.ai:443/api/mcp/auth_callback")).toBe(false);
     expect(allowedRedirect("https://claude.ai.evil.com/x")).toBe(false);
     expect(allowedRedirect("http://claude.ai/x")).toBe(false);
     expect(allowedRedirect("javascript:alert(1)")).toBe(false);

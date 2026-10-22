@@ -47,8 +47,12 @@ const STATE_TTL = 15 * 60;
 const CODE_TTL = 5 * 60;
 const ACCESS_TTL = 24 * 60 * 60;
 const REFRESH_TTL = 90 * 24 * 60 * 60;
-/** How long a just-retired refresh token still gets the current one back. */
-const ROTATION_GRACE = 60;
+/**
+ * How long a just-retired refresh token still gets the current one back: a
+ * retry after a lost response, or two refreshes at once. Only while the
+ * newer token has not been used itself.
+ */
+const ROTATION_GRACE = 10 * 60;
 
 /**
  * The exact callbacks of Claude and ChatGPT. Any other page on those sites —
@@ -82,6 +86,8 @@ interface StateBlob {
   c: string; // PKCE challenge
   /** SHA-256 of the client_id the flow started with. */
   cid: string;
+  /** Names the cookie the consent page set, so only that browser can finish the flow. */
+  n: string;
 }
 interface CodeBlob extends StateBlob {
   u: number;
@@ -117,7 +123,9 @@ function publicMcpUrl(request: Request): URL {
 
 /**
  * Who a code for `target` goes to — "Claude", "ChatGPT", or an app on this
- * computer — or null when codes may not go there at all.
+ * computer — or null when codes may not go there at all. Callbacks must match
+ * exactly as written, so the string stored and redirected to is the one
+ * checked.
  */
 function redirectOwner(target: string): string | null {
   let url: URL;
@@ -128,10 +136,10 @@ function redirectOwner(target: string): string | null {
   }
   if (LOOPBACK.includes(url.hostname)) {
     return url.protocol === "http:" || url.protocol === "https:"
-      ? `An app on this computer (${url.host})`
+      ? `an app on this computer (${url.host})`
       : null;
   }
-  return Object.hasOwn(CALLBACKS, url.href) ? CALLBACKS[url.href] : null;
+  return Object.hasOwn(CALLBACKS, target) ? CALLBACKS[target] : null;
 }
 
 /** Codes may only go to Claude's or ChatGPT's own callback, or to loopback. */
@@ -325,6 +333,7 @@ async function handleAuthorize(request: Request, deps: OAuthDeps): Promise<Respo
     return back("invalid_request");
   }
 
+  const nonce = randomId();
   const state = await sign<StateBlob>(
     deps.config.signingKey,
     "state",
@@ -333,14 +342,18 @@ async function handleAuthorize(request: Request, deps: OAuthDeps): Promise<Respo
       s: params.get("state") ?? undefined,
       c: challenge,
       cid: await sha256Base64Url(clientId),
+      n: nonce,
     },
     STATE_TTL,
   );
-  return consentPage(
+  const response = consentPage(
     deps,
     redirectUri,
     telegramLoginUrl(deps.config, publicOrigin(request), state),
+    back("access_denied").headers.get("location")!,
   );
+  response.headers.append("set-cookie", consentCookie(nonce, STATE_TTL));
+  return response;
 }
 
 /**
@@ -349,19 +362,43 @@ async function handleAuthorize(request: Request, deps: OAuthDeps): Promise<Respo
  * "Accept" on Telegram's page, which names the bot but not who gets it. The
  * assistant is named after where the code goes, not the client's own name,
  * which anyone registering a client may choose.
+ *
+ * The page also sets a cookie the return from Telegram must carry, so the
+ * Telegram link on it cannot be copied and sent to someone else: their
+ * browser never saw this page.
  */
-function consentPage(deps: OAuthDeps, redirectUri: string, telegramUrl: string): Response {
+function consentPage(
+  deps: OAuthDeps,
+  redirectUri: string,
+  telegramUrl: string,
+  cancelUrl: string,
+): Response {
   const owner = escapeHtml(redirectOwner(redirectUri) ?? redirectUri);
+  const Owner = owner.charAt(0).toUpperCase() + owner.slice(1);
   const bot = escapeHtml(deps.botUsername);
   return page(
     "Connect Telegram",
     `<h1>Connect ${owner} to @${bot}?</h1>
-<p>${owner} will read the messages @${bot} receives — your private chat with it and the groups you
+<p>${Owner} will read the messages @${bot} receives — your private chat with it and the groups you
 connect — and send messages as the bot.</p>
 <p>Continue only if you started connecting it yourself, just now.</p>
 <a class="button" id="continue" href="${escapeHtml(telegramUrl)}">Continue with Telegram</a>
+<p><a id="cancel" href="${escapeHtml(cancelUrl)}">Cancel</a></p>
 <footer><a href="https://t.me/${bot}">@${bot}</a></footer>`,
   );
+}
+
+/**
+ * One cookie per flow, so two connections started side by side do not clash.
+ * Lax still rides along on Telegram's top-level redirect back.
+ */
+function consentCookie(nonce: string, maxAge: number): string {
+  return `__Host-tg-${nonce}=1; Path=/; Max-Age=${maxAge}; Secure; HttpOnly; SameSite=Lax`;
+}
+
+function hasConsentCookie(request: Request, nonce: string): boolean {
+  const cookies = (request.headers.get("cookie") ?? "").split(";").map((part) => part.trim());
+  return cookies.includes(`__Host-tg-${nonce}=1`);
 }
 
 /**
@@ -378,6 +415,13 @@ async function handleTelegramReturn(request: Request, deps: OAuthDeps): Promise<
   if (!state) {
     return setupError("This sign-in link has expired. Start connecting again from your assistant.");
   }
+  if (!hasConsentCookie(request, state.n)) {
+    return setupError(
+      "This sign-in was not started in this browser. Start connecting from your assistant here.",
+      403,
+    );
+  }
+  const finished = { "set-cookie": consentCookie(state.n, 0) };
 
   if (request.method === "POST") {
     let login: Record<string, unknown> | null = null;
@@ -391,7 +435,7 @@ async function handleTelegramReturn(request: Request, deps: OAuthDeps): Promise<
     }
     const outcome = await completeLogin(deps, state, login);
     return typeof outcome === "string"
-      ? jsonResponse({ redirect: outcome })
+      ? jsonResponse({ redirect: outcome }, 200, finished)
       : jsonResponse({ error: outcome.error }, 400);
   }
 
@@ -399,7 +443,7 @@ async function handleTelegramReturn(request: Request, deps: OAuthDeps): Promise<
     const fields = Object.fromEntries([...url.searchParams].filter(([key]) => key !== "st"));
     const outcome = await completeLogin(deps, state, fields);
     return typeof outcome === "string"
-      ? Response.redirect(outcome, 302)
+      ? new Response(null, { status: 302, headers: { location: outcome, ...finished } })
       : setupError(outcome.error, 403);
   }
 
@@ -514,11 +558,22 @@ async function completeLogin(
   return target.toString();
 }
 
-async function issueTokens(deps: OAuthDeps, userId: number, session: RefreshSession) {
+/**
+ * Tokens for `userId`. The session is resolved last, after every other
+ * database call, so a refresh that moves the session on cannot then fail
+ * and leave the client holding a token already retired.
+ */
+async function issueTokens(
+  deps: OAuthDeps,
+  userId: number,
+  resolveSession: () => Promise<RefreshSession | null>,
+) {
   await deps.store.markConnected(userId);
   const user = await deps.store.getUser(userId);
   const version = user?.token_version ?? 0;
   const payload = { u: userId, v: version };
+  const session = await resolveSession();
+  if (!session) return null;
   return {
     access_token: await sign<TokenBlob>(deps.config.signingKey, "access", payload, ACCESS_TTL),
     token_type: "Bearer",
@@ -560,7 +615,7 @@ async function rotate(
     return { id, generation: current.generation };
   }
   await deps.store.revokeRefreshSession(id, blob.u, expiresAt);
-  console.warn(JSON.stringify({ event: "refresh_reuse", user: blob.u }));
+  console.warn(JSON.stringify({ event: "refresh_reuse", user: blob.u, session: id.slice(0, 8) }));
   return null;
 }
 
@@ -592,11 +647,14 @@ async function handleToken(request: Request, deps: OAuthDeps): Promise<Response>
   if (grantType === "refresh_token") {
     const presented = form.get("refresh_token") ?? "";
     const blob = await verify<RefreshBlob>(deps.config.signingKey, "refresh", presented);
-    const session = blob && (await stillValid(deps, blob)) && (await rotate(deps, presented, blob));
-    if (!blob || !session) {
+    const tokens =
+      blob &&
+      (await stillValid(deps, blob)) &&
+      (await issueTokens(deps, blob.u, () => rotate(deps, presented, blob)));
+    if (!tokens) {
       return oauthError("invalid_grant", "The refresh token is not valid any more. Connect again.");
     }
-    return jsonResponse(await issueTokens(deps, blob.u, session));
+    return jsonResponse(tokens);
   }
 
   if (grantType !== "authorization_code") {
@@ -627,7 +685,9 @@ async function handleToken(request: Request, deps: OAuthDeps): Promise<Response>
     return oauthError("access_denied", "This Telegram account may not use this connector.", 403);
   }
 
-  return jsonResponse(await issueTokens(deps, code.u, { id: randomId(), generation: 0 }));
+  const fresh = { id: randomId(), generation: 0 };
+  const tokens = await issueTokens(deps, code.u, () => Promise.resolve(fresh));
+  return jsonResponse(tokens);
 }
 
 // --- public surface --------------------------------------------------------

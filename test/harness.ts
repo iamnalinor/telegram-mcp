@@ -205,10 +205,18 @@ class FixedLengthStreamPolyfill extends TransformStream<Uint8Array, Uint8Array> 
 }
 (globalThis as Record<string, unknown>).FixedLengthStream ??= FixedLengthStreamPolyfill;
 
-/** The Telegram login link on the consent page /authorize answers with. */
-export async function consentLink(response: Response): Promise<URL> {
+/**
+ * What the consent page /authorize answers with hands on: the Telegram login
+ * link, and the cookie the return from Telegram must carry.
+ */
+export async function consentLink(
+  response: Response,
+): Promise<{ telegram: URL; returnTo: string; cookie: string }> {
+  const cookie = response.headers.get("set-cookie")!.split(";")[0];
   const href = /id="continue" href="([^"]+)"/.exec(await response.text())![1];
-  return new URL(href.replaceAll("&amp;", "&"));
+  const telegram = new URL(href.replaceAll("&amp;", "&"));
+  const back = new URL(telegram.searchParams.get("return_to")!);
+  return { telegram, returnTo: `${back.pathname}${back.search}`, cookie };
 }
 
 export class Harness {
@@ -397,12 +405,11 @@ export class Harness {
     const authorize = await this.fetch(
       `/authorize?${new URLSearchParams({ response_type: "code", client_id, redirect_uri: redirect, state: "xyz", code_challenge: challenge, code_challenge_method: "S256" }).toString()}`,
     );
-    const telegramUrl = await consentLink(authorize);
-    const returnTo = new URL(telegramUrl.searchParams.get("return_to")!);
+    const consent = await consentLink(authorize);
 
-    const finish = await this.fetch(`${returnTo.pathname}${returnTo.search}`, {
+    const finish = await this.fetch(consent.returnTo, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", cookie: consent.cookie },
       body: JSON.stringify(await this.loginPayload(user)),
     });
     const body = await finish.json<{ redirect?: string; error?: string }>();

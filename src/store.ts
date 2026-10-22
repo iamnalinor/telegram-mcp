@@ -962,7 +962,9 @@ export class Store {
       this.db.prepare("DELETE FROM button_presses WHERE date < ?").bind(cutoff),
       this.db.prepare("DELETE FROM reactions WHERE date < ?").bind(cutoff),
       this.db.prepare("DELETE FROM upload_nonces WHERE expires_at < ?").bind(nowSeconds()),
-      this.db.prepare("DELETE FROM refresh_sessions WHERE expires_at < ?").bind(nowSeconds()),
+      // A day past expiry: tokens can outlive their row by a few minutes, and
+      // a session with no row would start afresh.
+      this.db.prepare("DELETE FROM refresh_sessions WHERE expires_at < ?").bind(nowSeconds() - DAY),
       this.db.prepare("DELETE FROM day_marks WHERE day < ?").bind(Math.floor(cutoff / DAY)),
     ]);
     return results[0].meta.changes ?? 0;
