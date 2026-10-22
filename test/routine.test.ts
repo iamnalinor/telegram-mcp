@@ -132,8 +132,8 @@ describe("the menu", () => {
     await press("m:clp");
     const prompt = sentTexts().at(-1)!;
     expect(prompt).toContain("<pre>");
-    expect(prompt).toContain("the user (alice, named without the @) decides");
-    expect(prompt).toContain("rather than tagging anyone");
+    expect(prompt).toContain("the user (@alice) decides");
+    expect(prompt).toContain("not as a habit on every message");
     expect(prompt.length).toBeLessThan(4096);
 
     await press("m:clset");

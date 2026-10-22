@@ -31,7 +31,7 @@ export function instructions(p: {
 
 When to use it
 - The user says "message me / ping me / tell me in Telegram / send me the file / ask me there", or asked to be told when a long task finishes or fails: send to "me" (their private chat with the bot, the default).
-- Post to a group only when the user names it. Group posts are seen by every member. To address someone in a group, reply to their message (reply_to): that notifies them like a tag, without the noise. Do not @mention people.
+- Post to a group only when the user names it. Group posts are seen by every member. To address someone in a group, reply to their message (reply_to): that notifies them like a tag, without the noise. @mention only someone a reply would not reach, and only when they need to see it.
 - Do not narrate progress unless asked: one message at the end beats ten. For a long task, one message you edit_message as it goes is fine.
 - After sending, give the user the t.me link from the result so they can jump straight there.
 - As a Claude Code cloud session, pass your session id (CLAUDE_CODE_REMOTE_SESSION_ID) as \`session\` when you send.
