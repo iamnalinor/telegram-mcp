@@ -29,7 +29,10 @@ import type { RelayJob, RelayOrigin, RelayRow, Store } from "./store";
 const ONLINE_SECONDS = 90;
 /** A job nobody took within this long fails, and a reply starts a session instead. */
 const JOB_EXPIRY_SECONDS = 180;
-const JOBS_PER_POLL = 5;
+/** One at a time: the relay calls in between jobs, so a slow one does not make it look gone. */
+const JOBS_PER_POLL = 1;
+/** Past the relay's own 300 s timeout per job: a taken job never reported is lost. */
+const TAKEN_EXPIRY_SECONDS = 420;
 const ERROR_LIMIT = 500;
 
 export type RelayState = "none" | "online" | "offline" | "login";
@@ -203,7 +206,7 @@ export async function handleRelay(
  * A Telegram reply the relay could not pass on starts a session after all,
  * told why, so it can say so to whoever wrote.
  */
-async function fallBack(
+export async function fallBack(
   ctx: BotContext,
   job: RelayJob,
   why: "login" | "offline" | "failed",
@@ -221,16 +224,30 @@ async function fallBack(
   });
 }
 
-/** Expired jobs fail; a relay gone quiet with work waiting is told to the user once. */
-export async function sweepRelays(ctx: BotContext): Promise<void> {
-  const expired = await ctx.store.expireJobs(nowSeconds() - JOB_EXPIRY_SECONDS);
-  const told = new Set<number>();
+/**
+ * Stale jobs fail; a Telegram reply among them starts a session instead. A
+ * relay gone quiet with work waiting is told to the user once — unless it is
+ * signed out, which they heard about already.
+ */
+export async function sweepRelays(store: Store, botFor: () => Promise<BotContext>): Promise<void> {
+  const now = nowSeconds();
+  const expired = await store.expireJobs(now - JOB_EXPIRY_SECONDS, now - TAKEN_EXPIRY_SECONDS);
+  if (!expired.length) return;
+  const ctx = await botFor();
+  const seen = new Set<number>();
   for (const job of expired) {
-    if (!told.has(job.user_id) && (await ctx.store.noteRelayOffline(job.user_id, nowSeconds()))) {
-      await tellUser(ctx, job.user_id, "offline");
+    const state = relayState(await store.getRelay(job.user_id), now);
+    if (!seen.has(job.user_id) && job.taken_at === null) {
+      seen.add(job.user_id);
+      if (state !== "login" && (await store.noteRelayOffline(job.user_id, now))) {
+        await tellUser(ctx, job.user_id, "offline");
+      }
     }
-    told.add(job.user_id);
-    await fallBack(ctx, job, "offline");
+    await fallBack(
+      ctx,
+      job,
+      state === "login" ? "login" : job.taken_at === null ? "offline" : "failed",
+    );
   }
 }
 

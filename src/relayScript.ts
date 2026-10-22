@@ -10,17 +10,21 @@
  * public address. Claude Code must be signed in once on that machine
  * (`claude`, then /login) — the relay writes to sessions as that account.
  *
- * Kept free of `${…}`: the shell's own syntax would clash with the template.
+ * The shell's own `${…}` would clash with the template, so the scripts do
+ * without it (the one use is spelled out).
  */
 
 const RELAY_LOOP = String.raw`#!/usr/bin/env bash
 # Passes messages from the Telegram bot into Claude Code cloud sessions.
 set -uo pipefail
 API="$RELAY_ORIGIN/relay"
-AUTH="Authorization: Bearer $RELAY_TOKEN"
+# The token goes to curl from a file, never on its command line, where ps would show it.
+AUTH=$(umask 077 && mktemp)
+trap 'rm -f "$AUTH"' EXIT
+printf 'Authorization: Bearer %s\n' "$RELAY_TOKEN" >"$AUTH"
 START=1
 while true; do
-  JOBS=$(curl -fsS --max-time 30 -H "$AUTH" "$API/jobs?start=$START") || { sleep 15; continue; }
+  JOBS=$(curl -fsS --max-time 30 -H @"$AUTH" "$API/jobs?start=$START") || { sleep 20; continue; }
   START=0
   COUNT=$(printf '%s' "$JOBS" | jq 'length' 2>/dev/null || echo 0)
   for ((i = 0; i < COUNT; i++)); do
@@ -29,23 +33,28 @@ while true; do
     SESSION=$(printf '%s' "$JOB" | jq -r .session)
     ERR=$(mktemp)
     OUT=$(printf '%s' "$JOB" | jq -r .text | timeout 300 claude -p --cloud "$SESSION" --output-format json 2>"$ERR")
-    if [ "$(printf '%s' "$OUT" | head -n 1 | jq -r '.ok // false' 2>/dev/null)" = "true" ]; then
+    CODE=$?
+    if [ "$CODE" -eq 0 ] && [ "$(printf '%s' "$OUT" | jq -rs '.[0].ok // false' 2>/dev/null)" = "true" ]; then
       REPORT='{"ok":true}'
     else
-      REPORT=$(jq -cn --arg out "$OUT" --rawfile err "$ERR" '{ok:false, error:((($out|fromjson?).error) // ($err + $out))}')
+      [ "$CODE" -eq 124 ] && echo "timed out after 300 s" >>"$ERR"
+      REPORT=$(jq -cn --arg out "$OUT" --arg err "$(cat "$ERR")" --arg code "$CODE" \
+        '{ok:false, error:((($out|fromjson?).error) // (($err + " " + $out) | if test("^\\s*$") then "claude exited with " + $code else . end))}')
     fi
     rm -f "$ERR"
-    printf '%s' "$REPORT" | curl -fsS --max-time 30 -X POST -H "$AUTH" -H 'Content-Type: application/json' --data-binary @- "$API/jobs/$ID" >/dev/null || true
+    printf '%s' "$REPORT" | curl -fsS --max-time 30 -X POST -H @"$AUTH" -H 'Content-Type: application/json' --data-binary @- "$API/jobs/$ID" >/dev/null || true
     echo "$(date -u +%FT%TZ) $ID -> $SESSION: $REPORT"
   done
-  sleep 5
+  [ "$COUNT" -gt 0 ] 2>/dev/null || sleep 10
 done
 `;
 
 export function installScript(origin: string): string {
   return String.raw`#!/usr/bin/env bash
 # Installs the Telegram bot's relay, which passes messages into Claude Code cloud sessions.
+# Everything is inside main, run on the last line: a download cut short runs nothing.
 set -euo pipefail
+main() {
 ORIGIN='${origin.replaceAll("'", "")}'
 if [ -z "${"$"}{RELAY_TOKEN:-}" ]; then
   echo "Run it as: curl -fsSL $ORIGIN/relay/install.sh | RELAY_TOKEN=relay_... bash" >&2
@@ -53,13 +62,13 @@ if [ -z "${"$"}{RELAY_TOKEN:-}" ]; then
 fi
 have() { command -v "$1" >/dev/null 2>&1; }
 if ! have curl || ! have jq; then
-  if have apt-get; then sudo apt-get update -qq && sudo apt-get install -y -qq curl jq
-  elif have dnf; then sudo dnf install -y -q curl jq
-  elif have yum; then sudo yum install -y -q curl jq
+  if have apt-get; then sudo apt-get update -qq </dev/null && sudo apt-get install -y -qq curl jq </dev/null
+  elif have dnf; then sudo dnf install -y -q curl jq </dev/null
+  elif have yum; then sudo yum install -y -q curl jq </dev/null
   else echo "Install curl and jq, then run this again." >&2; exit 1; fi
 fi
 export PATH="$HOME/.local/bin:$PATH"
-if ! have claude; then curl -fsSL https://claude.ai/install.sh | bash; fi
+if ! have claude; then curl -fsSL https://claude.ai/install.sh | bash </dev/null; fi
 CLAUDE_DIR=$(dirname "$(command -v claude)")
 
 DIR="$HOME/.tg-relay"
@@ -77,11 +86,11 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=$USER
+User=$(id -un)
 WorkingDirectory=$HOME
 EnvironmentFile=$DIR/env
 Environment=PATH=$CLAUDE_DIR:/usr/local/bin:/usr/bin:/bin
-ExecStart=$DIR/relay.sh
+ExecStart=/bin/bash $DIR/relay.sh
 Restart=always
 RestartSec=10
 
@@ -99,5 +108,7 @@ if ! claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then
 else
   echo "Claude Code is signed in. After any new /login, run: sudo systemctl restart tg-relay"
 fi
+}
+main "$@"
 `;
 }

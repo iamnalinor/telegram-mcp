@@ -245,8 +245,11 @@ function describe(session: KnownSession, where: (chatId: number) => string): str
 
 /**
  * Who stands behind a message, by the bot's records: a session started by
- * someone else's tag speaks for them whatever it says; one the bot did not
- * start, or a caller that names no session, is of unknown origin.
+ * someone else's tag, or one others' replies were relayed into, speaks for
+ * them whatever it says; one the bot did not start, or a caller that names no
+ * session, is of unknown origin. The session id itself is the caller's word —
+ * every assistant of the user's signs in the same way — so this narrows what
+ * a label can claim; it is not proof.
  */
 async function originOf(
   ctx: ToolContext,
@@ -257,7 +260,9 @@ async function originOf(
   if (!from) return "unknown";
   const start = await ctx.store.sessionStart(ctx.userId, from);
   if (!start) return "unknown";
-  return start.by_other ? "other" : "user";
+  if (start.by_other) return "other";
+  // Others' replies went into it: whatever it says now may be on their behalf.
+  return (await ctx.store.sessionHeardOthers(ctx.userId, from)) ? "other" : "user";
 }
 
 async function waitAnswer(ctx: ToolContext, ask: string, seconds: number): Promise<string> {
@@ -277,7 +282,12 @@ async function waitAnswer(ctx: ToolContext, ask: string, seconds: number): Promi
       return `Not delivered: ${job.error ?? "unknown error"}. If it says the session is archived, it is over; otherwise tell the user.`;
     }
     if (Date.now() + WAIT_POLL_MS > deadline) {
-      const where = job.status === "queued" ? "still waiting for the relay" : "delivered";
+      const where =
+        job.status === "queued"
+          ? "still waiting for the relay"
+          : job.status === "taken"
+            ? "being delivered"
+            : "delivered";
       return `No answer within ${seconds} s (${where}). Call wait_for_session again, or carry on without it — do not assume an answer.`;
     }
     await sleep(WAIT_POLL_MS);

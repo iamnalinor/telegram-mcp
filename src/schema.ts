@@ -273,6 +273,7 @@ const SCHEMA: string[] = [
     taken_at INTEGER
   ) WITHOUT ROWID`,
   `CREATE INDEX IF NOT EXISTS relay_jobs_by_user ON relay_jobs (user_id, status, created_at)`,
+  `CREATE INDEX IF NOT EXISTS relay_jobs_by_status ON relay_jobs (status, created_at)`,
 
   // A user's Telegram Business connection: the bot reads their private chats,
   // and acts in them only as far as `rights` (set by the user in Telegram) allow.

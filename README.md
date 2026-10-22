@@ -289,8 +289,9 @@ routine's own limits.
 
 Sessions cannot write to one another by themselves: only a full Claude Code sign-in can put a
 message into a cloud session. A **relay** can — any always-on Linux machine of yours (an Oracle free
-VM will do) signed in to Claude Code. The bot queues messages; the relay asks for them every few
-seconds and passes each one on with `claude -p --cloud <session>`. It needs no open port or domain.
+VM will do) signed in to Claude Code. The bot queues messages; the relay asks for them every 10
+seconds — about 8,600 Worker requests a day, under a tenth of the free plan — and passes each one on
+with `claude -p --cloud <session>`. It needs no open port or domain.
 
 Set it up in the menu: 🤖 Claude → 🛰 Relay → 📋 Install command, and run what it sends on the
 machine:
@@ -313,9 +314,12 @@ With the relay:
   hands the request over instead of doing the work twice.
 
 Everything passed on arrives marked as data, with who stands behind it by the bot's own records:
-you, a third party, or unknown (a session the bot did not start). The receiving session acts for
+you, a third party, or unknown (a session the bot did not start). A session started by someone
+else's tag, or one their replies were passed into, counts as theirs. The receiving session acts for
 you; for anyone else it gives a short status answer, and more only where the chat's memory Trust
-allows that person.
+allows that person. The label rests on the session id the sender gives: every assistant of yours
+signs in the same way, so a session talked round can name another's id. It narrows what a message
+can claim; it is not proof — keep "Others too" where you trust people.
 
 Without a relay, or while it is down, everything works as before: a reply starts a new session that
 carries on, and the session tools say why another session cannot be reached. If the relay's Claude

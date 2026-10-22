@@ -36,7 +36,7 @@
 import { nowSeconds } from "../crypto";
 import { formatTime } from "../format";
 import { isAllowed } from "../env";
-import { relayState, relayToken, tokenHash } from "../relay";
+import { fallBack, relayState, relayToken, tokenHash } from "../relay";
 import { routinePrompt, tokenOf } from "../routine";
 import { memoryTitle } from "../tools/memory";
 import { TelegramError } from "../telegram/api";
@@ -516,7 +516,8 @@ async function render(
     return relayScreen(ctx, user);
   }
   if (name === "rloff") {
-    await ctx.store.deleteRelay(user.id);
+    // Replies it had not passed on yet start sessions instead of getting lost.
+    for (const job of await ctx.store.deleteRelay(user.id)) await fallBack(ctx, job, "failed");
     return { ...(await relayScreen(ctx, user)), note: t.relayOff };
   }
   if (name === "cltest") {

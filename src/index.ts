@@ -184,8 +184,9 @@ export default {
   async scheduled(event, env) {
     const core = await base(env);
     if (event.cron === RELAY_SWEEP) {
-      const origin = (await core.store.getMeta("public_origin")) ?? "";
-      await sweepRelays(await botContext(core, origin));
+      await sweepRelays(core.store, async () =>
+        botContext(core, (await core.store.getMeta("public_origin")) ?? ""),
+      );
       return;
     }
     const cutoff = nowSeconds() - core.config.retentionDays * 86_400;

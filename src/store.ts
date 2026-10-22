@@ -1641,10 +1641,10 @@ export class Store {
       .prepare(
         `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at, from_name, excerpt, album)
          SELECT ?1, ?2, ?3, ?4, 'pending', ?5, ?9, ?10, ?11
-         WHERE (SELECT COUNT(*) FROM fires WHERE user_id = ?3 AND at >= ?6 AND status IN ('pending', 'started')) < ?7
+         WHERE (SELECT COUNT(*) FROM fires WHERE user_id = ?3 AND at >= ?6 AND status IN ('pending', 'started', 'relayed')) < ?7
            AND (?4 = 0 OR (SELECT COUNT(*) FROM fires
                 WHERE user_id = ?3 AND at >= ?6 AND chat_id = ?1 AND by_other = 1
-                  AND status IN ('pending', 'started')) < ?8)
+                  AND status IN ('pending', 'started', 'relayed')) < ?8)
            AND (?11 IS NULL OR NOT EXISTS (SELECT 1 FROM fires WHERE chat_id = ?1 AND album = ?11))
          ON CONFLICT (chat_id, message_id) DO NOTHING`,
       )
@@ -1796,15 +1796,18 @@ export class Store {
       .run();
   }
 
-  async deleteRelay(userId: number): Promise<void> {
-    await this.db.batch([
+  /** Removes the relay; the jobs it had not done fail and are returned. */
+  async deleteRelay(userId: number): Promise<RelayJob[]> {
+    const [, failed] = await this.db.batch([
       this.db.prepare("DELETE FROM relays WHERE user_id = ?").bind(userId),
       this.db
         .prepare(
-          "UPDATE relay_jobs SET status = 'failed', error = 'relay removed' WHERE user_id = ? AND status IN ('queued', 'taken')",
+          `UPDATE relay_jobs SET status = 'failed', error = 'the relay was turned off'
+           WHERE user_id = ? AND status IN ('queued', 'taken') RETURNING *`,
         )
         .bind(userId),
     ]);
+    return failed.results as RelayJob[];
   }
 
   /** The relay asked for work: it is alive. Written at most every 30 s. */
@@ -1902,14 +1905,20 @@ export class Store {
       .first<RelayJob>();
   }
 
-  /** Queued jobs nobody took since `before`: the relay is gone. They fail now. */
-  async expireJobs(before: number): Promise<RelayJob[]> {
+  /**
+   * Jobs gone stale fail now: queued ones nobody took since `queuedBefore`
+   * (the relay is gone), and taken ones never reported since `takenBefore`
+   * (it restarted or lost the report).
+   */
+  async expireJobs(queuedBefore: number, takenBefore: number): Promise<RelayJob[]> {
     const { results } = await this.db
       .prepare(
-        `UPDATE relay_jobs SET status = 'failed', error = 'the relay did not pick it up'
-         WHERE status = 'queued' AND created_at < ? RETURNING *`,
+        `UPDATE relay_jobs SET status = 'failed', error = CASE status
+           WHEN 'queued' THEN 'the relay did not pick it up' ELSE 'the relay did not report back' END
+         WHERE (status = 'queued' AND created_at < ?) OR (status = 'taken' AND taken_at < ?)
+         RETURNING *`,
       )
-      .bind(before)
+      .bind(queuedBefore, takenBefore)
       .all<RelayJob>();
     return results;
   }
@@ -1942,6 +1951,17 @@ export class Store {
       .bind(userId, sessionId)
       .first<{ by_other: number }>();
     return row ? { by_other: row.by_other === 1 } : null;
+  }
+
+  /** Whether anyone but the user has had messages relayed into this session. */
+  async sessionHeardOthers(userId: number, sessionId: string): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        "SELECT 1 FROM relay_jobs WHERE user_id = ? AND target_session = ? AND origin != 'user' LIMIT 1",
+      )
+      .bind(userId, sessionId)
+      .first();
+    return row !== null;
   }
 
   /** Sessions the bot knows of for this user, most recently heard of first. */
