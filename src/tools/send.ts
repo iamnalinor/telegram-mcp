@@ -53,7 +53,7 @@ type Answer = { kind: "press"; press: PressRow } | { kind: "message"; message: S
 /**
  * Wait for an answer to one of the bot's messages: a press on its buttons, a
  * reply to it, or — in the private chat — anything the user writes after it.
- * Polls D1, which costs a couple of row reads per round and no writes.
+ * Polls D1: a couple of row reads per round, no writes per round.
  */
 async function waitForAnswer(
   ctx: ToolContext,
@@ -62,21 +62,28 @@ async function waitForAnswer(
   seconds: number,
 ): Promise<Answer | null> {
   const deadline = Date.now() + seconds * 1000;
-  await ctx.store.markAwaited(chat, messageId, Math.ceil(deadline / 1000));
+  await ctx.store.markAwaited(chat, messageId, Math.ceil(deadline / 1000), "start");
   for (;;) {
-    const presses = await ctx.store.pressesFor(chat.chat_id, messageId);
-    if (presses.length) return { kind: "press", press: presses[0] };
-
-    const answer = await ctx.store.answerTo(
-      chat,
-      messageId,
-      chat.kind === "dm" ? ctx.userId : null,
-    );
-    if (answer) return { kind: "message", message: answer };
-
+    const answer = await findAnswer(ctx, chat, messageId);
+    if (answer) {
+      // The session stops listening now, not at the deadline.
+      await ctx.store.markAwaited(chat, messageId, Math.floor(Date.now() / 1000), "end");
+      return answer;
+    }
     if (Date.now() + WAIT_POLL_MS > deadline) return null;
     await sleep(WAIT_POLL_MS);
   }
+}
+
+async function findAnswer(
+  ctx: ToolContext,
+  chat: ChatView,
+  messageId: number,
+): Promise<Answer | null> {
+  const presses = await ctx.store.pressesFor(chat.chat_id, messageId);
+  if (presses.length) return { kind: "press", press: presses[0] };
+  const answer = await ctx.store.answerTo(chat, messageId, chat.kind === "dm" ? ctx.userId : null);
+  return answer ? { kind: "message", message: answer } : null;
 }
 
 function describeAnswer(

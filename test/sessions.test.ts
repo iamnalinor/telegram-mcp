@@ -35,10 +35,20 @@ describe("the sending session", () => {
     ]);
   });
 
-  it("refuses something that is not a session id", async () => {
+  it("still sends when the id is malformed, just without it", async () => {
     const result = await h.tool(alice, "send_message", { text: "x", session: "../etc/passwd" });
-    expect(result.isError).toBe(true);
-    expect(sent()).toHaveLength(0);
+    expect(result.isError).toBe(false);
+    expect(sent().map((row) => row.session_id)).toEqual([null]);
+  });
+
+  it("is on every part of a long message", async () => {
+    await h.tool(alice, "send_message", {
+      text: Array.from({ length: 3 }, () => "word ".repeat(1000)).join("\n\n"),
+      session: `cse_${SUFFIX}`,
+    });
+    const rows = sent();
+    expect(rows.length).toBeGreaterThan(1);
+    expect(rows.every((row) => row.session_id === `session_${SUFFIX}`)).toBe(true);
   });
 
   it("goes along with a file sent through an upload link", async () => {
@@ -70,14 +80,44 @@ describe("the sending session", () => {
 });
 
 describe("waiting for an answer", () => {
-  it("marks the question as awaited until the wait ends, once per call", async () => {
-    const before = Math.floor(Date.now() / 1000);
-    await h.tool(alice, "ask_user", { question: "Ready?", wait_seconds: 0 });
+  const ask = (session?: string) =>
+    h.tool(alice, "ask_user", { question: "Ready?", wait_seconds: 0, session });
+
+  it("marks a session's question as awaited until the wait would end", async () => {
+    await ask(`cse_${SUFFIX}`);
     expect(sent()[0].awaited_until).toBeNull();
 
+    const before = Math.floor(Date.now() / 1000);
     await h.tool(alice, "wait_for_reply", { wait_seconds: 1 });
     const until = sent()[0].awaited_until!;
     expect(until).toBeGreaterThanOrEqual(before + 1);
-    expect(until).toBeLessThanOrEqual(Math.ceil(Date.now() / 1000) + 1);
+    expect(until).toBeLessThanOrEqual(before + 2);
+  });
+
+  it("ends the wait when the answer comes early", async () => {
+    await h.tool(alice, "ask_user", {
+      question: "Ready?",
+      options: ["Go"],
+      wait_seconds: 0,
+      session: `cse_${SUFFIX}`,
+    });
+    const pending = h.tool(alice, "wait_for_reply", { wait_seconds: 30 });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await h.update({
+      callback_query: {
+        id: "press",
+        from: { ...ALICE, is_bot: false },
+        data: "cb:0.0",
+        message: { message_id: sent()[0].message_id, date: 1, chat: dm(ALICE) },
+      },
+    });
+    expect((await pending).text).toContain('pressed "Go"');
+    expect(sent()[0].awaited_until).toBeLessThanOrEqual(Math.floor(Date.now() / 1000));
+  });
+
+  it("writes nothing for a message no session sent", async () => {
+    await ask();
+    await h.tool(alice, "wait_for_reply", { wait_seconds: 1 });
+    expect(sent()[0].awaited_until).toBeNull();
   });
 });

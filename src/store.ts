@@ -751,17 +751,33 @@ export class Store {
   }
 
   /**
-   * A tool started waiting for an answer to this message, until `until`. One
-   * write per call, not per poll: a reply in the meantime is the waiter's to
-   * take, not a new task.
+   * A session is waiting for an answer to its message until `until`: a reply
+   * in the meantime is the waiter's to take, not a new task. Written when a
+   * wait starts and, if an answer comes early, when it ends — never per poll.
+   * Messages no session sent carry nothing to route, so they cost no write.
    */
-  async markAwaited(chat: ChatRef, messageId: number, until: number): Promise<void> {
+  async markAwaited(
+    chat: ChatRef,
+    messageId: number,
+    until: number,
+    change: "start" | "end",
+  ): Promise<void> {
+    const value =
+      change === "start"
+        ? "MAX(COALESCE(awaited_until, 0), ?)"
+        : "MIN(COALESCE(awaited_until, ?), ?)";
     await this.db
       .prepare(
-        `UPDATE messages SET awaited_until = MAX(COALESCE(awaited_until, 0), ?)
-         WHERE account_id = ? AND chat_id = ? AND message_id = ? AND outgoing = 1`,
+        `UPDATE messages SET awaited_until = ${value}
+         WHERE account_id = ? AND chat_id = ? AND message_id = ? AND outgoing = 1
+           AND session_id IS NOT NULL`,
       )
-      .bind(until, chat.account_id, chat.chat_id, messageId)
+      .bind(
+        ...(change === "start" ? [until] : [until, until]),
+        chat.account_id,
+        chat.chat_id,
+        messageId,
+      )
       .run();
   }
 

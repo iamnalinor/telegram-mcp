@@ -106,16 +106,14 @@ export const topicArg = z
 /** `cse_…` (the environment) and `session_…` (links, get_session) name the same session. */
 const SESSION_ID = /^(?:session|cse)_([0-9A-Za-z]{16,64})$/;
 
+// Lenient on purpose: a malformed id is dropped rather than costing the user the message.
 export const sessionArg = z
   .string()
-  .regex(SESSION_ID, "A Claude Code session id: session_… or cse_…")
+  .max(100)
   .optional()
-  .describe(
-    "If you are a Claude Code cloud session, your session id (CLAUDE_CODE_REMOTE_SESSION_ID, cse_… or " +
-      "session_…), so a reply to this message can be traced back to you. Omit otherwise.",
-  );
+  .describe("Your Claude Code session id (cse_… or session_…), if you are a cloud session.");
 
-/** One spelling in storage: session_…, as in claude.ai/code links. */
+/** One spelling in storage: session_…, as in claude.ai/code links. Anything else is dropped. */
 export function sessionId(value: string | undefined): string | null {
   const match = value ? SESSION_ID.exec(value) : null;
   return match ? `session_${match[1]}` : null;
