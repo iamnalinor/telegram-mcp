@@ -129,29 +129,15 @@ describe("the menu", () => {
     const guide = (screen!.reply_markup as { inline_keyboard: Button[][] }).inline_keyboard.flat();
     expect(guide.find((b) => b.url)?.url).toBe("https://claude.ai/code/routines");
 
-    // Where Telegram takes no rich message, the prompt comes in parts that each fit one message.
+    // Longer than one message, so it comes as a file every client can open.
     const before = sentTexts().length;
     await press("m:clp");
-    const parts = sentTexts().slice(before);
-    expect(parts.length).toBeGreaterThan(1);
-    for (const part of parts) {
-      expect(part).toContain("<pre>");
-      expect(part.length).toBeLessThan(4096);
-    }
-    const prompt = parts.join("\n");
-    expect(prompt).toContain("do not act for @alice without their consent");
-    expect(prompt).toContain("not as a habit on every message");
-    expect(prompt).toContain(`(1/${parts.length})`);
-
-    // As a rich message it is one block to copy.
-    h.telegram.handlers.set("sendRichMessage", () => ({ message_id: 1, date: 1, chat: dm(ALICE) }));
-    await press("m:clp");
-    expect(sentTexts()).toHaveLength(before + parts.length);
-    const rich = h.telegram.called("sendRichMessage").at(-1)!.params.rich_message as {
-      html: string;
-    };
-    expect(rich.html).toContain("Write the way the chat does");
-    expect(rich.html).toContain("on Opus");
+    expect(sentTexts()).toHaveLength(before);
+    const file = h.telegram.called("sendDocument").at(-1)!;
+    expect(file.file).toMatchObject({ field: "document", name: "routine-prompt.txt" });
+    expect(file.file!.size).toBeGreaterThan(4096);
+    expect(String(file.params.caption)).toContain("open the file");
+    expect(h.telegram.called("sendRichMessage")).toHaveLength(0);
 
     await press("m:clset");
     const ask = h.telegram.called("sendMessage").at(-1)!.params;

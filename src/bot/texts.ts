@@ -176,7 +176,7 @@ const en = {
   buttonGuide: "📖 Guide",
   buttonTestRoutine: "▶️ Test start",
   buttonDeleteRoutine: "🗑 Remove",
-  routinePromptIntro: "The routine's prompt — tap the block to copy it:",
+  routinePromptIntro: "The routine's prompt: open the file and copy all of it.",
   promptSent: "Sent below.",
   setRoutineAsk:
     "Send the trigger id and the token in one message:\n<code>trig_… sk-ant-oat01-…</code>",
@@ -468,7 +468,7 @@ const ru: Texts = {
   buttonGuide: "📖 Инструкция",
   buttonTestRoutine: "▶️ Тестовый запуск",
   buttonDeleteRoutine: "🗑 Удалить",
-  routinePromptIntro: "Промпт рутины — нажми на блок, чтобы скопировать:",
+  routinePromptIntro: "Промпт рутины: открой файл и скопируй его целиком.",
   promptSent: "Прислал ниже.",
   setRoutineAsk: "Пришли id триггера и токен одним сообщением:\n<code>trig_… sk-ant-oat01-…</code>",
   setRoutineNote: "Жду триггер и токен.",
