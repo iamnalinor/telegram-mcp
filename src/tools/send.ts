@@ -186,8 +186,8 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
       description:
         'Message the user in Telegram — chat "me" by default — or a connected group. Use for "message me / ' +
         'ping me when done / tell me in Telegram". Markdown is converted; long text is split. format "rich" ' +
-        "sends a rich message — use it unasked for anything compared, listed with attributes, or longer than " +
-        "about ten lines: tables, headings, collapsible <details>. Optional buttons " +
+        "sends a rich message (a real table, collapsible <details>, formulas): only where the content needs " +
+        "what plain Markdown lacks, as some Telegram clients do not show rich messages yet. Optional buttons " +
         "(presses are recorded) and reply_to. Returns the message id and a t.me link to give the user. For a " +
         `question that needs an answer, use ask_user instead. ${GROUP_NOTE}`,
       inputSchema: z.object({

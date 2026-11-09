@@ -129,14 +129,15 @@ describe("the menu", () => {
     const guide = (screen!.reply_markup as { inline_keyboard: Button[][] }).inline_keyboard.flat();
     expect(guide.find((b) => b.url)?.url).toBe("https://claude.ai/code/routines");
 
-    // Longer than one message, so it comes as a file every client can open.
-    const before = sentTexts().length;
     await press("m:clp");
-    expect(sentTexts()).toHaveLength(before);
-    const file = h.telegram.called("sendDocument").at(-1)!;
-    expect(file.file).toMatchObject({ field: "document", name: "routine-prompt.txt" });
-    expect(file.file!.size).toBeGreaterThan(4096);
-    expect(String(file.params.caption)).toContain("open the file");
+    const prompt = sentTexts().at(-1)!;
+    expect(prompt).toContain("<pre>");
+    expect(prompt).toContain("do not act for @alice without their consent");
+    expect(prompt).toContain("not as a habit on every message");
+    expect(prompt).toContain("subagent on Opus");
+    expect(prompt).toContain("Write the way the chat does");
+    expect(prompt.length).toBeLessThan(4096);
+    // A rich message would not open in every client.
     expect(h.telegram.called("sendRichMessage")).toHaveLength(0);
 
     await press("m:clset");
@@ -178,11 +179,10 @@ describe("pieces", () => {
     expect(await decrypt(key, "not base64!", "routine:1")).toBeNull();
   });
 
-  it("keeps every paragraph of the prompt within one Telegram message", () => {
-    // Without rich messages the menu sends it split between paragraphs: none may outgrow a message.
-    for (const paragraph of routinePrompt("a".repeat(32)).split("\n\n")) {
-      expect(paragraph.length).toBeLessThan(3800);
-    }
+  it("keeps the prompt within one Telegram message, with room for the longest username", () => {
+    // The menu sends it in one message with a one-line intro: Telegram allows 4096 characters.
+    // What does not fit belongs in the tools' descriptions, which the model reads every turn.
+    expect(routinePrompt("a".repeat(32)).length + 120).toBeLessThan(4096);
   });
 
   it("finds the trigger and the token anywhere in the message", () => {

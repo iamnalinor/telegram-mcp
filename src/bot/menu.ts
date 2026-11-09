@@ -222,19 +222,13 @@ async function signInsScreen(ctx: BotContext, user: User): Promise<Screen> {
   };
 }
 
-/**
- * The routine's prompt, to copy. It is longer than one message, so it goes
- * out as a text file: that opens in every Telegram client, which a rich
- * message does not, and is copied whole in one go.
- */
+/** The routine's prompt, in one block to tap and copy: it is kept short enough for one message. */
 async function sendPrompt(ctx: BotContext, user: User, intro: string): Promise<void> {
-  await ctx.api.upload(
-    "sendDocument",
-    { chat_id: String(user.id), caption: intro },
-    "document",
-    new Blob([routinePrompt(user.username ?? null)], { type: "text/plain" }),
-    "routine-prompt.txt",
-  );
+  await ctx.api.call("sendMessage", {
+    chat_id: user.id,
+    text: `${intro}\n<pre>${escapeHtml(routinePrompt(user.username ?? null))}</pre>`,
+    parse_mode: "HTML",
+  });
 }
 
 async function routineScreen(ctx: BotContext, user: User): Promise<Screen> {

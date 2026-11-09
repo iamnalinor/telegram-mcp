@@ -160,8 +160,8 @@ export const richFormatArg = z
   .describe(
     "markdown (default): **bold**, _italic_, `code`, ```blocks```, [links](url), > quotes. rich: a rich " +
       "message — GitHub-flavoured Markdown with # headings, tables, lists and task lists, <details> blocks, " +
-      "$formulas$, footnotes; up to 32k characters, never split; for a comparison, a report, a long answer " +
-      "that needs structure. plain: sent as is.",
+      "$formulas$, footnotes; up to 32k characters, never split. Only where the content needs a real table " +
+      "or collapsible parts: not every Telegram client shows rich messages yet. plain: sent as is.",
   );
 
 export const formatArg = z
