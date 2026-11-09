@@ -222,44 +222,13 @@ async function signInsScreen(ctx: BotContext, user: User): Promise<Screen> {
   };
 }
 
-/** Telegram's limit for one message, less room for the intro and the tags. */
-const PROMPT_PART = 3800;
-
-/**
- * The routine's prompt, to copy. It is longer than one ordinary message, so
- * it goes out as a rich message with one block to tap; where Telegram refuses
- * that, as ordinary messages split between paragraphs, to paste one after
- * another.
- */
+/** The routine's prompt, in one block to tap and copy: it is kept short enough for one message. */
 async function sendPrompt(ctx: BotContext, user: User, intro: string): Promise<void> {
-  const prompt = routinePrompt(user.username ?? null);
-  const block = (part: string) => `<pre>${escapeHtml(part)}</pre>`;
-  try {
-    await ctx.api.call("sendRichMessage", {
-      chat_id: user.id,
-      rich_message: { html: `<p>${escapeHtml(intro)}</p>${block(prompt)}` },
-    });
-    return;
-  } catch (error) {
-    if (!(error instanceof TelegramError)) throw error;
-  }
-  const parts: string[] = [];
-  for (const paragraph of prompt.split("\n\n")) {
-    const last = parts.at(-1);
-    if (last !== undefined && last.length + paragraph.length + 2 <= PROMPT_PART) {
-      parts[parts.length - 1] = `${last}\n\n${paragraph}`;
-    } else {
-      parts.push(paragraph);
-    }
-  }
-  for (const [index, part] of parts.entries()) {
-    const head = parts.length > 1 ? `${intro} (${index + 1}/${parts.length})` : intro;
-    await ctx.api.call("sendMessage", {
-      chat_id: user.id,
-      text: `${escapeHtml(head)}\n${block(part)}`,
-      parse_mode: "HTML",
-    });
-  }
+  await ctx.api.call("sendMessage", {
+    chat_id: user.id,
+    text: `${intro}\n<pre>${escapeHtml(routinePrompt(user.username ?? null))}</pre>`,
+    parse_mode: "HTML",
+  });
 }
 
 async function routineScreen(ctx: BotContext, user: User): Promise<Screen> {
