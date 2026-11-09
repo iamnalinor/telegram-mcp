@@ -11,6 +11,7 @@ import { Fence, formatTime, person } from "../format";
 import { markdownToHtml, TELEGRAM_TEXT_LIMIT } from "../markdown";
 import type { GuestReply } from "../store";
 import {
+  richAsPlain,
   richFormatArg,
   text,
   ToolError,
@@ -117,21 +118,19 @@ export function registerGuestTools(server: McpServer, ctx: ToolContext): void {
             `Text stops at ${TELEGRAM_TEXT_LIMIT} characters unless format is rich.`,
           );
         }
-        await withPlainFallback((plain) =>
-          ctx.api.call("editMessageText", {
+        await withPlainFallback((plain) => {
+          if (plain) richAsPlain(args.text);
+          return ctx.api.call("editMessageText", {
             inline_message_id: call.inline_message_id,
             ...(format === "rich" && !plain
               ? { rich_message: { markdown: args.text } }
               : {
-                  text:
-                    format === "markdown" && !plain
-                      ? markdownToHtml(args.text)
-                      : args.text.slice(0, TELEGRAM_TEXT_LIMIT),
+                  text: format === "markdown" && !plain ? markdownToHtml(args.text) : args.text,
                   link_preview_options: { is_disabled: true },
                 }),
             ...(format === "markdown" && !plain ? { parse_mode: "HTML" } : {}),
-          }),
-        );
+          });
+        });
         await ctx.store.setGuestAnswer(call.id, args.text);
         return text(
           `The bot's message in ${JSON.stringify(call.chat_title ?? "that chat")} now shows your answer.`,

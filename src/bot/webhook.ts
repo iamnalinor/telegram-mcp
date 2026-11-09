@@ -457,7 +457,7 @@ async function onWidgetQuery(ctx: BotContext, query: WidgetQuery): Promise<Webho
     { account_id: BOT_ACCOUNT, chat_id: query.chat.id },
     query.message_id,
   );
-  if (!stored?.outgoing || stored.sent_by === null) return answer("unknown");
+  if (!stored?.outgoing || stored.file_kind !== "widget") return answer("unknown");
   await ctx.store.insertPress({
     chat_id: query.chat.id,
     message_id: query.message_id,

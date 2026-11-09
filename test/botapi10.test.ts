@@ -482,3 +482,93 @@ describe("what the bot reads now", () => {
     expect(log.excerpt).toBe("fix the login page");
   });
 });
+
+describe("what the review found", () => {
+  beforeEach(async () => {
+    await h.addBot(TEAM, ALICE);
+    h.telegram.members.set(`${TEAM.id}:${ALICE.id}`, "member");
+    h.telegram.members.set(`${TEAM.id}:${BOB.id}`, "member");
+    await press(`m:gc:${TEAM.id}`);
+    await press(`m:goy:${TEAM.id}`);
+    distinctSessions();
+  });
+
+  it("does not make the holder's session the others' after one reply of theirs", async () => {
+    const token = await relayOnline();
+    await h.say(TEAM, ALICE, `${BOT} deploy it`);
+    await h.tool(alice, "send_message", {
+      chat: TEAM.id,
+      text: "deployed",
+      session: "cse_01Session000000000000001",
+    });
+    const target = {
+      message_id: lastSent(),
+      from: { id: 123456, is_bot: true, first_name: "Test" },
+      chat: TEAM,
+      date: 1,
+      text: "deployed",
+    };
+    // Bob's reply goes into the session that wrote the message…
+    await h.say(TEAM, BOB, "thanks", { reply_to_message: target });
+    expect(h.fires).toHaveLength(1);
+    expect((await jobs(token))[0].session).toBe("session_01Session000000000000001");
+    // …but his next tag starts the others' own session.
+    await h.say(TEAM, BOB, `${BOT} what is the deadline?`);
+    expect(h.fires).toHaveLength(2);
+    expect(payload()).toContain("by: other");
+  });
+
+  it("lets the user's messages through while a session waits for the next press", async () => {
+    h.telegram.handlers.set("sendWidget", () => ({
+      message_id: 3200,
+      date: Math.floor(Date.now() / 1000),
+      chat: dm(ALICE),
+      from: { id: 123456, is_bot: true, first_name: "Test" },
+      widget: {},
+    }));
+    await h.tool(alice, "send_widget", { html: "<b>x</b>", taps: true, session: `cse_${SESSION}` });
+    await h.tool(alice, "wait_for_reply", { message_id: 3200, wait_seconds: 1, after_press: 1 });
+    await h.say(dm(ALICE), ALICE, "something else entirely");
+    expect(h.fires).toHaveLength(1);
+  });
+
+  it("keeps no key from the message a guest call replies to", async () => {
+    h.telegram.handlers.set("answerGuestQuery", () => ({ inline_message_id: "inline-9" }));
+    await h.update({
+      guest_message: {
+        message_id: 1,
+        date: Math.floor(Date.now() / 1000),
+        chat: ELSEWHERE,
+        from: { ...ALICE, is_bot: false },
+        text: `${BOT} is this key still valid?`,
+        guest_query_id: "gq-secret",
+        reply_to_message: {
+          message_id: 2,
+          date: 1,
+          chat: ELSEWHERE,
+          from: { ...BOB, is_bot: false },
+          text: `use ${TOKEN}`,
+        },
+      },
+    });
+    const row = h.db.raw.query("SELECT reply FROM guest_calls").get() as { reply: string };
+    expect(row.reply).not.toContain(TOKEN);
+  });
+
+  it("tells the user in private when Telegram takes no answer for a guest call", async () => {
+    await h.update({
+      guest_message: {
+        message_id: 1,
+        date: Math.floor(Date.now() / 1000),
+        chat: ELSEWHERE,
+        from: { ...ALICE, is_bot: false },
+        text: `${BOT} hello`,
+        guest_query_id: "gq-refused",
+      },
+    });
+    expect(h.fires).toHaveLength(0);
+    const told = h.telegram.called("sendMessage").at(-1)!.params;
+    expect(told.chat_id).toBe(ALICE.id);
+    expect(String(told.text)).toContain("Guest Mode");
+  });
+});

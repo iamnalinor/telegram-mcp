@@ -111,12 +111,14 @@ async function waitForAnswer(
   afterPress = 0,
 ): Promise<Answer | null> {
   const deadline = Date.now() + seconds * 1000;
-  await ctx.store.markAwaited(chat, messageId, Math.ceil(deadline / 1000), "start");
+  // Waiting for the next press takes no typed answer: the user's messages must go their usual way.
+  const typed = afterPress === 0;
+  if (typed) await ctx.store.markAwaited(chat, messageId, Math.ceil(deadline / 1000), "start");
   for (;;) {
     const answer = await findAnswer(ctx, chat, messageId, afterPress);
     if (answer) {
       // The session stops listening now, not at the deadline.
-      await ctx.store.markAwaited(chat, messageId, Math.floor(Date.now() / 1000), "end");
+      if (typed) await ctx.store.markAwaited(chat, messageId, Math.floor(Date.now() / 1000), "end");
       return answer;
     }
     if (Date.now() + WAIT_POLL_MS > deadline) return null;
@@ -586,7 +588,11 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         `ask_user. ${GROUP_NOTE}`,
       inputSchema: z.object({
         question: z.string().min(1).max(300),
-        options: z.array(z.string().min(1).max(100)).min(1).max(12),
+        options: z
+          .array(z.string().min(1).max(100))
+          .min(1)
+          .max(12)
+          .describe("Two or more; one is enough only with adding_options."),
         description: z.string().max(1024).optional().describe("Text shown under the question."),
         anonymous: z.boolean().optional().describe("Default: false — voters are visible."),
         multiple_answers: z.boolean().optional(),
@@ -629,6 +635,11 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         const correct = args.correct_options
           ? [...new Set(args.correct_options)].sort((a, b) => a - b)
           : null;
+        if (args.options.length < 2 && !args.adding_options) {
+          throw new ToolError(
+            "A poll needs two options, or adding_options so that members add more.",
+          );
+        }
         if (correct?.some((index) => index >= args.options.length)) {
           throw new ToolError(
             "correct_options names an option that is not there (they count from 0).",
@@ -641,7 +652,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
           is_anonymous: args.anonymous ?? false,
           allows_multiple_answers: args.multiple_answers ?? (correct ? correct.length > 1 : false),
           ...(correct ? { type: "quiz", correct_option_ids: correct } : {}),
-          ...(args.explanation ? { explanation: args.explanation } : {}),
+          ...(correct && args.explanation ? { explanation: args.explanation } : {}),
           ...(args.description ? { description: args.description } : {}),
           ...(args.revoting === undefined ? {} : { allows_revoting: args.revoting }),
           ...(args.adding_options ? { allow_adding_options: true } : {}),

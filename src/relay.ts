@@ -25,7 +25,7 @@ import { nowSeconds, randomId, sha256Base64Url } from "./crypto";
 import { Fence } from "./format";
 import type { UserRef } from "./prompts";
 import { installScript } from "./relayScript";
-import type { RelayJob, RelayOrigin, RelayRow, Store } from "./store";
+import { BOT_ACCOUNT, type RelayJob, type RelayOrigin, type RelayRow, type Store } from "./store";
 
 /** Heard from within this long: online. The relay asks every few seconds. */
 const ONLINE_SECONDS = 120;
@@ -280,6 +280,11 @@ export async function fallBack(
     return;
   }
   const chat = await ctx.store.getChat(job.chat_id);
+  // The agent whose message a reply answers is on that message, not on the job.
+  const scope = { account_id: BOT_ACCOUNT, chat_id: job.chat_id };
+  const replied =
+    job.kind === "reply" ? (await ctx.store.getMessage(scope, job.message_id))?.reply_to_id : null;
+  const agent = replied ? ((await ctx.store.getMessage(scope, replied))?.agent ?? null) : null;
   await launch(ctx, {
     holder: job.user_id,
     chat: { id: job.chat_id, title: chat?.title ?? null, private: job.chat_id > 0 },
@@ -288,6 +293,7 @@ export async function fallBack(
     byOther: job.origin !== "user",
     // A day's message never named that session: the new one starts afresh.
     continues: job.kind === "reply" ? job.target_session : null,
+    agent,
     relay: job.kind === "reply" ? why : null,
   });
 }

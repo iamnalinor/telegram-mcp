@@ -18,6 +18,7 @@
 import { nowSeconds } from "../crypto";
 import { isAllowed } from "../env";
 import { enqueue, guestEnvelope, relayState } from "../relay";
+import { redactSecrets } from "../secrets";
 import type { GuestCall, GuestReply } from "../store";
 import type { Message } from "../telegram/types";
 import type { BotContext } from "./context";
@@ -63,7 +64,7 @@ export async function onGuestMessage(ctx: BotContext, message: Message): Promise
     from_id: replied.from_id,
     from_name: replied.from_name,
     from_username: replied.from_username,
-    text: replied.text,
+    text: redactSecrets(replied.text),
     own: target?.from?.id === ctx.bot.id,
   };
   const title = titleOf(message);
@@ -81,16 +82,32 @@ export async function onGuestMessage(ctx: BotContext, message: Message): Promise
 
   const t = texts(from.language_code);
   // The one message the bot gets there. Without it there is nowhere to answer.
-  const sent = await ctx.api.call<{ inline_message_id?: string }>("answerGuestQuery", {
-    guest_query_id: queryId,
-    result: {
-      type: "article",
-      id: String(id),
-      title: "Claude",
-      input_message_content: { message_text: t.guestThinking },
-    },
-  });
-  if (!sent.inline_message_id) return;
+  const sent = await ctx.api
+    .call<{ inline_message_id?: string }>("answerGuestQuery", {
+      guest_query_id: queryId,
+      result: {
+        type: "article",
+        id: String(id),
+        title: "Claude",
+        input_message_content: { message_text: t.guestThinking },
+      },
+    })
+    .catch((error: unknown) => {
+      console.error(JSON.stringify({ event: "guest_answer_failed", error: String(error) }));
+      return null;
+    });
+  if (!sent?.inline_message_id) {
+    // Telegram retries nothing here, and the call is recorded: the user hears why nothing came.
+    await ctx.api
+      .call("sendMessage", {
+        chat_id: from.id,
+        text: t.guestNoAnswer(title ?? ""),
+        parse_mode: "HTML",
+        disable_notification: true,
+      })
+      .catch(() => undefined);
+    return;
+  }
   await ctx.store.setGuestMessage(id, sent.inline_message_id);
   const call = { inline_message_id: sent.inline_message_id };
 

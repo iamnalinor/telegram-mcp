@@ -315,7 +315,7 @@ What starts a session:
   past that the bot reacts 😴 and tells you quietly, once an hour. A reply of theirs to your
   assistant's message starts a new session too, told which session wrote it — under the same rules.
 
-Every start goes into the group's 📜 Starts: who, when, the first words and a link to the session.
+Every start in a group goes into the group's 📜 Starts (guest calls are not listed anywhere yet): who, when, the first words and a link to the session.
 
 **Who does the work.** The routine runs on Sonnet and does the talking: it answers what it can at
 once and hands real work — research, building something, code — to a subagent on Opus, in the

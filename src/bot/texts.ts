@@ -211,6 +211,8 @@ const en = {
   tooManyStarts: "⚠️ Too many starts in the last hour; I start no more until it passes.",
   guestThinking: "👀 …",
   guestFailed: "⚠️ Could not start Claude. Details are in our private chat.",
+  guestNoAnswer: (title: string) =>
+    `⚠️ You called me in «${escapeHtml(title)}», but Telegram did not let me answer there. Check that Guest Mode is on for the bot in @BotFather, then try again.`,
   startsButton: "📜 Starts",
   startsScreen: (title: string, lines: string[]) =>
     `<b>${escapeHtml(title)}</b> — latest starts, newest first (UTC):\n\n${lines.join("\n")}`,
@@ -484,6 +486,8 @@ const ru: Texts = {
   tooManyStarts: "⚠️ Слишком много запусков за последний час; новых не будет, пока он не пройдёт.",
   guestThinking: "👀 …",
   guestFailed: "⚠️ Не получилось запустить Claude. Подробности — в нашем личном чате.",
+  guestNoAnswer: (title) =>
+    `⚠️ Ты позвал меня в «${escapeHtml(title)}», но Telegram не дал мне там ответить. Проверь, что у бота в @BotFather включён Guest Mode, и попробуй ещё раз.`,
   startsButton: "📜 Запуски",
   startsScreen: (title, lines) =>
     `<b>${escapeHtml(title)}</b> — последние запуски, сначала новые (UTC):\n\n${lines.join("\n")}`,

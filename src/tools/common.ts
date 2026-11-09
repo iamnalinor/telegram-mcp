@@ -369,6 +369,11 @@ export async function sendText(
   if (options.onlyFor !== undefined && chat.kind !== "group") {
     throw new ToolError("only_for works in groups: a private chat has one reader already.");
   }
+  if (options.onlyFor !== undefined && options.buttons?.length) {
+    throw new ToolError(
+      "only_for takes no buttons: the message is not stored, so presses would be lost.",
+    );
+  }
   const parts =
     format === "rich"
       ? [options.text]
@@ -404,9 +409,10 @@ export async function sendText(
     const message = await withPlainFallback((plain) => {
       if (plain) {
         // Markup Telegram cannot parse should not lose the message: send it as written.
+        richAsPlain(part);
         delete params.parse_mode;
         delete params.rich_message;
-        params.text = part.slice(0, TELEGRAM_TEXT_LIMIT);
+        params.text = part;
       }
       return ctx.api.call<Message>(
         format === "rich" && !plain ? "sendRichMessage" : "sendMessage",
@@ -467,6 +473,19 @@ export async function withPlainFallback<T>(send: (plain: boolean) => Promise<T>)
       return send(true);
     }
     throw error;
+  }
+}
+
+/**
+ * A rich message Telegram could not parse goes out as plain text only when it
+ * fits one message; a longer one is not cut behind the model's back.
+ */
+export function richAsPlain(text: string): void {
+  if (text.length > TELEGRAM_TEXT_LIMIT) {
+    throw new ToolError(
+      `Telegram could not parse this as a rich message, and it is too long to send as plain text ` +
+        `(${TELEGRAM_TEXT_LIMIT} characters). Fix the markup or shorten it. Nothing was sent.`,
+    );
   }
 }
 

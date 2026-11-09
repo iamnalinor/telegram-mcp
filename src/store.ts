@@ -1807,6 +1807,8 @@ export class Store {
    * The session messages in these chats went to most recently since `since`:
    * the holder's own, or the one other members' messages go to. The two are
    * kept apart, so a session the user works in never hears a third party.
+   * Only a session started for that audience in these chats counts: a reply
+   * passed into someone else's session must not make it theirs for the day.
    */
   async latestSession(
     userId: number,
@@ -1816,10 +1818,13 @@ export class Store {
   ): Promise<string | null> {
     const row = await this.db
       .prepare(
-        `SELECT session_id FROM fires WHERE user_id = ? AND at >= ? AND by_other = ?
-         AND chat_id IN (${chatIds.map(() => "?").join(", ")})
-         AND status IN ('started', 'relayed') AND session_id IS NOT NULL
-         ORDER BY at DESC, message_id DESC LIMIT 1`,
+        `SELECT f.session_id FROM fires f WHERE f.user_id = ?1 AND f.at >= ?2 AND f.by_other = ?3
+         AND f.chat_id IN (${chatIds.map((_, i) => `?${i + 4}`).join(", ")})
+         AND f.status IN ('started', 'relayed') AND f.session_id IS NOT NULL
+         AND EXISTS (SELECT 1 FROM fires s WHERE s.user_id = ?1 AND s.session_id = f.session_id
+                     AND s.status = 'started' AND s.by_other = ?3
+                     AND s.chat_id IN (${chatIds.map((_, i) => `?${i + 4}`).join(", ")}))
+         ORDER BY f.at DESC, f.message_id DESC LIMIT 1`,
       )
       .bind(userId, since, byOther ? 1 : 0, ...chatIds)
       .first<{ session_id: string }>();

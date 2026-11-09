@@ -23,6 +23,7 @@ import {
   mayPost,
   messageIdArg,
   notPersonal,
+  richAsPlain,
   sessionArg,
   sessionId,
   storedButtons,
@@ -85,7 +86,7 @@ export async function editMessage(
   const markdown = (args.format ?? "markdown") === "markdown";
 
   if (args.text !== undefined) {
-    const isCaption = stored.file_id !== null;
+    const isCaption = stored.file_id !== null || stored.file_kind === "widget";
     if (isCaption && args.text.length > TELEGRAM_CAPTION_LIMIT) {
       throw new ToolError(`Captions stop at ${TELEGRAM_CAPTION_LIMIT} characters.`);
     }
@@ -94,8 +95,9 @@ export async function editMessage(
     }
     const newText = args.text;
     const rich = args.format === "rich" && !isCaption;
-    await withPlainFallback((plain) =>
-      ctx.api.call(isCaption ? "editMessageCaption" : "editMessageText", {
+    await withPlainFallback((plain) => {
+      if (plain) richAsPlain(newText);
+      return ctx.api.call(isCaption ? "editMessageCaption" : "editMessageText", {
         ...base,
         ...(rich && !plain
           ? { rich_message: { markdown: newText } }
@@ -108,8 +110,8 @@ export async function editMessage(
         // Without reply_markup an edit drops the buttons; keep them unless replaced.
         reply_markup:
           markup ?? (stored.buttons ? keyboard(JSON.parse(stored.buttons) as Buttons) : undefined),
-      }),
-    );
+      });
+    });
   } else {
     await ctx.api.call("editMessageReplyMarkup", { ...base, reply_markup: markup });
   }
