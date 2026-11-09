@@ -149,6 +149,19 @@ continues: ${continues}`
 }
 
 /**
+ * A start for a scene's wake: the session reads the scene with get_scene.
+ * Who caused it is said again there, from the bot's records.
+ */
+export function scenePayload(scene: number, seq: number, by: "user" | "other"): string {
+  return (
+    `scene: ${scene}  event: ${seq}  by: ${by}\n` +
+    `A scene you set up woke you: read it with get_scene (scene ${scene}) — its state, your note and ` +
+    "event " +
+    `${seq} — then act as your note says, within the usual rules; by: other means a third party caused it.`
+  );
+}
+
+/**
  * The routine's own prompt, which the user pastes into it. A session started
  * by someone else's tag runs with the user's connectors, so everything that
  * keeps it from obeying that person is said here, and repeated by the MCP.

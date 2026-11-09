@@ -38,7 +38,7 @@ import { escapeHtml, texts } from "./texts";
 /** A reply this long after a wait ended is a new task, not the answer. */
 const AWAIT_GRACE = 60;
 /** Starts in all, per user per hour: Anthropic allows a routine about 30. */
-const USER_PER_HOUR = 30;
+export const USER_PER_HOUR = 30;
 /** How much of the message the log keeps. */
 const EXCERPT_LENGTH = 20;
 /** A private-chat message this soon after a start is read by that session. */
@@ -200,7 +200,12 @@ export async function maybeStart(
 }
 
 /** Messages to the holder's private chat, in their language, naming the chat when it is a group. */
-async function holderVoice(ctx: BotContext, holder: number, chatId: number, title: string | null) {
+export async function holderVoice(
+  ctx: Pick<BotContext, "store" | "api">,
+  holder: number,
+  chatId: number,
+  title: string | null,
+) {
   const owner = await ctx.store.getUser(holder);
   const t = texts(owner?.language);
   const tell = (text: string) =>

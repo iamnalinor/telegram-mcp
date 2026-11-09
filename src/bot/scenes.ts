@@ -46,12 +46,13 @@ import {
 import type { BotContext, WebhookReply } from "./context";
 import { toStored } from "./extract";
 import { texts } from "./texts";
+import { deliverWake, gateWake, releaseWake, type WakeGate } from "../scenes/wake";
 
 /** The answer for whoever caused the event; `applied` when a rule ran, `noRule` when none took it. */
 export type Answer = { text?: string; alert?: boolean; applied?: boolean; noRule?: boolean };
 
 /** What a scene's I/O needs; tools pass their own context, which has these too. */
-type SceneContext = Pick<BotContext, "api" | "store" | "bot" | "defer" | "sceneLimit">;
+type SceneContext = Pick<BotContext, "api" | "store" | "bot" | "config" | "defer" | "sceneLimit">;
 
 const ATTEMPTS = 3;
 const EDIT_GAP_MS = 1000;
@@ -264,6 +265,30 @@ export async function applyEvent(
   press?: Press,
   language?: string | null,
 ): Promise<Answer> {
+  const wake: Wake = { gate: null, row: null, used: false };
+  try {
+    return await attempt(ctx, sceneId, incoming, press, language, wake);
+  } finally {
+    // The gate claimed a start; a rule that in the end did not wake lets it go.
+    if (wake.gate && wake.row && !wake.used) await releaseWake(ctx, wake.row, wake.gate);
+  }
+}
+
+/** A gate passed for this event, once, whatever the retries. */
+interface Wake {
+  gate: (WakeGate & { ok: true }) | null;
+  row: SceneRow | null;
+  used: boolean;
+}
+
+async function attempt(
+  ctx: SceneContext,
+  sceneId: number,
+  incoming: Omit<SceneEvent, "owner" | "now">,
+  press: Press | undefined,
+  language: string | null | undefined,
+  wake: Wake,
+): Promise<Answer> {
   const t = texts(press?.query.from.language_code ?? language);
   for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
     const row = await ctx.store.getScene(sceneId);
@@ -302,9 +327,15 @@ export async function applyEvent(
       if (found.refused === "no_rule") return { text: t.sceneDenied, noRule: true };
       return { text: found.refused === "said" && found.text ? found.text : t.sceneDenied };
     }
-    if (found.wakes) {
-      // Waking the session is not wired in yet: nobody can answer.
-      return { text: t.sceneNobody };
+    if (found.wakes && !wake.gate) {
+      const gate = await gateWake(ctx, row, event.user);
+      if (!gate.ok) {
+        if (gate.answer === "not_for_you") return { text: t.sceneNotForYou(owner.name) };
+        if (gate.answer === "nobody") return { text: t.sceneNobody };
+        return { text: t.sceneResting(gate.minutes ?? 60) };
+      }
+      wake.gate = gate;
+      wake.row = row;
     }
 
     const result = run(compiled, state, event, found.rule);
@@ -344,7 +375,8 @@ export async function applyEvent(
       if (drawNow) await redraw(ctx, committed);
       else later(ctx, row.id);
     }
-    return { ...(await perform(ctx, row, event, result.effects)), applied: true };
+    const current: SceneRow = changed ? { ...row, ...patch, version: row.version + 1 } : row;
+    return { ...(await perform(ctx, current, event, result.effects, wake)), applied: true };
   }
   return { text: t.sceneFailed };
 }
@@ -355,6 +387,7 @@ async function perform(
   row: SceneRow,
   event: SceneEvent,
   effects: Effect[],
+  wake: Wake,
 ): Promise<Answer> {
   let answer: Answer = {};
   for (const effect of effects) {
@@ -373,6 +406,26 @@ async function perform(
           data: event.arg === undefined ? null : JSON.stringify({ arg: event.arg }),
         });
         break;
+      case "wake": {
+        // One start per event: a second wake() in the same rule is only logged.
+        const gate = wake.used ? null : wake.gate;
+        const seq = await ctx.store.addSceneEvent(row.id, {
+          name: effect.name,
+          user_id: event.user.id,
+          user_name: event.user.name,
+          data: event.arg === undefined ? null : JSON.stringify({ arg: event.arg }),
+          woke: gate !== null,
+        });
+        if (!gate) break;
+        wake.used = true;
+        await deliverWake(ctx, row, gate, { seq, name: effect.name, actor: event.user }).catch(
+          async (error: unknown) => {
+            console.error(JSON.stringify({ event: "scene_wake_failed", error: String(error) }));
+            await ctx.store.endFire(row.chat_id, gate.fireId, { status: "failed" });
+          },
+        );
+        break;
+      }
       case "show":
       case "finish":
         break;

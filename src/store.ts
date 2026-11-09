@@ -129,9 +129,10 @@ export interface RelayJob {
   /**
    * reply: a Telegram reply to the session's message; day: a message for the
    * chat's session of the day; guest: a call from a chat the bot is not in
-   * (`message_id` is the call's id, `chat_id` 0); ask: from another session.
+   * (`message_id` is the call's id, `chat_id` 0); ask: from another session;
+   * scene: a scene's wake (`chat_id` is the scene's id, `message_id` the event's number).
    */
-  kind: "reply" | "day" | "guest" | "ask";
+  kind: "reply" | "day" | "guest" | "ask" | "scene";
   /** 1 when the sender waits for answer_session; a notice expects none. */
   wants_answer: number;
   answer: string | null;
@@ -1817,6 +1818,26 @@ export class Store {
     return seen ? "again" : "limit";
   }
 
+  /** A start claimed for nothing (a waking rule that did not wake after all): as if never claimed. */
+  async dropFire(chatId: number, messageId: number): Promise<void> {
+    await this.db
+      .prepare("DELETE FROM fires WHERE chat_id = ? AND message_id = ? AND status = 'pending'")
+      .bind(chatId, messageId)
+      .run();
+  }
+
+  /** When the oldest start that counts against the user's hourly limit was made. */
+  async oldestStart(userId: number, since: number): Promise<number | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT MIN(at) AS at FROM fires WHERE user_id = ? AND at >= ?
+         AND status IN ('pending', 'started', 'relayed')`,
+      )
+      .bind(userId, since)
+      .first<{ at: number | null }>();
+    return row?.at ?? null;
+  }
+
   async endFire(
     chatId: number,
     messageId: number,
@@ -2565,6 +2586,45 @@ export class Store {
       .bind(chatId)
       .all<SceneRow>();
     return results;
+  }
+
+  /** Wakes from this scene since `since`, and when the oldest of them was. */
+  async sceneWakes(sceneId: number, since: number): Promise<{ n: number; oldest: number | null }> {
+    const row = await this.db
+      .prepare(
+        "SELECT COUNT(*) AS n, MIN(date) AS oldest FROM scene_events WHERE scene_id = ? AND woke = 1 AND date > ?",
+      )
+      .bind(sceneId, since)
+      .first<{ n: number; oldest: number | null }>();
+    return row ?? { n: 0, oldest: null };
+  }
+
+  async sceneEventCount(sceneId: number): Promise<number> {
+    const row = await this.db
+      .prepare("SELECT COUNT(*) AS n FROM scene_events WHERE scene_id = ?")
+      .bind(sceneId)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  /** The session a scene's wakes go to, once a start made one. */
+  async setSceneSession(id: number, sessionId: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE scenes SET session_id = ? WHERE id = ?")
+      .bind(sessionId, id)
+      .run();
+  }
+
+  async setSceneWakeLimit(owner: number, id: number, limit: number): Promise<void> {
+    await this.db
+      .prepare("UPDATE scenes SET wake_limit = ? WHERE id = ? AND owner = ?")
+      .bind(limit, id, owner)
+      .run();
+  }
+
+  /** The user's active scenes in a chat, for the menu. */
+  async scenesOf(owner: number, chatId: number): Promise<SceneRow[]> {
+    return (await this.activeScenes(chatId)).filter((scene) => scene.owner === owner);
   }
 
   async linkScene(

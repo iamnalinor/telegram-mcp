@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import { sceneTiming, startScene } from "../src/bot/scenes";
+import { loadConfig } from "../src/env";
 import { compile } from "../src/scenes/definition";
 import { Store } from "../src/store";
 import { TelegramApi } from "../src/telegram/api";
@@ -29,6 +30,7 @@ async function scene(definition: unknown): Promise<{ id: number; message: number
       api: new TelegramApi("1:x"),
       store,
       bot: { id: 123456, username: "test_mcp_bot", canReadAll: true },
+      config: await loadConfig(h.env),
     },
     {
       chatId: TEAM.id,

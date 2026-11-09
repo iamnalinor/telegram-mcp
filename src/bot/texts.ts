@@ -287,6 +287,25 @@ const en = {
   sceneOver: "This scene is over.",
   sceneFull: "The scene is full: nothing more fits.",
   sceneFailed: "That did not work. Try again.",
+  buttonScenes: (n: number) => `🎬 Scenes (${n})`,
+  scenesScreen: (title: string, lines: string[]) =>
+    `🎬 <b>Scenes in «${escapeHtml(title)}»</b>\n\nYour assistant's messages that run by themselves: buttons, votes, games.\n\n` +
+    (lines.length ? lines.join("\n") : "None running."),
+  sceneScreen: (p: {
+    title: string;
+    session: string | null;
+    events: number;
+    wakes: number;
+    limit: number;
+  }) =>
+    `🎬 <b>${escapeHtml(p.title)}</b>\n\nSet up by ` +
+    (p.session
+      ? `<a href="https://claude.ai/code/${escapeHtml(p.session)}">a session</a>`
+      : "your assistant") +
+    `.\nEvents logged: ${p.events}.\nWakes this hour: ${p.wakes} of ${p.limit}.`,
+  buttonSceneWakes: (limit: number) => `⏱ Wakes: up to ${limit}/h`,
+  buttonStopScene: "■ Stop",
+  sceneStopped: "Stopped: the buttons are gone.",
   othersLimited: (limit: number) =>
     `😴 Other members used up ${limit} starts this hour; theirs wait until it passes (they see 😴). Change the limit in 👥 Groups.`,
   routineFirst: "Set up 🤖 Claude on tag first.",
@@ -590,6 +609,19 @@ const ru: Texts = {
   sceneOver: "Сцена завершена.",
   sceneFull: "Сцена заполнена: больше не помещается.",
   sceneFailed: "Не получилось, попробуй ещё раз.",
+  buttonScenes: (n) => `🎬 Сцены (${n})`,
+  scenesScreen: (title, lines) =>
+    `🎬 <b>Сцены в «${escapeHtml(title)}»</b>\n\nСообщения твоего ассистента, которые работают сами: кнопки, голосования, игры.\n\n` +
+    (lines.length ? lines.join("\n") : "Ни одной не идёт."),
+  sceneScreen: (p) =>
+    `🎬 <b>${escapeHtml(p.title)}</b>\n\nЗапустила ` +
+    (p.session
+      ? `<a href="https://claude.ai/code/${escapeHtml(p.session)}">сессия</a>`
+      : "твой ассистент") +
+    `.\nСобытий в журнале: ${p.events}.\nПобудок за час: ${p.wakes} из ${p.limit}.`,
+  buttonSceneWakes: (limit) => `⏱ Побудок: до ${limit}/ч`,
+  buttonStopScene: "■ Остановить",
+  sceneStopped: "Остановлена: кнопок больше нет.",
   othersLimited: (limit) =>
     `😴 Остальные участники исчерпали ${limit} запусков за час; их теги подождут, пока он пройдёт (они видят 😴). Лимит меняется в 👥 Группах.`,
   routineFirst: "Сначала настрой 🤖 Claude по тегу.",
