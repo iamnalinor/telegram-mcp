@@ -203,6 +203,7 @@ describe("guest mode", () => {
     });
     const placeholder = h.telegram.called("answerGuestQuery").at(-1)!.params;
     expect(placeholder.guest_query_id).toBe("gq-1");
+    expect(JSON.stringify(placeholder.result)).toMatch(/"message_text":"✻ [A-Z][\w'é-]+…"/);
     expect(h.fires).toHaveLength(1);
     expect(payload()).toBe("guest: 1  by: user");
     // Nothing of that chat is stored among the bot's chats.

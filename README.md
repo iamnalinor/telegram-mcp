@@ -301,7 +301,7 @@ What starts a session:
   work in never hears a third party.
 - **Any chat the bot is not in** (guest mode): tag the bot there, or reply to its message. Telegram
   hands the bot that one message and the one it replied to — no history, no members — and lets it
-  post one message per call, which Claude then edits: «✍️ Answering…» at once, the answer when
+  post one message per call, which Claude then edits: Claude Code's «✻ Clauding…» at once, the answer when
   ready. Such a chat is connected like a group: the first call there by someone who may use the bot
   and has a routine binds the chat to them. From then on their routine answers there, and other
   people's calls count only if they turn "Others too" on for that chat (🤖 Claude on tag → 🕊 Guest

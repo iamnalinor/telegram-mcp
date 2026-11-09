@@ -209,7 +209,6 @@ const en = {
     }[reason],
   inChat: (title: string) => `«${escapeHtml(title)}»:`,
   tooManyStarts: "⚠️ Too many starts in the last hour; I start no more until it passes.",
-  guestAnswering: "✍️ Answering…",
   guestFailed: "⚠️ Could not start Claude.",
   buttonGuestChats: "🕊 Guest chats",
   guestChatsScreen: (lines: string[]) =>
@@ -499,7 +498,6 @@ const ru: Texts = {
     }[reason],
   inChat: (title) => `«${escapeHtml(title)}»:`,
   tooManyStarts: "⚠️ Слишком много запусков за последний час; новых не будет, пока он не пройдёт.",
-  guestAnswering: "✍️ Отвечаю…",
   guestFailed: "⚠️ Не получилось запустить Claude.",
   buttonGuestChats: "🕊 Гостевые чаты",
   guestChatsScreen: (lines) =>

@@ -31,6 +31,7 @@ import { GUEST_BASE, type ClaudeChat, type GuestCall, type GuestReply } from "..
 import { displayName, type Message } from "../telegram/types";
 import type { BotContext } from "./context";
 import { hasContent, realReply, toStored } from "./extract";
+import { spinnerLine } from "./spinner";
 import { texts } from "./texts";
 import { excerptOf, holderName, launch } from "./triggers";
 
@@ -164,7 +165,6 @@ export async function onGuestMessage(ctx: BotContext, message: Message): Promise
   if (id === null) return; // Telegram retried the update.
 
   const owner = await ctx.store.getUser(holder);
-  const t = texts(from.language_code);
   const tellHolder = (text: string) =>
     ctx.api
       .call("sendMessage", {
@@ -210,7 +210,7 @@ export async function onGuestMessage(ctx: BotContext, message: Message): Promise
         type: "article",
         id: String(id),
         title: "Claude",
-        input_message_content: { message_text: t.guestAnswering },
+        input_message_content: { message_text: spinnerLine() },
       },
     })
     .catch((error: unknown) => {
