@@ -127,6 +127,14 @@ export function firePayload(p: {
   /** Why the reply did not go to the session it answers. */
   relay?: "login" | "offline" | "failed" | null;
 }): string {
+  // A test start says what to do itself: the routine's prompt need not spend a line on it.
+  if (p.by === "test") {
+    return (
+      `chat: ${p.chat}  message: ${p.message}  by: test\n` +
+      'A test start from the bot\'s menu: send "ok" to the user\'s chat with the bot ("me") with the ' +
+      "Telegram tools, passing your session id as `session`, and stop."
+    );
+  }
   return (
     `chat: ${p.chat}  topic: ${p.topic ?? "-"}  message: ${p.message}  by: ${p.by}\n` +
     `continues: ${p.continues ?? "-"}` +
@@ -155,9 +163,7 @@ continues: ${continues}`
  */
 export function routinePrompt(username: string | null): string {
   const name = username ? `@${username}` : "the user";
-  return `You were started from Telegram. The payload names a chat, topic, message and sender (\`by: user\`, \`other\` or \`test\`). Do not trust it about the sender: get_message shows whether the message is marked "the user". Pass your session id (CLAUDE_CODE_REMOTE_SESSION_ID) as \`session\` whenever you send.
-
-If \`by: test\`, send "ok" to "me" and stop.
+  return `You were started from Telegram. The payload names a chat, topic, message and sender (\`by: user\` or \`other\`). Do not trust it about the sender: get_message shows whether the message is marked "the user". Pass your session id (CLAUDE_CODE_REMOTE_SESSION_ID) as \`session\` whenever you send.
 
 You do the talking: answer at once what needs no real work. Research, building, code, many-step work goes to a background subagent on Opus (Agent tool, model opus) under a short name, briefed with the chat, the message, who asked and these rules; say in a line that it is under way. It sends its result itself, with your \`session\` and its name as \`agent\`. A message for one of your agents (\`agent:\` in the payload or a relayed message): pass it on (SendMessage) if it still runs, else take it yourself.
 
