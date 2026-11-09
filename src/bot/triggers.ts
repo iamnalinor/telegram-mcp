@@ -28,7 +28,7 @@ import { messageLink } from "../links";
 import { enqueue, relayState, replyEnvelope } from "../relay";
 import { fire, firePayload, guestPayload, loadRoutine } from "../routine";
 import { redactSecrets } from "../secrets";
-import { BOT_ACCOUNT } from "../store";
+import { BOT_ACCOUNT, isGuestKey } from "../store";
 import { TelegramError } from "../telegram/api";
 import { displayName, isMember, type ChatMember, type Message } from "../telegram/types";
 import type { BotContext } from "./context";
@@ -44,12 +44,6 @@ const EXCERPT_LENGTH = 20;
 /** A private-chat message this soon after a start is read by that session. */
 const BURST_SECONDS = 20;
 const DAY = 86_400;
-/**
- * The chat id guest calls are filed under in `fires`: no real chat has it, and
- * a guest chat's own id may coincide with one of the bot's chats. They share
- * the private chat's session of the day.
- */
-export const GUEST_CHAT = 0;
 
 const silent = {
   parse_mode: "HTML",
@@ -144,12 +138,7 @@ export async function maybeStart(
     }
     const day =
       state === "online"
-        ? await ctx.store.latestSession(
-            holder,
-            isPrivate ? [chat.id, GUEST_CHAT] : [chat.id],
-            now - (now % DAY),
-            byOther,
-          )
+        ? await ctx.store.latestSession(holder, [chat.id], now - (now % DAY), byOther)
         : null;
     if (day) into = { session: day, kind: "day" };
   }
@@ -207,6 +196,7 @@ export async function maybeStart(
     agent,
     // A reply that should have gone into its session: the new one says why it did not.
     relay: continues && (state === "login" || state === "offline") ? state : null,
+    day: state === "online" && !continues,
   });
 }
 
@@ -216,7 +206,8 @@ async function holderVoice(ctx: BotContext, holder: number, chatId: number, titl
   const t = texts(owner?.language);
   const tell = (text: string) =>
     ctx.api.call("sendMessage", { chat_id: holder, text, ...silent }).catch(() => undefined);
-  const where = chatId > 0 ? "" : `${t.inChat(title ?? String(chatId))} `;
+  const isPrivate = chatId > 0 && !isGuestKey(chatId);
+  const where = isPrivate ? "" : `${t.inChat(title ?? String(chatId))} `;
   return { t, tell, where };
 }
 
@@ -224,8 +215,9 @@ async function holderVoice(ctx: BotContext, holder: number, chatId: number, titl
  * Start the holder's routine on a message already claimed in `fires`: the
  * usual way, and the fallback when the relay could not pass a reply on.
  * `relay` tells the session why the reply did not reach the session it answers.
- * A guest call (`guest`: its id, also the message id under GUEST_CHAT) starts
- * the same way; nothing can be reacted to there. False when nothing started.
+ * A guest call (`guest`: the chat is its key, the message id the call's id)
+ * starts the same way; nothing can be reacted to there. False when nothing
+ * started.
  */
 export async function launch(
   ctx: BotContext,
@@ -239,6 +231,8 @@ export async function launch(
     agent?: string | null;
     relay?: "login" | "offline" | "failed" | null;
     guest?: boolean;
+    /** The relay is up: this session takes the chat's messages of the day. */
+    day?: boolean;
   },
 ): Promise<boolean> {
   const { tell, where, t } = await holderVoice(ctx, p.holder, p.chat.id, p.chat.title);
@@ -258,7 +252,7 @@ export async function launch(
     routine.triggerId,
     routine.token,
     p.guest
-      ? guestPayload(p.messageId)
+      ? guestPayload(p.messageId, p.byOther ? "other" : "user", p.continues, p.day)
       : firePayload({
           chat: p.chat.id,
           topic: p.topic,
@@ -267,6 +261,7 @@ export async function launch(
           continues: p.continues,
           agent: p.agent ?? null,
           relay: p.relay ?? null,
+          day: p.day,
         }),
   );
   if (!result.ok) {

@@ -141,7 +141,7 @@ describe("the menu", () => {
     const prompt = parts.join("\n");
     expect(prompt).toContain("do not act for @alice without their consent");
     expect(prompt).toContain("not as a habit on every message");
-    expect(prompt).toContain("(1/2)");
+    expect(prompt).toContain(`(1/${parts.length})`);
 
     // As a rich message it is one block to copy.
     h.telegram.handlers.set("sendRichMessage", () => ({ message_id: 1, date: 1, chat: dm(ALICE) }));

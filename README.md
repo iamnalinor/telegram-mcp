@@ -299,12 +299,16 @@ What starts a session:
   the group, it passes to the next who asks. With the relay, the group's tags of the day go to one
   session, like in the private chat — yours to one, other members' to another, so the session you
   work in never hears a third party.
-- **Any chat the bot is not in** (guest mode), while Claude is on in your private chat: tag the bot
-  there, or reply to its message. Telegram hands the bot that one message and the one it replied to
-  — no history, no members — and lets it post one message, which Claude then edits: a placeholder
-  at once, the answer when ready. Only your own calls count; anyone else's are dropped unread. The
-  call goes to your private chat's session of the day (with the relay) or starts one. Everything
-  else in that chat is a third party's, and what Claude writes there is seen by everyone in it.
+- **Any chat the bot is not in** (guest mode): tag the bot there, or reply to its message. Telegram
+  hands the bot that one message and the one it replied to — no history, no members — and lets it
+  post one message per call, which Claude then edits: «✍️ Answering…» at once, the answer when
+  ready. Such a chat is connected like a group: the first call there by someone who may use the bot
+  and has a routine binds the chat to them. From then on their routine answers there, and other
+  people's calls count only if they turn "Others too" on for that chat (🤖 Claude on tag → 🕊 Guest
+  chats: others, their hourly limit, the log of starts, disconnect) — under the same rules and
+  limits as in a group. Calls go to that chat's session of the day (with the relay) or start one;
+  a reply to the bot's message there goes to the chat's latest session. Everything else in that
+  chat is a third party's, and what Claude writes there is seen by everyone in it.
 - **Other members** of that group too, only if you turn on "Others too" — including messages posted
   as a channel or as the group, which always count as someone else's. The session helps them with
   what anyone could do on their own (answers, explanations, web search, talk about the chat). What is
@@ -315,7 +319,7 @@ What starts a session:
   past that the bot reacts 😴 and tells you quietly, once an hour. A reply of theirs to your
   assistant's message starts a new session too, told which session wrote it — under the same rules.
 
-Every start in a group goes into the group's 📜 Starts (guest calls are not listed anywhere yet): who, when, the first words and a link to the session.
+Every start goes into the chat's 📜 Starts: who, when, the first words and a link to the session.
 
 **Who does the work.** The routine runs on Sonnet and does the talking: it answers what it can at
 once and hands real work — research, building something, code — to a subagent on Opus, in the
@@ -328,6 +332,10 @@ agent's, and the session passes it on. The prompt also tells Claude to write the
 secondary one ending in `agent`, `ai`, `app` or `game`, which Telegram lets Premium owners assign to
 two of their bots, or a collectible one — list them in `BOT_USERNAMES` (comma-separated), and a tag
 by any of them counts.
+
+**Names.** A session started from Telegram names itself, so the list on claude.ai reads at a
+glance: the chat and the date for a chat's session of the day ("Team chat · 2026-11-09"), the chat
+and the message for a single one ("me · #4512").
 
 Never: commands, edits, answers to the bot's own prompts, a reply that a waiting `ask_user` will
 pick up, and — in groups — forwards and messages via inline bots. Each message starts one session at
@@ -359,7 +367,7 @@ the relay later, run the same `curl … | bash` without `RELAY_TOKEN`: it keeps 
 With the relay:
 
 - A reply to a session's message goes into **that** session instead of starting a new one; so do
-  a chat's messages of the day, and guest calls. Nothing new starts, so the bot puts no 👀 on them.
+  a chat's messages of the day, guest calls among them. Nothing new starts, so the bot puts no 👀 on them.
 - `list_sessions` shows the sessions the bot knows of (started by a tag, wrote through the bot, or
   were messaged). `message_session` asks one of them something — "how is the migration going?" —
   or hands it a request, by id or link; the session answers with `answer_session`. A session the

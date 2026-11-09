@@ -186,7 +186,8 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
       description:
         'Message the user in Telegram — chat "me" by default — or a connected group. Use for "message me / ' +
         'ping me when done / tell me in Telegram". Markdown is converted; long text is split. format "rich" ' +
-        "sends a rich message: headings, tables, collapsible blocks. Optional buttons " +
+        "sends a rich message — use it unasked for anything compared, listed with attributes, or longer than " +
+        "about ten lines: tables, headings, collapsible <details>. Optional buttons " +
         "(presses are recorded) and reply_to. Returns the message id and a t.me link to give the user. For a " +
         `question that needs an answer, use ask_user instead. ${GROUP_NOTE}`,
       inputSchema: z.object({
@@ -250,7 +251,8 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     {
       title: "Ask the user in Telegram and wait",
       description:
-        "Ask a question in Telegram with answer buttons, then wait for the press or a typed reply. Use when " +
+        "Ask a question in Telegram with answer buttons, then wait for the press or a typed reply. Prefer it " +
+        "to a question in prose whenever the answer is one of a few options. Use when " +
         'you need a decision and the user may not be watching this conversation ("ask me in Telegram before ' +
         `deploying"). Waits up to ${WAIT_MAX_SECONDS} s; if nothing comes, call wait_for_reply with the returned ` +
         "message id. Never act as if an answer came when it did not.",
@@ -583,7 +585,8 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     {
       title: "Start a poll",
       description:
-        'Post a native Telegram poll, typically in a group ("poll the team on Friday vs Monday"). With ' +
+        'Post a native Telegram poll, typically in a group ("poll the team on Friday vs Monday") — the way ' +
+        "to settle something several people decide. With " +
         "correct_options it is a quiz. Votes are not reported back to you; for one person's decision, use " +
         `ask_user. ${GROUP_NOTE}`,
       inputSchema: z.object({
@@ -676,7 +679,8 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         "In the private chat only: show text as a streaming preview — it appears as if being typed, and " +
         "vanishes after about 30 s or when the bot sends a message. Call it again with the same draft and " +
         "more text to make it grow; empty text shows «Thinking…». It is not a message: nothing is stored, " +
-        "so finish with send_message. Use it for a long answer the user is waiting on, not for every reply.",
+        "so finish with send_message. Use it unasked whenever the user waits more than a few seconds for " +
+        "you in the private chat: empty at once, then with the text of a long answer as it grows.",
       inputSchema: z.object({
         text: z.string().max(4000).optional().describe("The text so far. Omit for «Thinking…»."),
         draft: z
@@ -721,8 +725,9 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     {
       title: "Send an interactive widget",
       description:
-        "Send a small interactive block drawn inside a message: a board, a tracker with taps, a chart, a " +
-        "picker. For now Telegram shows widgets only in the private chat with the bot. A widget is one " +
+        "Send a small interactive block drawn inside a message: a checklist to tick off, a counter, a " +
+        "tracker, a board, a chart, a picker, a small game. Offer it unasked when tapping or a live view " +
+        "beats text. For now Telegram shows widgets only in the private chat with the bot. A widget is one " +
         "self-contained HTML document with inline <style> and <script>: at most 32768 bytes and 4096 after " +
         "zlib compression, no network, no external files, no keyboard input; images only as inline SVG or " +
         "data: URLs; design for 320 px wide and at most 600 px tall; use the --tg-theme-* CSS variables " +

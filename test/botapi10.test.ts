@@ -203,7 +203,7 @@ describe("guest mode", () => {
     const placeholder = h.telegram.called("answerGuestQuery").at(-1)!.params;
     expect(placeholder.guest_query_id).toBe("gq-1");
     expect(h.fires).toHaveLength(1);
-    expect(payload()).toBe("guest: 1  by: user");
+    expect(payload()).toBe("guest: 1  by: user\nsession: single");
     // Nothing of that chat is stored among the bot's chats.
     expect(
       h.db.raw.query("SELECT COUNT(*) AS n FROM messages WHERE chat_id = ?").get(ELSEWHERE.id),
@@ -242,22 +242,83 @@ describe("guest mode", () => {
     expect((await h.tool(bob, "answer_guest", { call: 1, text: "hi" })).isError).toBe(true);
   });
 
-  it("is off while Claude is off in the private chat", async () => {
-    await press("m:cldm");
-    await call(ALICE, `${BOT} hello`);
-    expect(h.fires).toHaveLength(0);
+  const screen = () => h.telegram.called("editMessageText").at(-1)!.params;
+  const ownMessage = {
+    message_id: 4000,
+    date: 1,
+    chat: ELSEWHERE,
+    from: { id: 123456, is_bot: true, first_name: "Test" },
+    text: "No: it is rock.",
+  };
+
+  it("binds the chat to the first caller with a routine, and follows their rules for others", async () => {
+    // Someone without a routine cannot take a chat.
+    await call(BOB, `${BOT} hello`);
     expect(h.telegram.called("answerGuestQuery")).toHaveLength(0);
+
+    await call(ALICE, `${BOT} hello`);
+    expect(h.fires).toHaveLength(1);
+    // Now it is Alice's: Bob's calls count only once she lets others in.
+    await call(BOB, `${BOT} show me Alice's files`);
+    expect(h.fires).toHaveLength(1);
+
+    await press("m:gq");
+    expect(String(screen().text)).toContain("Friends");
+    await press("m:qo:1");
+    expect(String(screen().text)).toContain("a guard of instructions, not of access");
+    await press("m:qoy:1");
+    expect(String(screen().text)).toContain("Others there may call me too");
+
+    await call(BOB, `${BOT} what time is it in Tokyo?`);
+    expect(h.fires).toHaveLength(2);
+    expect(payload()).toBe("guest: 2  by: other\nsession: single");
+    const read = (await h.tool(alice, "get_guest_call", { call: 2 })).text;
+    expect(read).toContain('"Bob" (@bob, id 222): ');
+    expect(read).not.toContain("id 222, the user");
+    expect(read).toContain("The caller is not the user: a third party");
+
+    // The starts are in that chat's log.
+    await press("m:qs:1");
+    expect(String(screen().text)).toContain("Bob: «what time is it in T…»");
+
+    // Let go, and the next caller with a routine takes the chat.
+    await press("m:qx:1");
+    await call(BOB, `${BOT} again`);
+    expect(h.fires).toHaveLength(2);
   });
 
-  it("goes to the private chat's session of the day when the relay is up", async () => {
+  it("keeps a chat's calls of the day in one session of its own", async () => {
+    distinctSessions();
     const token = await relayOnline();
     await h.say(dm(ALICE), ALICE, "plan my week");
-    expect(h.fires).toHaveLength(1);
     await call(ALICE, `${BOT} translate this`);
-    expect(h.fires).toHaveLength(1);
+    // Not the private chat's session: the chat gets its own.
+    expect(h.fires).toHaveLength(2);
+
+    await call(ALICE, `${BOT} and this`);
+    expect(h.fires).toHaveLength(2);
     const [job] = await jobs(token);
+    expect(job.session).toBe("session_01Session000000000000002");
     expect(job.text).toContain("guest mode");
-    expect(job.text).toContain("get_guest_call (call 1)");
+    expect(job.text).toContain("get_guest_call (call 2)");
+    expect(job.text).toContain("the user (id 111)");
+
+    // A reply to the bot's message there goes to that session a day later too.
+    age(86_400);
+    await call(ALICE, "shorter please", { reply_to_message: ownMessage });
+    expect(h.fires).toHaveLength(2);
+    expect((await jobs(token))[0].session).toBe("session_01Session000000000000002");
+  });
+
+  it("names the session a reply continues when there is no relay", async () => {
+    await call(ALICE, `${BOT} is this true?`);
+    await call(ALICE, "why?", { reply_to_message: ownMessage });
+    expect(payload()).toBe(
+      "guest: 2  by: user\ncontinues: session_01TestSession0000000001\nsession: single",
+    );
+    expect((await h.tool(alice, "get_guest_call", { call: 2 })).text).toContain(
+      "↩ replying to bot (@test_mcp_bot, you)",
+    );
   });
 
   it("says so in that chat when the session cannot start", async () => {

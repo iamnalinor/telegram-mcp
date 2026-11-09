@@ -154,16 +154,36 @@ export interface KnownSession {
   asked_at?: number;
 }
 
+/**
+ * Chats the bot is called in as a guest are filed under keys of their own,
+ * above any id Telegram gives out: such a chat's id may coincide with one of
+ * the bot's chats. `GUEST_BASE + guest_chats.id`.
+ */
+export const GUEST_BASE = 8_000_000_000_000_000;
+
+export const isGuestKey = (chatId: number): boolean => chatId >= GUEST_BASE;
+
+export interface GuestChat {
+  id: number;
+  chat_id: number;
+  chat_type: string;
+  title: string | null;
+}
+
 /** A call on the bot from a chat it is not in (guest mode). */
 export interface GuestCall {
   id: number;
+  /** The chat's holder: whose routine answers there. */
   user_id: number;
+  chat_key: number;
   query_id: string;
-  /** The bot's one message there; null until Telegram accepted the placeholder. */
+  /** The bot's one message for this call; null until Telegram accepted the placeholder. */
   inline_message_id: string | null;
-  chat_id: number | null;
-  chat_type: string | null;
-  chat_title: string | null;
+  from_id: number;
+  from_name: string | null;
+  from_username: string | null;
+  /** 1 when someone other than the holder called. */
+  by_other: number;
   text: string;
   /** The attachment, as "kind name": guest chats' files are not fetched. */
   file: string | null;
@@ -2126,19 +2146,61 @@ export class Store {
 
   // --- guest calls ---------------------------------------------------------
 
+  /** The chat a guest call came from, known since the first call there. */
+  guestChat(chatType: string, chatId: number): Promise<GuestChat | null> {
+    return this.db
+      .prepare("SELECT * FROM guest_chats WHERE chat_type = ? AND chat_id = ?")
+      .bind(chatType, chatId)
+      .first<GuestChat>();
+  }
+
+  guestChatByKey(key: number): Promise<GuestChat | null> {
+    return this.db
+      .prepare("SELECT * FROM guest_chats WHERE id = ?")
+      .bind(key - GUEST_BASE)
+      .first<GuestChat>();
+  }
+
+  /** Remember the chat, and its title when it changed. */
+  async upsertGuestChat(chatType: string, chatId: number, title: string | null) {
+    const row = await this.db
+      .prepare(
+        `INSERT INTO guest_chats (chat_type, chat_id, title) VALUES (?, ?, ?)
+         ON CONFLICT (chat_type, chat_id) DO UPDATE SET title = excluded.title RETURNING *`,
+      )
+      .bind(chatType, chatId, title)
+      .first<GuestChat>();
+    return row!;
+  }
+
+  /** The guest chats this user holds, latest first, with whether others may call there. */
+  async guestChatsOf(userId: number): Promise<(GuestChat & { others: number })[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT g.*, c.others FROM claude_chats c JOIN guest_chats g ON g.id = c.chat_id - ?
+         WHERE c.user_id = ? AND c.chat_id >= ? ORDER BY c.since DESC LIMIT 30`,
+      )
+      .bind(GUEST_BASE, userId, GUEST_BASE)
+      .all<GuestChat & { others: number }>();
+    return results;
+  }
+
   /** Record a call from a chat the bot is not in. Null when Telegram already delivered it. */
   async insertGuestCall(call: Omit<GuestCall, "id" | "inline_message_id" | "answer" | "at">) {
     const row = await this.db
       .prepare(
-        `INSERT INTO guest_calls (user_id, query_id, chat_id, chat_type, chat_title, text, file, reply, at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (query_id) DO NOTHING RETURNING id`,
+        `INSERT INTO guest_calls
+           (user_id, chat_key, query_id, from_id, from_name, from_username, by_other, text, file, reply, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (query_id) DO NOTHING RETURNING id`,
       )
       .bind(
         call.user_id,
+        call.chat_key,
         call.query_id,
-        call.chat_id,
-        call.chat_type,
-        call.chat_title,
+        call.from_id,
+        call.from_name,
+        call.from_username,
+        call.by_other,
         redactSecrets(call.text),
         call.file,
         call.reply,
