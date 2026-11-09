@@ -82,7 +82,7 @@ export const ACTIONS: readonly string[] = [
 ];
 
 /** Names an event provides; no state field or let may take them. */
-const RESERVED: readonly string[] = [
+export const RESERVED: readonly string[] = [
   "user",
   "arg",
   "event",
@@ -410,7 +410,7 @@ function isPath(expr: Expr): boolean {
 }
 
 /** The state field an assignment path starts at. */
-function pathRoot(expr: Expr): { n: string; at: number } {
+export function pathRoot(expr: Expr): { n: string; at: number } {
   return expr.k === "get" ? pathRoot(expr.obj) : (expr as { n: string; at: number });
 }
 
@@ -459,7 +459,7 @@ export function isMap(value: Value): value is { [key: string]: Value } {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function truthy(value: Value): boolean {
+export function truthy(value: Value): boolean {
   if (Array.isArray(value)) return value.length > 0;
   if (isMap(value)) return Object.keys(value).length > 0;
   return Boolean(value);
