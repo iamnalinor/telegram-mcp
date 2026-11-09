@@ -633,3 +633,90 @@ describe("what the review found", () => {
     expect(String(told.text)).toContain("Guest Mode");
   });
 });
+
+describe("what the second review found", () => {
+  const guest = (
+    from: typeof ALICE,
+    queryId: string,
+    extra: Record<string, unknown> = {},
+    chat: Record<string, unknown> = ELSEWHERE,
+  ) =>
+    h.update({
+      guest_message: {
+        message_id: 1,
+        date: Math.floor(Date.now() / 1000),
+        chat,
+        from: { ...from, is_bot: false },
+        text: `${BOT} hello`,
+        guest_query_id: queryId,
+        ...extra,
+      },
+    });
+
+  beforeEach(() => {
+    h.telegram.handlers.set("answerGuestQuery", () => ({ inline_message_id: "inline-1" }));
+  });
+
+  it("takes no forward and no inline bot's text for a call", async () => {
+    await guest(ALICE, "f1", {
+      forward_origin: { type: "hidden_user", sender_user_name: "Mallory", date: 1 },
+    });
+    await guest(ALICE, "f2", { via_bot: { id: 5, is_bot: true, first_name: "Gif" } });
+    expect(h.fires).toHaveLength(0);
+    expect(h.telegram.called("answerGuestQuery")).toHaveLength(0);
+  });
+
+  it("keeps two people's private chats with the same person apart", async () => {
+    await h.say(dm(BOB), BOB, "/start");
+    await h.connect(BOB);
+    await h.say(dm(BOB), BOB, `${TRIGGER} ${TOKEN}`);
+    h.fires.length = 0;
+    const xavier = { id: 333, type: "private", first_name: "Xavier" };
+    await guest(BOB, "p1", {}, xavier);
+    await guest(ALICE, "p2", {}, xavier);
+    // Each is answered by their own routine, as the user.
+    expect(h.fires).toHaveLength(2);
+    expect(h.fires.map((fire) => fire.body.text.split("\n")[0])).toEqual([
+      "guest: 1  by: user",
+      "guest: 2  by: user",
+    ]);
+    const read = (await h.tool(alice, "get_guest_call", { call: 2 })).text;
+    expect(read).toContain('In: "Xavier" (private)');
+  });
+
+  it("tells someone who could have taken the chat that it is held, once", async () => {
+    await h.say(dm(BOB), BOB, "/start");
+    await h.connect(BOB);
+    await h.say(dm(BOB), BOB, `${TRIGGER} ${TOKEN}`);
+    await guest(ALICE, "h1");
+    h.fires.length = 0;
+    const toBob = () =>
+      h.telegram
+        .called("sendMessage")
+        .filter((c) => c.params.chat_id === BOB.id && String(c.params.text).includes("Friends"));
+    await guest(BOB, "h2");
+    await guest(BOB, "h3");
+    expect(h.fires).toHaveLength(0);
+    expect(toBob()).toHaveLength(1);
+    expect(String(toBob()[0].params.text)).toContain("connected to @alice");
+  });
+
+  it("posts nothing in the chat past the limit", async () => {
+    await guest(ALICE, "l0");
+    await press("m:qoy:1");
+    for (let i = 0; i < 25; i++) await guest(BOB, `l${i + 1}`);
+    // One for Alice, twenty for Bob: the rest get no placeholder.
+    expect(h.telegram.called("answerGuestQuery")).toHaveLength(21);
+  });
+
+  it("still tells the model about personal chats", async () => {
+    const { instructions } = await import("../src/prompts");
+    const text = instructions({
+      retentionDays: 14,
+      botUsername: "b",
+      user: { id: 1, username: null, name: null },
+    });
+    expect(text).toContain("\nPersonal chats\n");
+    expect(text).toContain("Anything you send there goes out as the user");
+  });
+});

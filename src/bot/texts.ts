@@ -222,6 +222,8 @@ const en = {
     (p.others
       ? `⚠️ Others there may call me too, up to ${p.limit} times an hour. I help them only with what anyone could do on their own.`
       : "Only your calls count there."),
+  guestHeld: (title: string, holder: string) =>
+    `ℹ️ You called me in «${escapeHtml(title)}», but that chat is connected to ${holder}: there I answer them, and others only if they allow it.`,
   buttonGuestRelease: "🔌 Disconnect",
   guestReleased: "Disconnected. The next call there binds the chat anew.",
   guestNoAnswer: (title: string) =>
@@ -510,6 +512,8 @@ const ru: Texts = {
     (p.others
       ? `⚠️ Меня могут звать и другие, до ${p.limit} раз в час. Им я помогаю только с тем, что любой мог бы сделать сам.`
       : "Считаются только твои вызовы."),
+  guestHeld: (title, holder) =>
+    `ℹ️ Ты позвал меня в «${escapeHtml(title)}», но этот чат привязан к ${holder}: там я отвечаю ему, а остальным — только если он разрешит.`,
   buttonGuestRelease: "🔌 Отвязать",
   guestReleased: "Отвязано. Следующий вызов привяжет чат заново.",
   guestNoAnswer: (title) =>

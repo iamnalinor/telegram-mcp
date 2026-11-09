@@ -32,7 +32,7 @@ import { displayName, type Message } from "../telegram/types";
 import type { BotContext } from "./context";
 import { hasContent, realReply, toStored } from "./extract";
 import { texts } from "./texts";
-import { excerptOf, launch } from "./triggers";
+import { excerptOf, holderName, launch } from "./triggers";
 
 /** Starts in all, per user per hour, as in src/bot/triggers.ts. */
 const USER_PER_HOUR = 30;
@@ -68,20 +68,60 @@ async function holderOf(
 ): Promise<{ key: number; claim: ClaudeChat } | null> {
   const chat = message.chat;
   const title = titleOf(message);
-  let known = await ctx.store.guestChat(chat.type, chat.id);
+  // A private chat is known by the other person's id, which two callers' chats
+  // with that person share: each caller's is a chat of its own.
+  const type = chat.type === "private" ? `private:${callerId}` : chat.type;
+  let known = await ctx.store.guestChat(type, chat.id);
   let claim = known ? await ctx.store.getClaudeChat(GUEST_BASE + known.id) : null;
+  if (claim && !isAllowed(ctx.config, claim.user_id)) {
+    // A holder who may no longer use the bot holds nothing.
+    await ctx.store.releaseClaudeChat(claim.user_id, GUEST_BASE + known!.id);
+    claim = null;
+  }
   if (!claim) {
     // The first call binds the chat — for someone who could turn Claude on in a group, too.
     if (!isAllowed(ctx.config, callerId) || !(await ctx.store.getRoutine(callerId))) return null;
-    known = await ctx.store.upsertGuestChat(chat.type, chat.id, title);
+    known = await ctx.store.upsertGuestChat(type, chat.id, title);
     await ctx.store.claimClaudeChat(callerId, GUEST_BASE + known.id);
     claim = await ctx.store.getClaudeChat(GUEST_BASE + known.id);
   } else if (known && known.title !== title) {
-    await ctx.store.upsertGuestChat(chat.type, chat.id, title);
+    await ctx.store.upsertGuestChat(type, chat.id, title);
   }
-  if (!known || !claim || !isAllowed(ctx.config, claim.user_id)) return null;
-  if (callerId !== claim.user_id && !claim.others) return null;
+  if (!known || !claim) return null;
+  if (callerId !== claim.user_id && !claim.others) {
+    await tellHeld(ctx, message, callerId, claim.user_id, known.id);
+    return null;
+  }
   return { key: GUEST_BASE + known.id, claim };
+}
+
+/** Callers already told that a chat is someone else's, in this isolate: once is enough. */
+const toldHeld = new Set<string>();
+
+/**
+ * Someone who could have taken the chat finds it held by another: unlike in a
+ * group, nothing shows them that, so they hear it once in private.
+ */
+async function tellHeld(
+  ctx: BotContext,
+  message: Message,
+  callerId: number,
+  holder: number,
+  chat: number,
+): Promise<void> {
+  const mark = `${chat}:${callerId}`;
+  if (toldHeld.has(mark) || !isAllowed(ctx.config, callerId)) return;
+  if (!(await ctx.store.getRoutine(callerId))) return;
+  toldHeld.add(mark);
+  const t = texts(message.from?.language_code);
+  await ctx.api
+    .call("sendMessage", {
+      chat_id: callerId,
+      text: t.guestHeld(titleOf(message) ?? "", await holderName(ctx, holder)),
+      parse_mode: "HTML",
+      disable_notification: true,
+    })
+    .catch(() => undefined);
 }
 
 export async function onGuestMessage(ctx: BotContext, message: Message): Promise<void> {
@@ -89,6 +129,8 @@ export async function onGuestMessage(ctx: BotContext, message: Message): Promise
   const queryId = message.guest_query_id;
   // Posted as a channel or the chat, no person is known: nobody's call.
   if (!from || from.is_bot || message.sender_chat || !queryId || !hasContent(message)) return;
+  // As in a group: a forward or an inline bot's text is not the sender's own, and calls on nobody.
+  if (message.forward_origin || message.via_bot) return;
   const held = await holderOf(ctx, message, from.id);
   if (!held) return;
   const { key, claim } = held;
@@ -133,6 +175,33 @@ export async function onGuestMessage(ctx: BotContext, message: Message): Promise
       })
       .catch(() => undefined);
 
+  // Claimed before anything is posted: past the limit the bot stays silent
+  // there, so nobody can make it fill a chat with placeholders.
+  const entry = {
+    chatId: key,
+    messageId: id,
+    userId: holder,
+    byOther,
+    fromName: displayName(from),
+    excerpt: excerptOf(stored.text, ctx.bot),
+    album: null,
+  };
+  const claimed = await ctx.store.beginFire(entry, {
+    user: USER_PER_HOUR,
+    others: claim.others_limit,
+  });
+  if (claimed === "again") return;
+  if (claimed === "limit") {
+    if (await ctx.store.noteLimited(entry)) {
+      const ot = texts(owner?.language);
+      await tellHolder(
+        `${ot.inChat(title ?? "")} ` +
+          (byOther ? ot.othersLimited(claim.others_limit) : ot.tooManyStarts),
+      );
+    }
+    return;
+  }
+
   // The one message the bot gets for this call. Without it there is nowhere to answer.
   const sent = await ctx.api
     .call<{ inline_message_id?: string }>("answerGuestQuery", {
@@ -149,39 +218,12 @@ export async function onGuestMessage(ctx: BotContext, message: Message): Promise
       return null;
     });
   if (!sent?.inline_message_id) {
-    // Telegram retries nothing here, and the call is recorded: the holder hears why nothing came.
+    // Telegram retries nothing here: the holder hears why nothing came.
+    await ctx.store.endFire(key, id, { status: "failed" });
     if (!byOther) await tellHolder(texts(owner?.language).guestNoAnswer(title ?? ""));
     return;
   }
   await ctx.store.setGuestMessage(id, sent.inline_message_id);
-  const call = { inline_message_id: sent.inline_message_id };
-
-  const entry = {
-    chatId: key,
-    messageId: id,
-    userId: holder,
-    byOther,
-    fromName: displayName(from),
-    excerpt: excerptOf(stored.text, ctx.bot),
-    album: null,
-  };
-  const claimed = await ctx.store.beginFire(entry, {
-    user: USER_PER_HOUR,
-    others: claim.others_limit,
-  });
-  if (claimed === "again") return;
-  if (claimed === "limit") {
-    // Not silence: the caller sees the bot is resting, and the holder hears once an hour.
-    await guestSay(ctx, call, "😴");
-    if (await ctx.store.noteLimited(entry)) {
-      const ot = texts(owner?.language);
-      await tellHolder(
-        `${ot.inChat(title ?? "")} ` +
-          (byOther ? ot.othersLimited(claim.others_limit) : ot.tooManyStarts),
-      );
-    }
-    return;
-  }
 
   // Where it goes: the chat's session of the day; a reply to the bot's message
   // there, to the chat's latest session however old.

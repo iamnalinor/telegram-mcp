@@ -1,5 +1,5 @@
 /**
- * Guest calls: the user called the bot in a chat it is not a member of (see
+ * Guest calls: the bot was called in a chat it is not a member of (see
  * src/bot/guest.ts). The bot knows that one message and the one it replied
  * to, and has one message of its own there, which answers edit.
  */
@@ -66,7 +66,7 @@ export function registerGuestTools(server: McpServer, ctx: ToolContext): void {
               ]
             : []),
         ];
-        const where = `${JSON.stringify(chat?.title ?? "a private chat")} (${chat?.chat_type ?? "chat"})`;
+        const where = `${JSON.stringify(chat?.title ?? "a private chat")} (${chat?.chat_type.split(":")[0] ?? "chat"})`;
         const fence = new Fence(ctx.user, [...lines, where, call.answer ?? ""]);
         return text(
           `Guest call ${call.id}, ${formatTime(call.at)} UTC. ${fence.note()}\n` +
