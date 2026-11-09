@@ -42,7 +42,7 @@ import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { handleAssistantButton, handleChatShared, handleCommand, handleRevoke } from "./commands";
 import { handleMemoryUndo, handleMenu, takeLimitAnswer } from "./menu";
 import { onGuestMessage } from "./guest";
-import { handleScenePress } from "./scenes";
+import { handleScenePress, sceneReaction, scenePoll, sceneReply, sceneVote } from "./scenes";
 import { handleSecret } from "./routine";
 import { maybeStart } from "./triggers";
 import { parseCommand, realReply, toStored, topicName, topicOf } from "./extract";
@@ -144,6 +144,9 @@ async function onMessage(
     const taken = await takeLimitAnswer(ctx, { ...message, from: message.from });
     if (taken) return taken === "asked" ? null : taken;
   }
+
+  // A reply a scene takes is the scene's: it starts no session.
+  if (message.reply_to_message && (await sceneReply(ctx, message))) return null;
 
   const command = parseCommand(message, ctx.bot);
   // A start that fails must not lose the update: it is told to the user, not retried.
@@ -332,6 +335,7 @@ async function onReaction(ctx: BotContext, update: MessageReactionUpdated): Prom
     emoji,
     date: update.date || nowSeconds(),
   });
+  if (!user.is_bot) await sceneReaction(ctx, update.chat.id, update.message_id, user, emoji);
 }
 
 const SHOWN_RIGHTS: (keyof BusinessBotRights)[] = [
@@ -511,6 +515,14 @@ async function dispatch(ctx: BotContext, update: Update): Promise<WebhookReply |
     return null;
   }
   if (update.widget_query) return onWidgetQuery(ctx, update.widget_query);
+  if (update.poll_answer) {
+    await sceneVote(ctx, update.poll_answer);
+    return null;
+  }
+  if (update.poll) {
+    await scenePoll(ctx, update.poll);
+    return null;
+  }
   return null;
 }
 

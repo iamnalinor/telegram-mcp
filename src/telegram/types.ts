@@ -204,6 +204,26 @@ export interface Update {
   /** The bot was called in a chat it is not a member of (guest mode). */
   guest_message?: Message;
   widget_query?: WidgetQuery;
+  /** New state of a poll the bot sent. */
+  poll?: Poll;
+  /** A vote in a non-anonymous poll the bot sent. */
+  poll_answer?: PollAnswer;
+}
+
+export interface Poll {
+  id: string;
+  question: string;
+  options: { text: string; voter_count: number }[];
+  total_voter_count: number;
+  is_closed: boolean;
+}
+
+export interface PollAnswer {
+  poll_id: string;
+  /** Set instead of `user` when the voter is anonymous (a chat). */
+  voter_chat?: Chat;
+  user?: User;
+  option_ids: number[];
 }
 
 /** A tap inside a widget the bot sent: its script asked the bot something. */

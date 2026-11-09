@@ -26,6 +26,8 @@ const ALLOWED_UPDATES = [
   "deleted_business_messages",
   "guest_message",
   "widget_query",
+  "poll",
+  "poll_answer",
 ];
 
 export const WEBHOOK_PATH = "/telegram";

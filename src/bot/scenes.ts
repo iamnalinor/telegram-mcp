@@ -21,6 +21,8 @@ import {
   type CallbackQuery,
   type InlineKeyboardMarkup,
   type Message,
+  type Poll,
+  type PollAnswer,
   type User,
 } from "../telegram/types";
 import { allow } from "../limits";
@@ -45,7 +47,8 @@ import type { BotContext, WebhookReply } from "./context";
 import { toStored } from "./extract";
 import { texts } from "./texts";
 
-export type Answer = { text?: string; alert?: boolean; applied?: boolean };
+/** The answer for whoever caused the event; `applied` when a rule ran, `noRule` when none took it. */
+export type Answer = { text?: string; alert?: boolean; applied?: boolean; noRule?: boolean };
 
 /** What a scene's I/O needs; tools pass their own context, which has these too. */
 type SceneContext = Pick<BotContext, "api" | "store" | "bot" | "defer" | "sceneLimit">;
@@ -296,6 +299,7 @@ export async function applyEvent(
       if (found.refused === "not_for_you") {
         return { text: found.who === "owner" ? t.sceneNotForYou(owner.name) : t.sceneDenied };
       }
+      if (found.refused === "no_rule") return { text: t.sceneDenied, noRule: true };
       return { text: found.refused === "said" && found.text ? found.text : t.sceneDenied };
     }
     if (found.wakes) {
@@ -522,3 +526,87 @@ export async function endScene(ctx: SceneContext, sceneId: number): Promise<bool
   await redraw(ctx, { ...row, status: "finished" });
   return true;
 }
+
+/** The text of a message, as a reply event carries it. */
+const REPLY_LENGTH = 256;
+
+/**
+ * A message that replies to a scene's message: the scene's `reply` event. A
+ * rule that takes it is the whole answer (no session starts); a rule that
+ * refuses gets 👎 on the reply. False when no scene or no rule took it: the
+ * message goes its usual way.
+ */
+export async function sceneReply(ctx: BotContext, message: Message): Promise<boolean> {
+  const target = message.reply_to_message;
+  const text = message.text ?? message.caption;
+  if (!target || target.from?.id !== ctx.bot.id || !message.from || message.from.is_bot || !text) {
+    return false;
+  }
+  const link = await ctx.store.sceneByLink("message", `${message.chat.id}:${target.message_id}`);
+  if (!link) return false;
+  const answer = await applyEvent(
+    ctx,
+    link.scene_id,
+    {
+      on: "reply",
+      user: actorOf(message.from),
+      event: { text: Array.from(text).slice(0, REPLY_LENGTH).join("") },
+    },
+    undefined,
+    message.from.language_code,
+  );
+  if (answer.noRule) return false;
+  if (!answer.applied) {
+    await ctx.api
+      .call("setMessageReaction", {
+        chat_id: message.chat.id,
+        message_id: message.message_id,
+        reaction: [{ type: "emoji", emoji: "👎" }],
+      })
+      .catch(() => undefined);
+  }
+  return true;
+}
+
+/** A reaction on a scene's message: its `reaction` event. Nothing to answer. */
+export async function sceneReaction(
+  ctx: BotContext,
+  chatId: number,
+  messageId: number,
+  user: User,
+  emoji: string,
+): Promise<void> {
+  const link = await ctx.store.sceneByLink("message", `${chatId}:${messageId}`);
+  if (!link) return;
+  await applyEvent(ctx, link.scene_id, { on: "reaction", user: actorOf(user), event: { emoji } });
+}
+
+/** A vote in a scene's poll; anonymous votes name nobody and count for nothing. */
+export async function sceneVote(ctx: BotContext, answer: PollAnswer): Promise<void> {
+  if (!answer.user) return;
+  const link = await ctx.store.sceneByLink("poll", answer.poll_id);
+  if (!link) return;
+  await applyEvent(ctx, link.scene_id, {
+    on: "vote",
+    user: actorOf(answer.user),
+    event: { options: answer.option_ids },
+  });
+}
+
+/** New totals of a scene's poll. */
+export async function scenePoll(ctx: BotContext, poll: Poll): Promise<void> {
+  const link = await ctx.store.sceneByLink("poll", poll.id);
+  if (!link) return;
+  await applyEvent(ctx, link.scene_id, {
+    on: "poll",
+    user: TELEGRAM,
+    event: {
+      total: poll.total_voter_count,
+      counts: poll.options.map((option) => option.voter_count),
+      closed: poll.is_closed,
+    },
+  });
+}
+
+/** Who stands behind an event no person caused, such as new poll totals. */
+const TELEGRAM: Actor = { id: 0, name: "Telegram" };
