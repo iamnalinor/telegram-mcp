@@ -25,7 +25,14 @@ import { nowSeconds, randomId, sha256Base64Url } from "./crypto";
 import { Fence } from "./format";
 import type { UserRef } from "./prompts";
 import { installScript } from "./relayScript";
-import { BOT_ACCOUNT, type RelayJob, type RelayOrigin, type RelayRow, type Store } from "./store";
+import {
+  BOT_ACCOUNT,
+  type GuestReply,
+  type RelayJob,
+  type RelayOrigin,
+  type RelayRow,
+  type Store,
+} from "./store";
 
 /** Heard from within this long: online. The relay asks every few seconds. */
 const ONLINE_SECONDS = 120;
@@ -285,7 +292,15 @@ export async function fallBack(
     }
   }
   if (job.kind === "guest") {
-    await startGuest(ctx, job.user_id, job.message_id, null);
+    // A call that answered the bot's own message there carries on from that session.
+    const call = await ctx.store.getGuestCall(job.user_id, job.message_id);
+    let toOwn: boolean;
+    try {
+      toOwn = call?.reply ? (JSON.parse(call.reply) as GuestReply).own : false;
+    } catch {
+      toOwn = false;
+    }
+    await startGuest(ctx, job.user_id, job.message_id, toOwn ? job.target_session : null);
     return;
   }
   const chat = await ctx.store.getChat(job.chat_id);

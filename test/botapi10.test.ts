@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import { richText } from "../src/bot/extract";
+import worker from "../src/index";
 import { Harness } from "./harness";
 
 const ALICE = { id: 111, first_name: "Alice", username: "alice", language_code: "en" };
@@ -716,5 +717,70 @@ describe("what the second review found", () => {
     });
     expect(text).toContain("\nPersonal chats\n");
     expect(text).toContain("Anything you send there goes out as the user");
+  });
+});
+
+describe("the tails", () => {
+  const guest = (queryId: string, extra: Record<string, unknown> = {}) =>
+    h.update({
+      guest_message: {
+        message_id: 1,
+        date: Math.floor(Date.now() / 1000),
+        chat: ELSEWHERE,
+        from: { ...ALICE, is_bot: false },
+        text: `${BOT} hello`,
+        guest_query_id: queryId,
+        ...extra,
+      },
+    });
+
+  beforeEach(() => {
+    h.telegram.handlers.set("answerGuestQuery", () => ({ inline_message_id: "inline-1" }));
+  });
+
+  it("forgets a guest chat nobody holds, at the daily cleanup", async () => {
+    await guest("t1");
+    const chats = () => h.db.raw.query("SELECT COUNT(*) AS n FROM guest_chats").get();
+    await worker.scheduled({} as ScheduledController, h.env);
+    expect(chats()).toEqual({ n: 1 });
+
+    await press("m:qx:1");
+    await worker.scheduled({} as ScheduledController, h.env);
+    expect(chats()).toEqual({ n: 0 });
+
+    // The next call binds the chat anew, under a key of its own.
+    await guest("t2");
+    expect(
+      (
+        h.db.raw.query("SELECT chat_id FROM claude_chats ORDER BY chat_id DESC").get() as {
+          chat_id: number;
+        }
+      ).chat_id,
+    ).toBe(8_000_000_000_000_002);
+  });
+
+  it("names the session a reply continues when the relay could not pass the call on", async () => {
+    distinctSessions();
+    const token = await relayOnline();
+    await guest("t1");
+    await guest("t2", {
+      text: "shorter please",
+      reply_to_message: {
+        message_id: 4000,
+        date: 1,
+        chat: ELSEWHERE,
+        from: { id: 123456, is_bot: true, first_name: "Test" },
+        text: "an answer",
+      },
+    });
+    expect(h.fires).toHaveLength(1);
+    const [job] = await jobs(token);
+    await h.fetch(`/relay/jobs/${job.id}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ ok: false, error: "cloud session is archived" }),
+    });
+    expect(h.fires).toHaveLength(2);
+    expect(payload()).toBe("guest: 2  by: user\ncontinues: session_01Session000000000000001");
   });
 });

@@ -2352,6 +2352,14 @@ export class Store {
       this.db.prepare("DELETE FROM fires WHERE at < ?").bind(cutoff),
       this.db.prepare("DELETE FROM relay_jobs WHERE created_at < ?").bind(cutoff),
       this.db.prepare("DELETE FROM guest_calls WHERE at < ?").bind(cutoff),
+      // Guest chats nobody holds any more: disconnected in the menu, or their holder is gone.
+      this.db
+        .prepare(
+          `DELETE FROM guest_chats WHERE NOT EXISTS (
+             SELECT 1 FROM claude_chats c WHERE c.chat_id = guest_chats.id + ?
+           )`,
+        )
+        .bind(GUEST_BASE),
       // People nobody has heard from within retention.
       this.db.prepare(
         `DELETE FROM personal_chats WHERE NOT EXISTS (
