@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 16;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -46,6 +46,7 @@ const MESSAGES_COLUMNS = `
     session_id TEXT,
     awaited_until INTEGER,
     album TEXT,
+    agent TEXT,
     PRIMARY KEY (account_id, chat_id, message_id)`;
 
 /** Every column of `messages` but account_id, as they stood before version 4. */
@@ -276,6 +277,25 @@ const SCHEMA: string[] = [
   `CREATE INDEX IF NOT EXISTS relay_jobs_by_user ON relay_jobs (user_id, status, created_at)`,
   `CREATE INDEX IF NOT EXISTS relay_jobs_by_status ON relay_jobs (status, created_at)`,
 
+  // Calls on the bot from chats it is not in (guest mode). Kept apart from
+  // `messages`: such a chat's id may coincide with one of the bot's own chats.
+  // `inline_message_id` names the one message the bot has there, which every
+  // answer edits.
+  `CREATE TABLE IF NOT EXISTS guest_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    query_id TEXT NOT NULL UNIQUE,
+    inline_message_id TEXT,
+    chat_id INTEGER,
+    chat_type TEXT,
+    chat_title TEXT,
+    text TEXT NOT NULL DEFAULT '',
+    file TEXT,
+    reply TEXT,
+    answer TEXT,
+    at INTEGER NOT NULL
+  )`,
+
   // A user's Telegram Business connection: the bot reads their private chats,
   // and acts in them only as far as `rights` (set by the user in Telegram) allow.
   `CREATE TABLE IF NOT EXISTS business_connections (
@@ -368,6 +388,7 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
     target: 15,
     alter: ["ALTER TABLE relay_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply'"],
   },
+  { target: 16, alter: ["ALTER TABLE messages ADD COLUMN agent TEXT"] },
 ];
 
 const ready = new WeakMap<D1Database, Promise<void>>();

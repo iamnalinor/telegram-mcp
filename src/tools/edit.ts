@@ -18,7 +18,7 @@ import {
   asBot,
   buttonsArg,
   chatArg,
-  formatArg,
+  richFormatArg,
   keyboard,
   mayPost,
   messageIdArg,
@@ -67,7 +67,12 @@ export async function ownMessage(
 export async function editMessage(
   ctx: ToolContext,
   chat: ChatView,
-  args: { message_id: number; text?: string; format?: "markdown" | "plain"; buttons?: Buttons },
+  args: {
+    message_id: number;
+    text?: string;
+    format?: "markdown" | "rich" | "plain";
+    buttons?: Buttons;
+  },
 ): Promise<void> {
   const stored = await ownMessage(ctx, chat, args.message_id);
   if (args.text === undefined && args.buttons === undefined)
@@ -84,13 +89,22 @@ export async function editMessage(
     if (isCaption && args.text.length > TELEGRAM_CAPTION_LIMIT) {
       throw new ToolError(`Captions stop at ${TELEGRAM_CAPTION_LIMIT} characters.`);
     }
+    if (args.format !== "rich" && args.text.length > TELEGRAM_TEXT_LIMIT) {
+      throw new ToolError(`Text stops at ${TELEGRAM_TEXT_LIMIT} characters unless format is rich.`);
+    }
     const newText = args.text;
+    const rich = args.format === "rich" && !isCaption;
     await withPlainFallback((plain) =>
       ctx.api.call(isCaption ? "editMessageCaption" : "editMessageText", {
         ...base,
-        [isCaption ? "caption" : "text"]: markdown && !plain ? markdownToHtml(newText) : newText,
+        ...(rich && !plain
+          ? { rich_message: { markdown: newText } }
+          : {
+              [isCaption ? "caption" : "text"]:
+                markdown && !plain ? markdownToHtml(newText) : newText,
+            }),
         ...(markdown && !plain ? { parse_mode: "HTML" } : {}),
-        ...(isCaption ? {} : { link_preview_options: { is_disabled: true } }),
+        ...(isCaption || (rich && !plain) ? {} : { link_preview_options: { is_disabled: true } }),
         // Without reply_markup an edit drops the buttons; keep them unless replaced.
         reply_markup:
           markup ?? (stored.buttons ? keyboard(JSON.parse(stored.buttons) as Buttons) : undefined),
@@ -120,10 +134,10 @@ export function registerEditTools(server: McpServer, ctx: ToolContext): void {
         text: z
           .string()
           .min(1)
-          .max(TELEGRAM_TEXT_LIMIT)
+          .max(32_000)
           .optional()
-          .describe("New text. Omit to keep it."),
-        format: formatArg,
+          .describe("New text. Omit to keep it. Up to 4096 characters unless format is rich."),
+        format: richFormatArg,
         buttons: buttonsArg.describe("New buttons as rows; [] removes them. Omit to keep them."),
       }),
       annotations: {

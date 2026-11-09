@@ -60,6 +60,8 @@ interface UploadBlob {
   s?: boolean;
   /** The sending Claude Code session. */
   ss?: string;
+  /** Its subagent, if one sends. */
+  ag?: string;
   /** Made for a personal chat, by send_as_user: such a link sends as the user, nothing else does. */
   p?: boolean;
 }
@@ -94,6 +96,7 @@ export async function uploadLink(
       t: options.topic,
       s: options.silent,
       ss: options.session,
+      ag: options.agent,
       p: chat.kind === "personal" || undefined,
     },
     UPLOAD_TTL,
@@ -210,6 +213,7 @@ export async function handleUpload(
         topic: link.t,
         silent: link.s,
         session: link.ss,
+        agent: link.ag,
       },
     );
     const url = sentLink(ctx, chat, message);

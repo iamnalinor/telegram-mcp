@@ -12,6 +12,8 @@ export interface Env {
   BOT_TOKEN: string;
   /** Comma-separated Telegram user ids. Empty or absent: anyone may connect. */
   ALLOWED_USER_IDS?: string;
+  /** Comma-separated extra usernames of the bot (a secondary "…agent" or a collectible one), without @. */
+  BOT_USERNAMES?: string;
   /** Days to keep messages. Default 14. */
   RETENTION_DAYS?: string;
   /** "1" in `.dev.vars` lets local webhook tests in from 127.0.0.1. Never set in production. */
@@ -31,6 +33,8 @@ export interface Config {
   /** Null means open to everyone. */
   allowed: Set<number> | null;
   retentionDays: number;
+  /** The bot's usernames besides the one getMe reports. */
+  aliases: string[];
   skipIpCheck: boolean;
   /** Signs every blob the connector issues. */
   signingKey: CryptoKey;
@@ -62,7 +66,13 @@ export function isAllowed(config: Pick<Config, "allowed">, userId: number): bool
 const cache = new Map<string, Promise<Config>>();
 
 export function loadConfig(env: Env): Promise<Config> {
-  const cacheKey = [env.BOT_TOKEN, env.ALLOWED_USER_IDS, env.RETENTION_DAYS, env.DEV_SKIP_IP_CHECK]
+  const cacheKey = [
+    env.BOT_TOKEN,
+    env.ALLOWED_USER_IDS,
+    env.RETENTION_DAYS,
+    env.DEV_SKIP_IP_CHECK,
+    env.BOT_USERNAMES,
+  ]
     .map(String)
     .join("\n");
   let config = cache.get(cacheKey);
@@ -92,6 +102,10 @@ async function buildConfig(env: Env): Promise<Config> {
     allowed: parseAllowed(env.ALLOWED_USER_IDS),
     retentionDays:
       Number.isFinite(retention) && retention >= 1 ? Math.floor(retention) : DEFAULT_RETENTION_DAYS,
+    aliases: (env.BOT_USERNAMES ?? "")
+      .split(/[\s,]+/)
+      .map((name) => name.replace(/^@/, ""))
+      .filter((name) => /^\w{3,64}$/.test(name)),
     skipIpCheck: env.DEV_SKIP_IP_CHECK === "1",
     signingKey: await hmacKey(await hmac(root, "telegram-mcp/sign")),
     loginKey: await hmacKey(await sha256(botToken)),

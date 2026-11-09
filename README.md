@@ -10,6 +10,10 @@ can:
 - **read what you send the bot** ("I sent you a file in Telegram, take a look"),
 - **read groups you connect**: search by keywords, find every message where someone tagged the
   bot, follow replies and walk the messages around them for context, work inside forum topics,
+- **answer where the bot is not a member**: tag it in any chat (Telegram's guest mode) and Claude
+  answers there,
+- **show more than text**: rich messages with tables and collapsible blocks, coloured buttons,
+  quizzes, live previews of a long answer, interactive widgets,
 - **read your personal chats**, if you connect the bot to your account ("what did Anna write
   yesterday?"), and reply in them as you — only if you allowed that in Telegram.
 
@@ -63,6 +67,8 @@ bot's webhook and shows what is left to do:
 
 - `/setdomain` → your bot → `telegram-mcp.<your-subdomain>.workers.dev`. Telegram Login only works on
   this domain.
+- Bot Settings (in BotFather's Mini App) → **Guest Mode** → on, if you want to call Claude from chats
+  the bot is not in (see [Claude on tag](#claude-on-tag)).
 - `/setprivacy` → your bot → **Disable**, if the bot should see every message in groups. With
   privacy on it only sees commands, @mentions and replies to it (an admin bot sees everything
   either way). Telegram applies the change only to groups the bot joins afterwards, so re-add it to
@@ -200,13 +206,17 @@ allowlist.
 | Tool                  | What it does                                                               |
 | --------------------- | -------------------------------------------------------------------------- |
 | `send_message`        | Text to your private chat (default) or a group; Markdown, buttons, replies |
+|                       | — or a rich message (tables, headings, details), or for one member only    |
 | `ask_user`            | A question with answer buttons, then waits for the press or a typed reply  |
 | `wait_for_reply`      | Keep waiting for an answer to a message the bot sent                       |
 | `create_upload_url`   | One-time upload link: the file is sent when curl finishes                  |
 | `send_file`           | A small file passed inline (text or base64)                                |
 | `send_album`          | 2–10 photos/videos/documents as one album                                  |
 | `send_location`       | A map pin or venue                                                         |
-| `send_poll`           | A native poll                                                              |
+| `send_poll`           | A native poll or quiz                                                      |
+| `send_draft`          | A live preview of an answer being written (private chat)                   |
+| `send_widget`         | An interactive HTML widget inside a message (private chat)                 |
+| `set_widget_state`    | Change what a widget shows                                                 |
 | `send_chat_action`    | "typing…" before a slow send                                               |
 | `edit_message`        | Change the bot's message text or buttons, e.g. one progress message        |
 | `delete_message`      | Delete the bot's message (or yours, in the private chat)                   |
@@ -227,9 +237,27 @@ allowlist.
 | `message_session`     | Ask another session something, or hand it a request (needs the relay)      |
 | `wait_for_session`    | Keep waiting for that session's answer                                     |
 | `answer_session`      | Answer a session that asked you                                            |
+| `get_guest_call`      | Read a call from a chat the bot is not in                                  |
+| `answer_guest`        | Answer it, by editing the bot's one message there                          |
 
 Every send returns a `t.me` link Claude can hand you. Buttons are recorded when pressed;
 reactions on the bot's messages are recorded too (in groups, that needs the bot to be an admin).
+
+What Telegram added in Bot API 10 is used where it helps:
+
+- **Rich messages**: `send_message` and `edit_message` with `format: "rich"` take GitHub-flavoured
+  Markdown with headings, tables, task lists, `<details>` and formulas, up to 32k characters in one
+  message. Incoming rich messages are read as text.
+- **Buttons** take a `style` (primary, success, danger).
+- **For one member only**: `only_for` shows a group message to a single member (an ephemeral
+  message; the bot must be an admin there). It is not stored.
+- **Widgets**: `send_widget` sends one self-contained HTML document drawn inside the message.
+  Telegram shows them only in the private chat with the bot for now. A widget's taps reach the bot
+  as queries that must be answered within 15 seconds, so the Worker answers them itself and records
+  each like a button press; Claude reads them (`wait_for_reply` with `after_press`) and changes
+  what the widget shows with `set_widget_state`.
+- **Polls**: quizzes with several right answers, a description, revoting, options added by
+  members, hidden results, a closing time.
 
 ## Memory
 
@@ -268,7 +296,15 @@ What starts a session:
   session, which reads the messages around its own.
 - **A group**, once you turn it on in the group's screen: a mention of the bot, or a reply to a
   message your assistant sent there. One person per group: whoever turned it on first. If they leave
-  the group, it passes to the next who asks.
+  the group, it passes to the next who asks. With the relay, the group's tags of the day go to one
+  session, like in the private chat — yours to one, other members' to another, so the session you
+  work in never hears a third party.
+- **Any chat the bot is not in** (guest mode), while Claude is on in your private chat: tag the bot
+  there, or reply to its message. Telegram hands the bot that one message and the one it replied to
+  — no history, no members — and lets it post one message, which Claude then edits: a placeholder
+  at once, the answer when ready. Only your own calls count; anyone else's are dropped unread. The
+  call goes to your private chat's session of the day (with the relay) or starts one. Everything
+  else in that chat is a third party's, and what Claude writes there is seen by everyone in it.
 - **Other members** of that group too, only if you turn on "Others too" — including messages posted
   as a channel or as the group, which always count as someone else's. The session helps them with
   what anyone could do on their own (answers, explanations, web search, talk about the chat). What is
@@ -280,6 +316,18 @@ What starts a session:
   assistant's message starts a new session too, told which session wrote it — under the same rules.
 
 Every start goes into the group's 📜 Starts: who, when, the first words and a link to the session.
+
+**Who does the work.** The routine runs on Sonnet and does the talking: it answers what it can at
+once and hands real work — research, building something, code — to a subagent on Opus, in the
+background, so the next message is not kept waiting. An agent sends its result itself and names
+itself (`agent`, next to `session`); a reply to that message reaches the session marked as that
+agent's, and the session passes it on. The prompt also tells Claude to write the way the chat does
+— its language, length and tone — rather than as an assistant with a house style.
+
+**Tags by another name.** If the bot has more usernames than the one BotFather gave it — a
+secondary one ending in `agent`, `ai`, `app` or `game`, which Telegram lets Premium owners assign to
+two of their bots, or a collectible one — list them in `BOT_USERNAMES` (comma-separated), and a tag
+by any of them counts.
 
 Never: commands, edits, answers to the bot's own prompts, a reply that a waiting `ask_user` will
 pick up, and — in groups — forwards and messages via inline bots. Each message starts one session at
@@ -311,7 +359,7 @@ the relay later, run the same `curl … | bash` without `RELAY_TOKEN`: it keeps 
 With the relay:
 
 - A reply to a session's message goes into **that** session instead of starting a new one; so do
-  your private-chat messages of the day. Nothing new starts, so the bot puts no 👀 on them.
+  a chat's messages of the day, and guest calls. Nothing new starts, so the bot puts no 👀 on them.
 - `list_sessions` shows the sessions the bot knows of (started by a tag, wrote through the bot, or
   were messaged). `message_session` asks one of them something — "how is the migration going?" —
   or hands it a request, by id or link; the session answers with `answer_session`. A session the

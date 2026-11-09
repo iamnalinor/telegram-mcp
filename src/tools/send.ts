@@ -9,10 +9,12 @@ import { z } from "zod";
 import { telegramChat, type ChatView } from "../access";
 import { uploadLink } from "../files";
 import { Fence, formatTime, person } from "../format";
+import { markdownToHtml } from "../markdown";
 import { GROUP_NOTE, type UserRef } from "../prompts";
 import type { PressRow, StoredMessage } from "../store";
 import type { Message } from "../telegram/types";
 import {
+  agentArg,
   asBot,
   buttonsArg,
   chatArg,
@@ -21,6 +23,7 @@ import {
   messageIdArg,
   notPersonal,
   recordSent,
+  richFormatArg,
   sendText,
   sendUpload,
   sentLink,
@@ -30,6 +33,7 @@ import {
   toolError,
   topicArg,
   UPLOAD_KINDS,
+  withPlainFallback,
   where,
   type ToolContext,
 } from "./common";
@@ -91,7 +95,8 @@ export function sentSummary(ctx: ToolContext, chat: ChatView, messages: Message[
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-type Answer = { kind: "press"; press: PressRow } | { kind: "message"; message: StoredMessage };
+type Answer =
+  { kind: "press"; press: PressRow; number: number } | { kind: "message"; message: StoredMessage };
 
 /**
  * Wait for an answer to one of the bot's messages: a press on its buttons, a
@@ -103,11 +108,12 @@ async function waitForAnswer(
   chat: ChatView,
   messageId: number,
   seconds: number,
+  afterPress = 0,
 ): Promise<Answer | null> {
   const deadline = Date.now() + seconds * 1000;
   await ctx.store.markAwaited(chat, messageId, Math.ceil(deadline / 1000), "start");
   for (;;) {
-    const answer = await findAnswer(ctx, chat, messageId);
+    const answer = await findAnswer(ctx, chat, messageId, afterPress);
     if (answer) {
       // The session stops listening now, not at the deadline.
       await ctx.store.markAwaited(chat, messageId, Math.floor(Date.now() / 1000), "end");
@@ -122,9 +128,14 @@ async function findAnswer(
   ctx: ToolContext,
   chat: ChatView,
   messageId: number,
+  afterPress: number,
 ): Promise<Answer | null> {
   const presses = await ctx.store.pressesFor(chat.chat_id, messageId);
-  if (presses.length) return { kind: "press", press: presses[0] };
+  if (presses.length > afterPress) {
+    return { kind: "press", press: presses[afterPress], number: afterPress + 1 };
+  }
+  // Past the first press, only the next press is awaited: the message's replies were seen.
+  if (afterPress > 0) return null;
   const answer = await ctx.store.answerTo(chat, messageId, chat.kind === "dm" ? ctx.userId : null);
   return answer ? { kind: "message", message: answer } : null;
 }
@@ -147,7 +158,10 @@ function describeAnswer(
     const who = person(press.user_name, null, press.user_id, user.id);
     const body = `${who} pressed "${press.label}"${value} at ${formatTime(press.date)} UTC.`;
     const fence = new Fence(user, [body]);
-    return `${fence.note()}\n${fence.wrap(body)}`;
+    return (
+      `Press ${answer.number}. ${fence.note()}\n${fence.wrap(body)}\n` +
+      `For the next press on this message (a widget, buttons that stay), wait with after_press: ${answer.number}.`
+    );
   }
   const message = answer.message;
   const who = person(message.from_name, message.from_username, message.from_id, user.id);
@@ -169,18 +183,30 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
       title: "Send a Telegram message",
       description:
         'Message the user in Telegram — chat "me" by default — or a connected group. Use for "message me / ' +
-        'ping me when done / tell me in Telegram". Markdown is converted; long text is split. Optional buttons ' +
+        'ping me when done / tell me in Telegram". Markdown is converted; long text is split. format "rich" ' +
+        "sends a rich message: headings, tables, collapsible blocks. Optional buttons " +
         "(presses are recorded) and reply_to. Returns the message id and a t.me link to give the user. For a " +
         `question that needs an answer, use ask_user instead. ${GROUP_NOTE}`,
       inputSchema: z.object({
-        text: z.string().min(1).max(20_000),
+        text: z.string().min(1).max(32_000),
         chat: chatArg,
-        format: formatArg,
+        format: richFormatArg,
         buttons: buttonsArg,
         reply_to: replyToArg,
         topic: topicArg,
         silent: silentArg,
         session: sessionArg,
+        agent: agentArg,
+        only_for: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            "In a group: show the message to this member only (their id, from a message header). Nobody " +
+              "else sees it; it is not stored and cannot be edited later. Needs the bot to be an admin there. " +
+              "For an answer that concerns one person: a refusal, something private to them.",
+          ),
         link_preview: z
           .boolean()
           .optional()
@@ -201,7 +227,15 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
           silent: args.silent,
           linkPreview: args.link_preview,
           session: args.session,
+          agent: args.agent,
+          onlyFor: args.only_for,
         });
+        if (args.only_for !== undefined) {
+          return text(
+            `Shown in ${where(chat)} to member ${args.only_for} only. Telegram does not promise delivery ` +
+              "(they may be offline), and it cannot be edited or read back.",
+          );
+        }
         return text(sentSummary(ctx, chat, sent));
       } catch (error) {
         return toolError(error, ctx);
@@ -230,6 +264,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         chat: chatArg,
         topic: topicArg,
         session: sessionArg,
+        agent: agentArg,
         wait_seconds: z
           .number()
           .int()
@@ -257,6 +292,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
           topic: args.topic,
           markChoice: true,
           session: args.session,
+          agent: args.agent,
         }).then((sent) => sent.slice(-1));
 
         const seconds = args.wait_seconds ?? WAIT_MAX_SECONDS;
@@ -287,6 +323,15 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         chat: chatArg,
         message_id: messageIdArg.optional(),
         wait_seconds: z.number().int().min(1).max(WAIT_MAX_SECONDS).optional(),
+        after_press: z
+          .number()
+          .int()
+          .min(0)
+          .max(10_000)
+          .optional()
+          .describe(
+            "Skip this many presses already seen and wait for the next one: for a widget, or buttons that stay.",
+          ),
       }),
       annotations: { readOnlyHint: true },
     },
@@ -302,7 +347,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         const seconds = args.wait_seconds ?? WAIT_MAX_SECONDS;
         return text(
           describeAnswer(
-            await waitForAnswer(ctx, chat, messageId, seconds),
+            await waitForAnswer(ctx, chat, messageId, seconds, args.after_press),
             messageId,
             seconds,
             ctx.user,
@@ -328,6 +373,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     topic: topicArg,
     silent: silentArg,
     session: sessionArg,
+    agent: agentArg,
   };
 
   server.registerTool(
@@ -357,6 +403,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
           topic: args.topic,
           silent: args.silent,
           session: args.session,
+          agent: args.agent,
         });
         return text(uploadInstructions(args.filename, chat, url));
       } catch (error) {
@@ -394,6 +441,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
           topic: args.topic,
           silent: args.silent,
           session: args.session,
+          agent: args.agent,
         });
         return text(sentSummary(ctx, chat, [message]));
       } catch (error) {
@@ -435,6 +483,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         topic: topicArg,
         silent: silentArg,
         session: sessionArg,
+        agent: agentArg,
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
@@ -471,7 +520,9 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
           ...(args.topic ? { message_thread_id: args.topic } : {}),
           ...(args.silent ? { disable_notification: true } : {}),
         });
-        for (const message of sent) await recordSent(ctx, chat, message, { session: args.session });
+        for (const message of sent) {
+          await recordSent(ctx, chat, message, { session: args.session, agent: args.agent });
+        }
         return text(sentSummary(ctx, chat, sent));
       } catch (error) {
         return toolError(error, ctx);
@@ -496,6 +547,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         chat: chatArg,
         topic: topicArg,
         session: sessionArg,
+        agent: agentArg,
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
@@ -515,6 +567,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         await recordSent(ctx, chat, message, {
           text: venue ? `[venue] ${args.title}, ${args.address}` : undefined,
           session: args.session,
+          agent: args.agent,
         });
         return text(sentSummary(ctx, chat, [message]));
       } catch (error) {
@@ -528,16 +581,43 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
     {
       title: "Start a poll",
       description:
-        'Post a native Telegram poll, typically in a group ("poll the team on Friday vs Monday"). Votes are ' +
-        `not reported back to you; for one person's decision, use ask_user. ${GROUP_NOTE}`,
+        'Post a native Telegram poll, typically in a group ("poll the team on Friday vs Monday"). With ' +
+        "correct_options it is a quiz. Votes are not reported back to you; for one person's decision, use " +
+        `ask_user. ${GROUP_NOTE}`,
       inputSchema: z.object({
         question: z.string().min(1).max(300),
-        options: z.array(z.string().min(1).max(100)).min(2).max(12),
+        options: z.array(z.string().min(1).max(100)).min(1).max(12),
+        description: z.string().max(1024).optional().describe("Text shown under the question."),
         anonymous: z.boolean().optional().describe("Default: false — voters are visible."),
         multiple_answers: z.boolean().optional(),
+        correct_options: z
+          .array(z.number().int().min(0).max(11))
+          .min(1)
+          .max(12)
+          .optional()
+          .describe("Makes it a quiz: the 0-based numbers of the right options, one or several."),
+        explanation: z
+          .string()
+          .max(200)
+          .optional()
+          .describe("For a quiz: shown after a wrong answer."),
+        revoting: z.boolean().optional().describe("Whether a vote can be changed."),
+        adding_options: z
+          .boolean()
+          .optional()
+          .describe("Let members add options of their own. Not for anonymous polls or quizzes."),
+        hide_results: z.boolean().optional().describe("Show results only once the poll closes."),
+        close_in_seconds: z
+          .number()
+          .int()
+          .min(5)
+          .max(2_628_000)
+          .optional()
+          .describe("Close the poll by itself after this long."),
         chat: chatArg,
         topic: topicArg,
         session: sessionArg,
+        agent: agentArg,
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
@@ -546,16 +626,200 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         const chat = await ctx.access.resolve(args.chat);
         asBot(chat, "send_as_user with the question as text");
         await mayPost(ctx, chat);
+        const correct = args.correct_options
+          ? [...new Set(args.correct_options)].sort((a, b) => a - b)
+          : null;
+        if (correct?.some((index) => index >= args.options.length)) {
+          throw new ToolError(
+            "correct_options names an option that is not there (they count from 0).",
+          );
+        }
         const message = await ctx.api.call<Message>("sendPoll", {
           ...telegramChat(chat),
           question: args.question,
           options: args.options.map((option) => ({ text: option })),
           is_anonymous: args.anonymous ?? false,
-          allows_multiple_answers: args.multiple_answers ?? false,
+          allows_multiple_answers: args.multiple_answers ?? (correct ? correct.length > 1 : false),
+          ...(correct ? { type: "quiz", correct_option_ids: correct } : {}),
+          ...(args.explanation ? { explanation: args.explanation } : {}),
+          ...(args.description ? { description: args.description } : {}),
+          ...(args.revoting === undefined ? {} : { allows_revoting: args.revoting }),
+          ...(args.adding_options ? { allow_adding_options: true } : {}),
+          ...(args.hide_results ? { hide_results_until_closes: true } : {}),
+          ...(args.close_in_seconds ? { open_period: args.close_in_seconds } : {}),
           ...(args.topic ? { message_thread_id: args.topic } : {}),
         });
-        await recordSent(ctx, chat, message, { session: args.session });
+        await recordSent(ctx, chat, message, { session: args.session, agent: args.agent });
         return text(sentSummary(ctx, chat, [message]));
+      } catch (error) {
+        return toolError(error, ctx);
+      }
+    },
+  );
+
+  server.registerTool(
+    "send_draft",
+    {
+      title: "Show a live preview of an answer",
+      description:
+        "In the private chat only: show text as a streaming preview — it appears as if being typed, and " +
+        "vanishes after about 30 s or when the bot sends a message. Call it again with the same draft and " +
+        "more text to make it grow; empty text shows «Thinking…». It is not a message: nothing is stored, " +
+        "so finish with send_message. Use it for a long answer the user is waiting on, not for every reply.",
+      inputSchema: z.object({
+        text: z.string().max(4000).optional().describe("The text so far. Omit for «Thinking…»."),
+        draft: z
+          .number()
+          .int()
+          .min(1)
+          .max(1_000_000)
+          .optional()
+          .describe("Which preview this continues; a new number starts a new one. Default: 1."),
+        format: formatArg,
+        topic: topicArg,
+      }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (args) => {
+      try {
+        const body = args.text ?? "";
+        const markdown = (args.format ?? "markdown") === "markdown" && body !== "";
+        await withPlainFallback((plain) =>
+          ctx.api.call("sendMessageDraft", {
+            chat_id: ctx.userId,
+            draft_id: args.draft ?? 1,
+            text: markdown && !plain ? markdownToHtml(body) : body,
+            ...(markdown && !plain ? { parse_mode: "HTML" } : {}),
+            ...(args.topic ? { message_thread_id: args.topic } : {}),
+          }),
+        );
+        return text("Shown as a preview for about 30 s. It is not stored: send the final text.");
+      } catch (error) {
+        return toolError(error, ctx);
+      }
+    },
+  );
+
+  server.registerTool(
+    "send_widget",
+    {
+      title: "Send an interactive widget",
+      description:
+        "Send a small interactive block drawn inside a message: a board, a tracker with taps, a chart, a " +
+        "picker. For now Telegram shows widgets only in the private chat with the bot. A widget is one " +
+        "self-contained HTML document with inline <style> and <script>: at most 32768 bytes and 4096 after " +
+        "zlib compression, no network, no external files, no keyboard input; images only as inline SVG or " +
+        "data: URLs; design for 320 px wide and at most 600 px tall; use the --tg-theme-* CSS variables " +
+        "for colours. Its code never changes after sending — only its state does: the script reads " +
+        "TelegramWidget.chatData (a string, or null) and redraws on " +
+        "TelegramWidget.onEvent('chatDataChanged', render). With taps: true, a tap handler may call " +
+        "TelegramWidget.request(data) with up to 64 bytes: the bot records it like a button press (read " +
+        'it with wait_for_reply and after_press, or get_message) and answers the widget "ok" at once; ' +
+        "you then change what it shows with set_widget_state. The full rules: " +
+        "https://core.telegram.org/bots/widgets.md — read them before writing a non-trivial widget.",
+      inputSchema: z.object({
+        html: z.string().min(1).max(32_768).describe("The widget's HTML, CSS and script."),
+        state: z
+          .string()
+          .max(1024)
+          .optional()
+          .describe("Its first state (chatData), usually JSON, at most 1024 bytes."),
+        caption: z.string().max(1024).optional().describe("Text under the widget (Markdown)."),
+        height: z
+          .number()
+          .int()
+          .min(50)
+          .max(600)
+          .optional()
+          .describe("Fixed height in px. Omit to fit the content."),
+        taps: z
+          .boolean()
+          .optional()
+          .describe("Let the widget report taps (TelegramWidget.request). Default: false."),
+        reply_to: replyToArg,
+        topic: topicArg,
+        silent: silentArg,
+        session: sessionArg,
+        agent: agentArg,
+      }),
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    },
+    async (args) => {
+      try {
+        const chat = ctx.access.dm();
+        const caption = args.caption;
+        const message = await withPlainFallback((plain) =>
+          ctx.api.call<Message>("sendWidget", {
+            chat_id: chat.chat_id,
+            html: args.html,
+            ...(args.state === undefined ? {} : { chat_data: args.state }),
+            ...(args.height ? { height: args.height } : {}),
+            ...(args.taps ? { allow_queries: true } : {}),
+            ...(caption ? { caption: plain ? caption : markdownToHtml(caption) } : {}),
+            ...(caption && !plain ? { parse_mode: "HTML" } : {}),
+            ...(args.topic ? { message_thread_id: args.topic } : {}),
+            ...(args.reply_to
+              ? {
+                  reply_parameters: {
+                    message_id: args.reply_to,
+                    allow_sending_without_reply: true,
+                  },
+                }
+              : {}),
+            ...(args.silent ? { disable_notification: true } : {}),
+          }),
+        );
+        await recordSent(ctx, chat, message, {
+          text: `[widget]${caption ? ` ${caption}` : ""}`,
+          session: args.session,
+          agent: args.agent,
+        });
+        return text(
+          `${sentSummary(ctx, chat, [message])} Change what it shows with set_widget_state` +
+            (args.taps ? "; taps come as presses on this message (wait_for_reply)." : "."),
+        );
+      } catch (error) {
+        return toolError(error, ctx);
+      }
+    },
+  );
+
+  server.registerTool(
+    "set_widget_state",
+    {
+      title: "Change what a widget shows",
+      description:
+        "Replace the state (chatData) of a widget the bot sent: the widget redraws at once, wherever it is " +
+        "open. Its HTML cannot be changed — for a new layout, send a new widget.",
+      inputSchema: z.object({
+        message_id: messageIdArg,
+        state: z.string().max(1024).describe("The new state, at most 1024 bytes. Empty clears it."),
+      }),
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: true,
+      },
+    },
+    async (args) => {
+      try {
+        const chat = ctx.access.dm();
+        const stored = await ctx.store.getMessage(chat, args.message_id);
+        if (!stored?.outgoing || stored.file_kind !== "widget") {
+          throw new ToolError(`Message #${args.message_id} is not a widget the bot sent.`);
+        }
+        await ctx.api.call("editMessageWidgetData", {
+          chat_id: chat.chat_id,
+          message_id: args.message_id,
+          chat_data: args.state,
+        });
+        return text("The widget has its new state.");
       } catch (error) {
         return toolError(error, ctx);
       }

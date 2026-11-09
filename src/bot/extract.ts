@@ -13,6 +13,45 @@ import { displayName, type Message, type MessageEntity, type User } from "../tel
 export interface BotIdentity {
   id: number;
   username: string;
+  /** The bot's other usernames (BOT_USERNAMES): a tag by any of them names it. */
+  aliases?: string[];
+}
+
+/** Every @handle that names the bot, lower-cased. */
+function handlesOf(bot: BotIdentity): string[] {
+  return [bot.username, ...(bot.aliases ?? [])].map((name) => `@${name}`.toLowerCase());
+}
+
+const RICH_TEXT_LIMIT = 20_000;
+
+/**
+ * The readable text of a rich message. Its blocks nest (lists, tables,
+ * details) and Telegram adds kinds all the time, so this walks whatever is
+ * there and keeps the strings: blocks on lines of their own, a table's row on
+ * one line, inline pieces run together.
+ */
+export function richText(value: unknown, join = "\n", depth = 0): string {
+  if (typeof value === "string") return value;
+  if (!value || typeof value !== "object" || depth > 24) return "";
+  if (Array.isArray(value)) {
+    const row = join === "\n" && value.every((item) => Array.isArray(item)) ? " | " : join;
+    return value
+      .map((item) => richText(item, Array.isArray(item) ? row : join, depth + 1))
+      .filter(Boolean)
+      .join(join);
+  }
+  const node = value as Record<string, unknown>;
+  return [
+    richText(node.label, "", depth + 1),
+    richText(node.summary, "", depth + 1),
+    richText(node.text, "", depth + 1),
+    richText(node.cells, "\n", depth + 1),
+    richText(node.items, "\n", depth + 1),
+    richText(node.blocks, "\n", depth + 1),
+    richText(node.caption, "", depth + 1),
+  ]
+    .filter(Boolean)
+    .join(join === "" ? "" : " ");
 }
 
 interface FileInfo {
@@ -54,6 +93,7 @@ function fileOf(message: Message): FileInfo | null {
     ["video_note", message.video_note, "mp4"],
     ["sticker", message.sticker, "webp"],
   ];
+  if (message.live_photo) simple.push(["live_photo", message.live_photo, "mp4"]);
   for (const [kind, value, extension] of simple) {
     if (!value || typeof value !== "object" || !("file_id" in value)) continue;
     const file = value as {
@@ -91,6 +131,7 @@ function describeNonText(message: Message): string {
   if (message.forum_topic_edited?.name)
     return `[topic renamed: ${message.forum_topic_edited.name}]`;
   if (message.new_chat_title) return `[chat renamed: ${message.new_chat_title}]`;
+  if (message.widget) return "[widget]";
   return "";
 }
 
@@ -114,7 +155,9 @@ export function hasContent(message: Message): boolean {
     fileOf(message) ||
     message.location ||
     message.contact ||
-    message.poll,
+    message.poll ||
+    message.rich_message ||
+    message.widget,
   );
 }
 
@@ -164,19 +207,29 @@ export function mentionsBot(message: Message, bot: BotIdentity): boolean {
 
 /** The message names the bot: @username, a text mention, or a command addressed to it. */
 export function tagsBot(message: Message, bot: BotIdentity): boolean {
-  const handle = `@${bot.username}`.toLowerCase();
-  const text = message.text ?? message.caption ?? "";
+  const handles = handlesOf(bot);
+  const text = bodyOf(message);
   const entities = message.entities ?? message.caption_entities ?? [];
   for (const entity of entities) {
-    if (entity.type === "mention" && entityText(text, entity).toLowerCase() === handle) return true;
+    const written = entityText(text, entity).toLowerCase();
+    if (entity.type === "mention" && handles.includes(written)) return true;
     if (entity.type === "text_mention" && entity.user?.id === bot.id) return true;
-    if (entity.type === "bot_command" && entityText(text, entity).toLowerCase().endsWith(handle)) {
+    if (entity.type === "bot_command" && handles.some((handle) => written.endsWith(handle))) {
       return true;
     }
   }
   // Telegram marks @mentions as entities; plain text is the fallback for clients that do not.
-  return new RegExp(`(^|[^\\w])${handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(
-    text,
+  return handles.some((handle) =>
+    new RegExp(`(^|[^\\w])${handle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text),
+  );
+}
+
+/** What the message says: its text or caption, or a rich message's blocks read as text. */
+export function bodyOf(message: Message): string {
+  return (
+    message.text ??
+    message.caption ??
+    (message.rich_message ? richText(message.rich_message.blocks).slice(0, RICH_TEXT_LIMIT) : "")
   );
 }
 
@@ -211,7 +264,7 @@ function senderOf(message: Message): {
 export function toStored(message: Message, bot: BotIdentity, owner?: number): StoredMessage {
   const file = fileOf(message);
   const sender = senderOf(message);
-  const body = message.text ?? message.caption ?? "";
+  const body = bodyOf(message);
   const text = body || describeNonText(message);
   const viaBot =
     owner !== undefined && message.from?.id === owner && message.sender_business_bot?.id === bot.id;
@@ -232,7 +285,8 @@ export function toStored(message: Message, bot: BotIdentity, owner?: number): St
     quote: quoteOf(message),
     mentions_bot: owner === undefined && mentionsBot(message, bot),
     outgoing: message.from?.id === (owner ?? bot.id),
-    file_kind: file?.kind ?? null,
+    // A widget has no file to fetch; its kind alone says what the message is.
+    file_kind: file?.kind ?? (message.widget ? "widget" : null),
     file_id: file?.id ?? null,
     file_name: file?.name ?? null,
     file_mime: file?.mime ?? null,
@@ -264,6 +318,6 @@ export function parseCommand(message: Message, bot: BotIdentity): Command | null
   );
   if (!match) return null;
   const [, name, target, args] = match;
-  if (target && target.toLowerCase() !== bot.username.toLowerCase()) return null;
+  if (target && !handlesOf(bot).includes(`@${target.toLowerCase()}`)) return null;
   return { name: name.toLowerCase(), args: (args ?? "").trim() };
 }

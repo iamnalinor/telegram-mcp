@@ -6,8 +6,8 @@ Telegram bot. See README.md for what it does and how it is deployed.
 ## Layout
 
 - `src/index.ts` — Worker entrypoint and routes.
-- `src/tools/` — MCP tools (send, edit, read); `src/prompts.ts` — server instructions for the model.
-- `src/bot/` — webhook, commands, texts (English and Russian).
+- `src/tools/` — MCP tools (send, edit, read, guest); `src/prompts.ts` — server instructions for the model.
+- `src/bot/` — webhook, commands, triggers, guest mode, texts (English and Russian).
 - `src/store.ts`, `src/schema.ts` — D1 access and schema migrations.
 - `src/oauth.ts`, `src/crypto.ts` — OAuth and signed tokens.
 - `test/` — `bun test`, with D1 emulated on SQLite (`test/harness.ts`).

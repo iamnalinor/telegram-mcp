@@ -9,10 +9,12 @@
  * is about to take.
  *
  * Where it goes: a reply to a session's message goes back into that session,
- * and in the private chat the day's messages (from 00:00 UTC) go to one
- * session — when the user's relay is online (src/relay.ts). Otherwise each
- * starts a new session; one right after a start in the private chat (a
- * forward, then what to do with it) joins it, as that session reads along.
+ * and a chat's messages of the day (from 00:00 UTC) go to one session — when
+ * the user's relay is online (src/relay.ts). A group has two such sessions:
+ * the holder's own, and one for the other members, so the session the holder
+ * works in never hears a third party. Otherwise each message starts a new
+ * session; one right after a start in the private chat (a forward, then what
+ * to do with it) joins it, as that session reads along.
  *
  * Other members' messages count only where the holder allowed them, a few
  * times an hour; a message posted as a channel or the chat is always someone
@@ -24,13 +26,13 @@ import { nowSeconds } from "../crypto";
 import { isAllowed } from "../env";
 import { messageLink } from "../links";
 import { enqueue, relayState, replyEnvelope } from "../relay";
-import { fire, firePayload, loadRoutine } from "../routine";
+import { fire, firePayload, guestPayload, loadRoutine } from "../routine";
 import { redactSecrets } from "../secrets";
 import { BOT_ACCOUNT } from "../store";
 import { TelegramError } from "../telegram/api";
 import { displayName, isMember, type ChatMember, type Message } from "../telegram/types";
 import type { BotContext } from "./context";
-import { hasContent, realReply, tagsBot, type Command } from "./extract";
+import { bodyOf, hasContent, realReply, tagsBot, type BotIdentity, type Command } from "./extract";
 import { escapeHtml, texts } from "./texts";
 
 /** A reply this long after a wait ended is a new task, not the answer. */
@@ -42,6 +44,12 @@ const EXCERPT_LENGTH = 20;
 /** A private-chat message this soon after a start is read by that session. */
 const BURST_SECONDS = 20;
 const DAY = 86_400;
+/**
+ * The chat id guest calls are filed under in `fires`: no real chat has it, and
+ * a guest chat's own id may coincide with one of the bot's chats. They share
+ * the private chat's session of the day.
+ */
+export const GUEST_CHAT = 0;
 
 const silent = {
   parse_mode: "HTML",
@@ -98,7 +106,7 @@ export async function maybeStart(
     userId: holder,
     byOther,
     fromName: asChat ? (asChat.title ?? null) : displayName(from),
-    excerpt: excerptOf(message.text ?? message.caption ?? "", ctx.bot.username),
+    excerpt: excerptOf(bodyOf(message), ctx.bot),
     album: message.media_group_id ?? null,
   };
   const claimed = await ctx.store.beginFire(entry, {
@@ -118,21 +126,31 @@ export async function maybeStart(
 
   const topic = message.is_topic_message ? (message.message_thread_id ?? null) : null;
   const continues = replyToHolder ? answered.session_id : null;
-  const state =
-    continues || isPrivate ? relayState(await ctx.store.getRelay(holder)) : ("none" as const);
+  const agent = continues ? (answered?.agent ?? null) : null;
+  const state = relayState(await ctx.store.getRelay(holder));
 
-  // Where it goes: the session it replies to, else the day's session in the private chat.
+  // Where it goes: the session it replies to, else the chat's session of the day.
   let into: { session: string; kind: "reply" | "day" } | null = continues
     ? { session: continues, kind: "reply" }
     : null;
-  if (!into && isPrivate) {
+  if (!into) {
     // A session just started reads this along: a forward, then what to do with it.
-    if (await ctx.store.recentStart(chat.id, message.message_id, now - BURST_SECONDS)) {
+    if (
+      isPrivate &&
+      (await ctx.store.recentStart(chat.id, message.message_id, now - BURST_SECONDS))
+    ) {
       await ctx.store.endFire(chat.id, message.message_id, { status: "joined" });
       return;
     }
     const day =
-      state === "online" ? await ctx.store.latestSession(holder, chat.id, now - (now % DAY)) : null;
+      state === "online"
+        ? await ctx.store.latestSession(
+            holder,
+            isPrivate ? [chat.id, GUEST_CHAT] : [chat.id],
+            now - (now % DAY),
+            byOther,
+          )
+        : null;
     if (day) into = { session: day, kind: "day" };
   }
 
@@ -169,6 +187,7 @@ export async function maybeStart(
             ? { id: null, name: asChat.title ?? null }
             : { id: from.id, name: displayName(from) },
           byUser: !byOther,
+          agent,
         }),
     );
     await ctx.store.endFire(chat.id, message.message_id, {
@@ -185,6 +204,7 @@ export async function maybeStart(
     topic,
     byOther,
     continues,
+    agent,
     // A reply that should have gone into its session: the new one says why it did not.
     relay: continues && (state === "login" || state === "offline") ? state : null,
   });
@@ -204,6 +224,8 @@ async function holderVoice(ctx: BotContext, holder: number, chatId: number, titl
  * Start the holder's routine on a message already claimed in `fires`: the
  * usual way, and the fallback when the relay could not pass a reply on.
  * `relay` tells the session why the reply did not reach the session it answers.
+ * A guest call (`guest`: its id, also the message id under GUEST_CHAT) starts
+ * the same way; nothing can be reacted to there. False when nothing started.
  */
 export async function launch(
   ctx: BotContext,
@@ -214,9 +236,11 @@ export async function launch(
     topic: number | null;
     byOther: boolean;
     continues: string | null;
+    agent?: string | null;
     relay?: "login" | "offline" | "failed" | null;
+    guest?: boolean;
   },
-): Promise<void> {
+): Promise<boolean> {
   const { tell, where, t } = await holderVoice(ctx, p.holder, p.chat.id, p.chat.title);
   // Others' failures reach the holder once an hour per chat: a broken routine
   // must not turn every member's message into a notice.
@@ -227,20 +251,23 @@ export async function launch(
   if (typeof routine === "string") {
     await ctx.store.endFire(p.chat.id, p.messageId, { status: "failed" });
     if (!quiet) await tell(where + t.fireFailed(routine));
-    return;
+    return false;
   }
 
   const result = await fire(
     routine.triggerId,
     routine.token,
-    firePayload({
-      chat: p.chat.id,
-      topic: p.topic,
-      message: p.messageId,
-      by: p.byOther ? "other" : "user",
-      continues: p.continues,
-      relay: p.relay ?? null,
-    }),
+    p.guest
+      ? guestPayload(p.messageId)
+      : firePayload({
+          chat: p.chat.id,
+          topic: p.topic,
+          message: p.messageId,
+          by: p.byOther ? "other" : "user",
+          continues: p.continues,
+          agent: p.agent ?? null,
+          relay: p.relay ?? null,
+        }),
   );
   if (!result.ok) {
     await ctx.store.endFire(p.chat.id, p.messageId, { status: "failed" });
@@ -249,19 +276,21 @@ export async function launch(
     );
     const minutes = result.retryAfter ? Math.ceil(result.retryAfter / 60) : undefined;
     if (!quiet) await tell(where + t.fireFailed(result.reason, minutes));
-    return;
+    return false;
   }
   await ctx.store.endFire(p.chat.id, p.messageId, {
     status: "started",
     sessionId: result.sessionId,
   });
   // No notice: 👀 says it started, and the chat's log in the menu has the session.
-  await react(ctx, p.chat.id, p.messageId, "👀");
+  if (!p.guest) await react(ctx, p.chat.id, p.messageId, "👀");
+  return true;
 }
 
 /** The first words, without the mention that called the bot. */
-function excerptOf(text: string, botUsername: string): string {
-  const mention = new RegExp(`@${botUsername}\\b`, "gi");
+export function excerptOf(text: string, bot: BotIdentity): string {
+  const names = [bot.username, ...(bot.aliases ?? [])].join("|");
+  const mention = new RegExp(`@(?:${names})\\b`, "gi");
   const chars = Array.from(redactSecrets(text).replace(mention, "").replace(/\s+/g, " ").trim());
   return chars.length > EXCERPT_LENGTH
     ? `${chars.slice(0, EXCERPT_LENGTH).join("")}…`

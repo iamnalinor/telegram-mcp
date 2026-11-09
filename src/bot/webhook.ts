@@ -35,11 +35,13 @@ import {
   type MessageReactionUpdated,
   type Update,
   type User,
+  type WidgetQuery,
 } from "../telegram/types";
 import { BOT_ACCOUNT, type Guard } from "../store";
 import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { handleAssistantButton, handleChatShared, handleCommand, handleRevoke } from "./commands";
 import { handleMemoryUndo, handleMenu } from "./menu";
+import { onGuestMessage } from "./guest";
 import { handleSecret } from "./routine";
 import { maybeStart } from "./triggers";
 import { parseCommand, realReply, toStored, topicName, topicOf } from "./extract";
@@ -438,6 +440,37 @@ async function onBusinessDeleted(ctx: BotContext, deleted: BusinessMessagesDelet
   );
 }
 
+/**
+ * A tap inside a widget the bot sent. The widget waits 15 seconds for an
+ * answer, which no session can give in time: the bot answers itself, and
+ * keeps the tap like a button press, for the session to read (wait_for_reply)
+ * and act on by changing the widget's state. Only the bot's own widgets count.
+ */
+async function onWidgetQuery(ctx: BotContext, query: WidgetQuery): Promise<WebhookReply> {
+  const answer = (data: string): WebhookReply => ({
+    method: "answerWidgetQuery",
+    widget_query_id: query.id,
+    data,
+  });
+  if (!query.chat || !query.message_id) return answer("unknown");
+  const stored = await ctx.store.getMessage(
+    { account_id: BOT_ACCOUNT, chat_id: query.chat.id },
+    query.message_id,
+  );
+  if (!stored?.outgoing || stored.sent_by === null) return answer("unknown");
+  await ctx.store.insertPress({
+    chat_id: query.chat.id,
+    message_id: query.message_id,
+    callback_id: query.id,
+    user_id: query.from.id,
+    user_name: query.from.username ? `@${query.from.username}` : displayName(query.from),
+    label: query.data,
+    data: query.data,
+    date: nowSeconds(),
+  });
+  return answer("ok");
+}
+
 async function dispatch(ctx: BotContext, update: Update): Promise<WebhookReply | null> {
   if (update.message) return onMessage(ctx, update.message, false);
   if (update.edited_message) return onMessage(ctx, update.edited_message, true);
@@ -464,6 +497,11 @@ async function dispatch(ctx: BotContext, update: Update): Promise<WebhookReply |
     await onBusinessDeleted(ctx, update.deleted_business_messages);
     return null;
   }
+  if (update.guest_message) {
+    await onGuestMessage(ctx, update.guest_message);
+    return null;
+  }
+  if (update.widget_query) return onWidgetQuery(ctx, update.widget_query);
   return null;
 }
 

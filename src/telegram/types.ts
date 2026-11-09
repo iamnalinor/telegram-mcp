@@ -12,6 +12,8 @@ export interface User {
   username?: string;
   language_code?: string;
   can_read_all_group_messages?: boolean;
+  /** Only in getMe: guest mode is on in @BotFather. */
+  supports_guest_queries?: boolean;
 }
 
 type ChatType = "private" | "group" | "supergroup" | "channel";
@@ -112,6 +114,15 @@ export interface Message {
   migrate_to_chat_id?: number;
   new_chat_title?: string;
   reply_markup?: InlineKeyboardMarkup;
+  /** A message with structured formatting; its content is in blocks, not in `text`. */
+  rich_message?: { blocks?: unknown[] };
+  /** An HTML widget drawn inside the message. */
+  widget?: { id?: string; chat_data?: string; public_data?: string };
+  live_photo?: FileBase;
+  /** On a guest message: what answerGuestQuery takes to reply in a chat the bot is not in. */
+  guest_query_id?: string;
+  /** On a message only one member sees: its id among such messages; it has no ordinary id. */
+  ephemeral_message_id?: number;
   /** Set on messages of a chat managed through a business connection. */
   business_connection_id?: string;
   /** On the account owner's outgoing messages: the bot that sent it on their behalf. */
@@ -190,12 +201,25 @@ export interface Update {
   business_message?: Message;
   edited_business_message?: Message;
   deleted_business_messages?: BusinessMessagesDeleted;
+  /** The bot was called in a chat it is not a member of (guest mode). */
+  guest_message?: Message;
+  widget_query?: WidgetQuery;
+}
+
+/** A tap inside a widget the bot sent: its script asked the bot something. */
+export interface WidgetQuery {
+  id: string;
+  from: User;
+  chat?: Chat;
+  message_id?: number;
+  data: string;
 }
 
 interface InlineKeyboardButton {
   text: string;
   callback_data?: string;
   url?: string;
+  style?: "primary" | "success" | "danger";
 }
 
 export interface InlineKeyboardMarkup {

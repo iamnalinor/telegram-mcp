@@ -83,7 +83,12 @@ function sender(message: StoredMessage, botUsername: string, userId: number): st
     const who = person(message.from_name, message.from_username, message.from_id, userId);
     return message.sent_by !== null ? `${who}, sent by you` : who;
   }
-  if (message.outgoing) return `bot (@${botUsername}, you)`;
+  if (message.outgoing) {
+    // The agent's name was given by a session: plain characters only, but still quoted.
+    return message.agent
+      ? `bot (@${botUsername}, you — agent ${JSON.stringify(message.agent)})`
+      : `bot (@${botUsername}, you)`;
+  }
   const marks = [
     message.forwarded_from ? "forwarding" : null,
     message.via_bot === null
@@ -110,6 +115,7 @@ function authored(message: StoredMessage): string[] {
     message.file_name,
     message.file_mime,
     message.buttons,
+    message.agent ?? null,
   ].filter((part): part is string => part !== null);
 }
 

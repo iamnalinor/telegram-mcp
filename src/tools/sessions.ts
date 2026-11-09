@@ -67,7 +67,15 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
         const titles = new Map<number, string>();
         for (const id of new Set(sessions.flatMap((s) => [s.started?.chat_id, s.wrote?.chat_id]))) {
           if (id === undefined) continue;
-          titles.set(id, id > 0 ? "me" : ((await ctx.store.getChat(id))?.title ?? String(id)));
+          // 0 files the calls from chats the bot is not in (guest mode).
+          titles.set(
+            id,
+            id > 0
+              ? "me"
+              : id === 0
+                ? "a guest call"
+                : ((await ctx.store.getChat(id))?.title ?? String(id)),
+          );
         }
         const where = (id: number) => JSON.stringify(titles.get(id) ?? String(id));
         const entries = sessions.map((session) => describe(session, where));
