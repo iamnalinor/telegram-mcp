@@ -45,7 +45,7 @@ import type { BotContext, WebhookReply } from "./context";
 import { toStored } from "./extract";
 import { texts } from "./texts";
 
-type Answer = { text?: string; alert?: boolean };
+export type Answer = { text?: string; alert?: boolean; applied?: boolean };
 
 /** What a scene's I/O needs; tools pass their own context, which has these too. */
 type SceneContext = Pick<BotContext, "api" | "store" | "bot" | "defer" | "sceneLimit">;
@@ -62,7 +62,7 @@ function actorOf(user: User): Actor {
 }
 
 /** The scene's tree and state, parsed from its row. */
-function loaded(row: SceneRow): {
+export function loaded(row: SceneRow): {
   compiled: Compiled;
   state: Record<string, Value>;
   messages: SceneMessage[];
@@ -254,7 +254,7 @@ function onScreen(rendered: Rendered, press: Press): boolean {
  * for whoever caused it, in their language (a press shows it; other sources
  * may ignore it).
  */
-async function applyEvent(
+export async function applyEvent(
   ctx: SceneContext,
   sceneId: number,
   incoming: Omit<SceneEvent, "owner" | "now">,
@@ -340,7 +340,7 @@ async function applyEvent(
       if (drawNow) await redraw(ctx, committed);
       else later(ctx, row.id);
     }
-    return perform(ctx, row, event, result.effects);
+    return { ...(await perform(ctx, row, event, result.effects)), applied: true };
   }
   return { text: t.sceneFailed };
 }
@@ -468,4 +468,57 @@ async function redraw(ctx: SceneContext, row: SceneRow): Promise<void> {
     }
     await ctx.store.updateOutgoing(chat, message.id, { text: rendered.plain, buttons });
   }
+}
+
+/**
+ * The owner's session changes the state itself (update_scene): the fields
+ * given replace those of the state. Null when it is done; otherwise why
+ * the change was refused.
+ */
+export async function mergeState(
+  ctx: SceneContext,
+  sceneId: number,
+  fields: Record<string, Value>,
+): Promise<string | null> {
+  for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
+    const row = await ctx.store.getScene(sceneId);
+    if (!row || row.status !== "active") return "The scene is over.";
+    const { state } = loaded(row);
+    const unknown = Object.keys(fields).find((key) => !Object.hasOwn(state, key));
+    if (unknown) return `"${unknown}" is not a field of the scene's state.`;
+    const next = { ...state, ...fields };
+    const size = new TextEncoder().encode(JSON.stringify(next)).byteLength;
+    if (size > 8192) return `The state would be ${size} bytes; it holds 8192.`;
+    const changed: SceneRow = { ...row, state: JSON.stringify(next) };
+    const owner = await ownerOf(ctx, row);
+    try {
+      for (const [index, message] of loaded(changed).messages.entries()) {
+        screenOf(changed, index === 0 ? row.view : message.view, owner);
+      }
+    } catch (error) {
+      if (error instanceof LangError)
+        return `The scene could not draw that state: ${error.message}`;
+      throw error;
+    }
+    const edited = Date.now();
+    if (
+      !(await ctx.store.commitScene(row.id, row.version, {
+        state: changed.state,
+        edited_at: edited,
+      }))
+    )
+      continue;
+    await redraw(ctx, { ...changed, version: row.version + 1, edited_at: edited });
+    return null;
+  }
+  return "The scene kept changing under the update; try again.";
+}
+
+/** End the scene: no more events, and its messages lose their buttons. */
+export async function endScene(ctx: SceneContext, sceneId: number): Promise<boolean> {
+  const row = await ctx.store.getScene(sceneId);
+  if (!row || row.status !== "active") return false;
+  await ctx.store.finishScene(sceneId);
+  await redraw(ctx, { ...row, status: "finished" });
+  return true;
 }
