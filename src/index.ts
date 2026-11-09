@@ -135,7 +135,15 @@ export default {
     }
 
     if (pathname === WEBHOOK_PATH) {
-      return handleWebhook(request, () => botContext(core, publicOrigin(request)), core);
+      return handleWebhook(
+        request,
+        () =>
+          botContext(core, publicOrigin(request), {
+            defer: (promise) => ctx.waitUntil(promise),
+            sceneLimit: env.SCENE_LIMIT,
+          }),
+        core,
+      );
     }
 
     if (isOAuthPath(pathname)) {

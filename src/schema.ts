@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 16;
+const SCHEMA_VERSION = 17;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -318,6 +318,59 @@ const SCHEMA: string[] = [
     connected_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   )`,
+
+  // Scenes: a message whose state and rules live here, run by the bot on every
+  // press, vote or reply (src/bot/scenes.ts). `def` is the compiled definition;
+  // `version` makes every commit conditional, so concurrent events never lose
+  // a write. `messages` lists the scene's live messages, the first being the
+  // main one (`view` is what it shows); `posts` the times of recent posts.
+  `CREATE TABLE IF NOT EXISTS scenes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    thread_id INTEGER,
+    owner INTEGER NOT NULL,
+    session_id TEXT,
+    agent TEXT,
+    title TEXT NOT NULL,
+    brief TEXT,
+    def TEXT NOT NULL,
+    state TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    view TEXT NOT NULL DEFAULT 'main',
+    messages TEXT NOT NULL DEFAULT '[]',
+    wake_limit INTEGER NOT NULL DEFAULT 10,
+    quiet_until INTEGER NOT NULL DEFAULT 0,
+    dirty INTEGER NOT NULL DEFAULT 0,
+    edited_at INTEGER NOT NULL DEFAULT 0,
+    posts TEXT,
+    poll TEXT,
+    created INTEGER NOT NULL,
+    updated INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS scenes_by_chat ON scenes (chat_id, status)`,
+  // What leads back to a scene from an update that names no scene: a message
+  // ("<chat>:<message>", for replies and reactions) or a poll ("<poll id>").
+  `CREATE TABLE IF NOT EXISTS scene_links (
+    kind TEXT NOT NULL,
+    key TEXT NOT NULL,
+    scene_id INTEGER NOT NULL,
+    view TEXT,
+    PRIMARY KEY (kind, key)
+  ) WITHOUT ROWID`,
+  // Only what the session should read: log() and wake() events, and actions
+  // Telegram refused. Ordinary presses leave no row.
+  `CREATE TABLE IF NOT EXISTS scene_events (
+    scene_id INTEGER NOT NULL,
+    seq INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    user_id INTEGER,
+    user_name TEXT,
+    data TEXT,
+    date INTEGER NOT NULL,
+    woke INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (scene_id, seq)
+  ) WITHOUT ROWID`,
 
   // Who each personal chat is with, for listings and resolving names.
   `CREATE TABLE IF NOT EXISTS personal_chats (

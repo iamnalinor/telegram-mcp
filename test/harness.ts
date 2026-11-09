@@ -182,7 +182,12 @@ class FakeTelegram {
       return Response.json({ ok: true, result: handler(params) });
     } catch (error) {
       if (error instanceof TgError)
-        return Response.json({ ok: false, error_code: error.code, description: error.description });
+        return Response.json({
+          ok: false,
+          error_code: error.code,
+          description: error.description,
+          ...(error.parameters ? { parameters: error.parameters } : {}),
+        });
       throw error;
     }
   }
@@ -192,6 +197,7 @@ export class TgError extends Error {
   constructor(
     readonly code: number,
     readonly description: string,
+    readonly parameters?: { retry_after?: number },
   ) {
     super(description);
   }

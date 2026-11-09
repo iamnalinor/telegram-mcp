@@ -42,6 +42,7 @@ import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { handleAssistantButton, handleChatShared, handleCommand, handleRevoke } from "./commands";
 import { handleMemoryUndo, handleMenu, takeLimitAnswer } from "./menu";
 import { onGuestMessage } from "./guest";
+import { handleScenePress } from "./scenes";
 import { handleSecret } from "./routine";
 import { maybeStart } from "./triggers";
 import { parseCommand, realReply, toStored, topicName, topicOf } from "./extract";
@@ -292,6 +293,8 @@ async function onCallback(ctx: BotContext, query: CallbackQuery): Promise<Webhoo
 
   const menu = /^m:([\w:-]{1,60})$/.exec(data);
   if (menu) return handleMenu(ctx, query, menu[1]);
+
+  if (data.startsWith("s:")) return handleScenePress(ctx, query);
 
   const press = /^cb:(\d+)\.(\d+)$/.exec(data);
   if (press) return handleAssistantButton(ctx, query, Number(press[1]), Number(press[2]));

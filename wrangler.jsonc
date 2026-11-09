@@ -70,5 +70,11 @@
       "namespace_id": "2003",
       "simple": { "limit": 30, "period": 60 },
     },
+    // Scene events (presses, votes, replies), per scene and person.
+    {
+      "name": "SCENE_LIMIT",
+      "namespace_id": "2004",
+      "simple": { "limit": 10, "period": 10 },
+    },
   ],
 }
