@@ -543,6 +543,25 @@ export class Store {
       .run();
   }
 
+  /**
+   * The menu asked the user to type a number (a limit) for `target`: `g:<chat>`,
+   * `q:<guest key>` or `s:<scene>`. One pending prompt per user; a newer one replaces it.
+   */
+  async setLimitPrompt(userId: number, target: string, promptMessageId: number): Promise<void> {
+    await this.setMeta(`limit_prompt:${userId}`, `${target}:${promptMessageId}`);
+  }
+
+  /** What the prompt the user replied to was for, or null when it is not the pending one. */
+  async takeLimitPrompt(userId: number, promptMessageId: number): Promise<string | null> {
+    const value = await this.getMeta(`limit_prompt:${userId}`);
+    const match = value ? /^(.+):(\d+)$/.exec(value) : null;
+    return match && Number(match[2]) === promptMessageId ? match[1] : null;
+  }
+
+  async dropLimitPrompt(userId: number): Promise<void> {
+    await this.db.prepare("DELETE FROM meta WHERE key = ?").bind(`limit_prompt:${userId}`).run();
+  }
+
   // --- users ---------------------------------------------------------------
 
   async upsertUser(user: {

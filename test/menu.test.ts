@@ -187,3 +187,119 @@ describe("leaving a group", () => {
     expect(grants.n).toBe(1);
   });
 });
+
+describe("the others' hourly limit", () => {
+  const TRIGGER = "trig_01F9YA8ci7HHDqR8LkjEAqLv";
+  const TOKEN = `sk-ant-oat01-${"A".repeat(40)}`;
+  const limit = () =>
+    (
+      h.db.raw.query("SELECT others_limit FROM claude_chats WHERE chat_id = ?").get(TEAM.id) as {
+        others_limit: number;
+      }
+    ).others_limit;
+
+  beforeEach(async () => {
+    await h.addBot(TEAM, ALICE);
+    h.db.raw
+      .query(
+        "INSERT INTO claude_chats (chat_id, user_id, others, others_limit, since) VALUES (?, ?, 1, 20, 1)",
+      )
+      .run(TEAM.id, ALICE.id);
+  });
+
+  /** Open the picker, press "Other number", and return the prompt's message id. */
+  async function askNumber(): Promise<number> {
+    await press(ALICE, `m:gl:${TEAM.id}`);
+    await press(ALICE, `m:gk:${TEAM.id}`, "q2");
+    const prompt = h.telegram.called("sendMessage").at(-1)!;
+    expect(prompt.params.reply_markup).toMatchObject({ force_reply: true });
+    expect(String(prompt.params.text)).toContain("1 to 500");
+    return promptId();
+  }
+
+  /** The bot's pending prompt for a number, by its message id. */
+  const promptId = () =>
+    Number(
+      (
+        h.db.raw.query("SELECT value FROM meta WHERE key = ?").get(`limit_prompt:${ALICE.id}`) as {
+          value: string;
+        }
+      ).value
+        .split(":")
+        .at(-1),
+    );
+
+  /** Reply to the bot's message `id` in the private chat. */
+  const answer = (id: number, text: string) =>
+    h.say(dm(ALICE), ALICE, text, {
+      reply_to_message: {
+        message_id: id,
+        date: 1,
+        chat: dm(ALICE),
+        from: { id: 123456, is_bot: true, first_name: "Test" },
+        text: "Send a number",
+      },
+    });
+
+  it("opens the picker instead of cycling", async () => {
+    const screen = await press(ALICE, `m:gl:${TEAM.id}`);
+    expect(limit()).toBe(20);
+    const shown = buttons(screen!.reply_markup);
+    expect(shown.map((b) => b.callback_data)).toEqual([
+      `m:gn:${TEAM.id}:5`,
+      `m:gn:${TEAM.id}:20`,
+      `m:gn:${TEAM.id}:50`,
+      `m:gn:${TEAM.id}:100`,
+      `m:gk:${TEAM.id}`,
+      `m:g:${TEAM.id}`,
+    ]);
+    expect(shown[1].text).toContain("✓");
+  });
+
+  it("sets a preset", async () => {
+    const screen = await press(ALICE, `m:gn:${TEAM.id}:100`);
+    expect(limit()).toBe(100);
+    expect(String(screen!.text)).toContain("up to 100 times an hour");
+    await press(ALICE, `m:gn:${TEAM.id}:7`, "q2");
+    expect(limit()).toBe(100);
+    await press(BOB, `m:gn:${TEAM.id}:5`, "q3");
+    expect(limit()).toBe(100);
+  });
+
+  it("takes a typed number", async () => {
+    const prompt = await askNumber();
+    const reply = (await answer(prompt, "137"))._reply as Reply;
+    expect(limit()).toBe(137);
+    expect(reply.text).toContain("up to 137 times an hour");
+    // The prompt is used up: another number to it changes nothing.
+    await answer(prompt, "9");
+    expect(limit()).toBe(137);
+  });
+
+  it('refuses 0, 501 and "many"', async () => {
+    let prompt = await askNumber();
+    for (const typed of ["0", "501", "many", "12.5"]) {
+      await answer(prompt, typed);
+      const refusal = h.telegram.called("sendMessage").at(-1)!.params;
+      expect(refusal.text).toBe("A number from 1 to 500, please.");
+      expect(refusal.reply_markup).toMatchObject({ force_reply: true });
+      // The refusal asks again: the prompt stays pending, as that message.
+      prompt = promptId();
+      expect(limit()).toBe(20);
+    }
+    await answer(prompt, "3");
+    expect(limit()).toBe(3);
+  });
+
+  it("a typed number starts no session", async () => {
+    h.fires.length = 0;
+    await h.say(dm(ALICE), ALICE, "/start");
+    await h.connect(ALICE);
+    await h.say(dm(ALICE), ALICE, `${TRIGGER} ${TOKEN}`);
+    h.fires.length = 0;
+    const prompt = await askNumber();
+    await answer(prompt, "42");
+    expect(limit()).toBe(42);
+    expect(h.fires).toHaveLength(0);
+  });
+});

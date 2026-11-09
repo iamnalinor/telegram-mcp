@@ -40,7 +40,7 @@ import {
 import { BOT_ACCOUNT, type Guard } from "../store";
 import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { handleAssistantButton, handleChatShared, handleCommand, handleRevoke } from "./commands";
-import { handleMemoryUndo, handleMenu } from "./menu";
+import { handleMemoryUndo, handleMenu, takeLimitAnswer } from "./menu";
 import { onGuestMessage } from "./guest";
 import { handleSecret } from "./routine";
 import { maybeStart } from "./triggers";
@@ -136,6 +136,12 @@ async function onMessage(
   if (message.left_chat_member) {
     await onMemberLeft(ctx, message.chat.id, message.left_chat_member);
     return null;
+  }
+
+  // A number typed for the menu (a limit) is the bot's to take, never a task for Claude.
+  if (message.chat.type === "private" && message.from && message.reply_to_message) {
+    const taken = await takeLimitAnswer(ctx, { ...message, from: message.from });
+    if (taken) return taken === "asked" ? null : taken;
   }
 
   const command = parseCommand(message, ctx.bot);

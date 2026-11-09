@@ -273,6 +273,11 @@ const en = {
         : "",
   chatHeld: "Claude already answers here for someone else.",
   othersLimitButton: (limit: number) => `⏱ Others: up to ${limit}/h`,
+  limitPickerTitle: (subject: string, current: number) =>
+    `⏱ <b>${escapeHtml(subject)}</b>\n\nHow many times an hour, at most? Now: ${current}. Pick one, or type your own number (1–500).`,
+  limitPickerCustom: "✏️ Other number",
+  limitPrompt: (subject: string) => `Send a number from 1 to 500 for «${escapeHtml(subject)}».`,
+  limitInvalid: "A number from 1 to 500, please.",
   othersLimited: (limit: number) =>
     `😴 Other members used up ${limit} starts this hour; theirs wait until it passes (they see 😴). Change the limit in 👥 Groups.`,
   routineFirst: "Set up 🤖 Claude on tag first.",
@@ -562,6 +567,11 @@ const ru: Texts = {
         : "",
   chatHeld: "Здесь Claude уже отвечает для другого человека.",
   othersLimitButton: (limit) => `⏱ Другим: до ${limit}/ч`,
+  limitPickerTitle: (subject, current) =>
+    `⏱ <b>${escapeHtml(subject)}</b>\n\nСколько раз в час, не больше? Сейчас: ${current}. Выбери или впиши своё число (1–500).`,
+  limitPickerCustom: "✏️ Другое число",
+  limitPrompt: (subject) => `Пришли число от 1 до 500 для «${escapeHtml(subject)}».`,
+  limitInvalid: "Нужно число от 1 до 500.",
   othersLimited: (limit) =>
     `😴 Остальные участники исчерпали ${limit} запусков за час; их теги подождут, пока он пройдёт (они видят 😴). Лимит меняется в 👥 Группах.`,
   routineFirst: "Сначала настрой 🤖 Claude по тегу.",
