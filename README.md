@@ -333,10 +333,6 @@ secondary one ending in `agent`, `ai`, `app` or `game`, which Telegram lets Prem
 two of their bots, or a collectible one — list them in `BOT_USERNAMES` (comma-separated), and a tag
 by any of them counts.
 
-**Names.** A session started from Telegram names itself, so the list on claude.ai reads at a
-glance: the chat and the date for a chat's session of the day ("Team chat · 2026-11-09"), the chat
-and the message for a single one ("me · #4512").
-
 Never: commands, edits, answers to the bot's own prompts, a reply that a waiting `ask_user` will
 pick up, and — in groups — forwards and messages via inline bots. Each message starts one session at
 most, however often Telegram retries it. The bot reacts 👀 when a new session starts (not when a

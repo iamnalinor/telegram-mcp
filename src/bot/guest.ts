@@ -261,7 +261,7 @@ export async function onGuestMessage(ctx: BotContext, message: Message): Promise
     await ctx.store.endFire(key, id, { status: "relayed", sessionId: session });
     return;
   }
-  await startGuest(ctx, holder, id, toOwn ? session : null, online);
+  await startGuest(ctx, holder, id, toOwn ? session : null);
 }
 
 /**
@@ -273,7 +273,6 @@ export async function startGuest(
   userId: number,
   id: number,
   continues: string | null,
-  day = false,
 ): Promise<void> {
   const call = await ctx.store.getGuestCall(userId, id);
   if (!call) return;
@@ -286,7 +285,6 @@ export async function startGuest(
     byOther: call.by_other === 1,
     continues,
     guest: true,
-    day: day && !continues,
   });
   if (!started) {
     const t = texts((await ctx.store.getUser(userId))?.language);

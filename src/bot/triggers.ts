@@ -196,7 +196,6 @@ export async function maybeStart(
     agent,
     // A reply that should have gone into its session: the new one says why it did not.
     relay: continues && (state === "login" || state === "offline") ? state : null,
-    day: state === "online" && !continues,
   });
 }
 
@@ -231,8 +230,6 @@ export async function launch(
     agent?: string | null;
     relay?: "login" | "offline" | "failed" | null;
     guest?: boolean;
-    /** The relay is up: this session takes the chat's messages of the day. */
-    day?: boolean;
   },
 ): Promise<boolean> {
   const { tell, where, t } = await holderVoice(ctx, p.holder, p.chat.id, p.chat.title);
@@ -252,7 +249,7 @@ export async function launch(
     routine.triggerId,
     routine.token,
     p.guest
-      ? guestPayload(p.messageId, p.byOther ? "other" : "user", p.continues, p.day)
+      ? guestPayload(p.messageId, p.byOther ? "other" : "user", p.continues)
       : firePayload({
           chat: p.chat.id,
           topic: p.topic,
@@ -261,7 +258,6 @@ export async function launch(
           continues: p.continues,
           agent: p.agent ?? null,
           relay: p.relay ?? null,
-          day: p.day,
         }),
   );
   if (!result.ok) {

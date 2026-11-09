@@ -203,7 +203,7 @@ describe("guest mode", () => {
     const placeholder = h.telegram.called("answerGuestQuery").at(-1)!.params;
     expect(placeholder.guest_query_id).toBe("gq-1");
     expect(h.fires).toHaveLength(1);
-    expect(payload()).toBe("guest: 1  by: user\nsession: single");
+    expect(payload()).toBe("guest: 1  by: user");
     // Nothing of that chat is stored among the bot's chats.
     expect(
       h.db.raw.query("SELECT COUNT(*) AS n FROM messages WHERE chat_id = ?").get(ELSEWHERE.id),
@@ -271,7 +271,7 @@ describe("guest mode", () => {
 
     await call(BOB, `${BOT} what time is it in Tokyo?`);
     expect(h.fires).toHaveLength(2);
-    expect(payload()).toBe("guest: 2  by: other\nsession: single");
+    expect(payload()).toBe("guest: 2  by: other");
     const read = (await h.tool(alice, "get_guest_call", { call: 2 })).text;
     expect(read).toContain('"Bob" (@bob, id 222): ');
     expect(read).not.toContain("id 222, the user");
@@ -313,9 +313,7 @@ describe("guest mode", () => {
   it("names the session a reply continues when there is no relay", async () => {
     await call(ALICE, `${BOT} is this true?`);
     await call(ALICE, "why?", { reply_to_message: ownMessage });
-    expect(payload()).toBe(
-      "guest: 2  by: user\ncontinues: session_01TestSession0000000001\nsession: single",
-    );
+    expect(payload()).toBe("guest: 2  by: user\ncontinues: session_01TestSession0000000001");
     expect((await h.tool(alice, "get_guest_call", { call: 2 })).text).toContain(
       "↩ replying to bot (@test_mcp_bot, you)",
     );
