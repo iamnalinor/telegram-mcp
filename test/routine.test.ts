@@ -129,12 +129,29 @@ describe("the menu", () => {
     const guide = (screen!.reply_markup as { inline_keyboard: Button[][] }).inline_keyboard.flat();
     expect(guide.find((b) => b.url)?.url).toBe("https://claude.ai/code/routines");
 
+    // Where Telegram takes no rich message, the prompt comes in parts that each fit one message.
+    const before = sentTexts().length;
     await press("m:clp");
-    const prompt = sentTexts().at(-1)!;
-    expect(prompt).toContain("<pre>");
+    const parts = sentTexts().slice(before);
+    expect(parts.length).toBeGreaterThan(1);
+    for (const part of parts) {
+      expect(part).toContain("<pre>");
+      expect(part.length).toBeLessThan(4096);
+    }
+    const prompt = parts.join("\n");
     expect(prompt).toContain("do not act for @alice without their consent");
     expect(prompt).toContain("not as a habit on every message");
-    expect(prompt.length).toBeLessThan(4096);
+    expect(prompt).toContain(`(1/${parts.length})`);
+
+    // As a rich message it is one block to copy.
+    h.telegram.handlers.set("sendRichMessage", () => ({ message_id: 1, date: 1, chat: dm(ALICE) }));
+    await press("m:clp");
+    expect(sentTexts()).toHaveLength(before + parts.length);
+    const rich = h.telegram.called("sendRichMessage").at(-1)!.params.rich_message as {
+      html: string;
+    };
+    expect(rich.html).toContain("Write the way the chat does");
+    expect(rich.html).toContain("on Opus");
 
     await press("m:clset");
     const ask = h.telegram.called("sendMessage").at(-1)!.params;
@@ -175,9 +192,11 @@ describe("pieces", () => {
     expect(await decrypt(key, "not base64!", "routine:1")).toBeNull();
   });
 
-  it("keeps the prompt within one Telegram message, with room for the longest username", () => {
-    // The menu sends it in one message with a one-line intro: Telegram allows 4096 characters.
-    expect(routinePrompt("a".repeat(32)).length + 120).toBeLessThan(4096);
+  it("keeps every paragraph of the prompt within one Telegram message", () => {
+    // Without rich messages the menu sends it split between paragraphs: none may outgrow a message.
+    for (const paragraph of routinePrompt("a".repeat(32)).split("\n\n")) {
+      expect(paragraph.length).toBeLessThan(3800);
+    }
   });
 
   it("finds the trigger and the token anywhere in the message", () => {

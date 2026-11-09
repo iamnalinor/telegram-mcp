@@ -167,7 +167,7 @@ const en = {
   routineGuide:
     "<b>Setting it up</b>\n\n" +
     "1. Open routines on claude.ai → New routine.\n" +
-    "2. Paste the prompt from «Send the prompt». Model: Sonnet. Attach the repositories Claude may work in, if any. Keep the connectors: Telegram must be among them.\n" +
+    "2. Paste the prompt from «Send the prompt». Model: Sonnet — it talks, and hands real work to Opus agents itself. Attach the repositories Claude may work in, if any. Keep the connectors: Telegram must be among them.\n" +
     "3. Add trigger → API → Generate token. Copy the trigger id (trig_…) and the token.\n" +
     "4. Send me both in one message. I delete it right away, keep the token encrypted, and start a test session that writes «ok» here.",
   buttonOpenRoutines: "Open routines",
@@ -209,6 +209,25 @@ const en = {
     }[reason],
   inChat: (title: string) => `«${escapeHtml(title)}»:`,
   tooManyStarts: "⚠️ Too many starts in the last hour; I start no more until it passes.",
+  guestAnswering: "✍️ Answering…",
+  guestFailed: "⚠️ Could not start Claude.",
+  buttonGuestChats: "🕊 Guest chats",
+  guestChatsScreen: (lines: string[]) =>
+    "🕊 <b>Guest chats</b>\n\nChats I am not in, where I was called by a tag. The first call in a chat binds it to whoever called: from then on your routine answers there, and your rules apply. Others' calls there count only if you turn «Others too» on.\n\n" +
+    (lines.length
+      ? lines.join("\n")
+      : "None yet: tag me in any chat. Guest Mode must be on for the bot in @BotFather."),
+  guestChatScreen: (p: { title: string; others: boolean; limit: number }) =>
+    `🕊 <b>${escapeHtml(p.title)}</b>\n\nI am not a member here: I see only the message that calls me and the one it replies to, and answer in one message.\n\n` +
+    (p.others
+      ? `⚠️ Others there may call me too, up to ${p.limit} times an hour. I help them only with what anyone could do on their own.`
+      : "Only your calls count there."),
+  guestHeld: (title: string, holder: string) =>
+    `ℹ️ You called me in «${escapeHtml(title)}», but that chat is connected to ${holder}: there I answer them, and others only if they allow it.`,
+  buttonGuestRelease: "🔌 Disconnect",
+  guestReleased: "Disconnected. The next call there binds the chat anew.",
+  guestNoAnswer: (title: string) =>
+    `⚠️ You called me in «${escapeHtml(title)}», but Telegram did not let me answer there. Check that Guest Mode is on for the bot in @BotFather, then try again.`,
   startsButton: "📜 Starts",
   startsScreen: (title: string, lines: string[]) =>
     `<b>${escapeHtml(title)}</b> — latest starts, newest first (UTC):\n\n${lines.join("\n")}`,
@@ -243,7 +262,7 @@ const en = {
     "⚠️ The relay has gone quiet: messages to sessions are not getting through, and replies start new sessions instead. Check the machine: <code>systemctl status tg-relay</code>.",
   claudeHere: (on: boolean): string => (on ? "💬 Here: on ✅" : "💬 Here: off"),
   claudeHereHint:
-    "Here: every message goes to Claude — with the 🛰 relay, the day's messages go to one session (from 00:00 UTC), and a reply to a session's message goes back to that session; without it, each message starts its own. In groups, turn it on in 👥 Groups.",
+    "Here: every message goes to Claude — with the 🛰 relay, a chat's messages of the day go to one session (from 00:00 UTC), and a reply to a session's message goes back to that session; without it, each message starts its own. In groups, turn it on in 👥 Groups. You can also call me from chats I am not in, by tagging me there: see 🕊 Guest chats.",
   claudeToggle: (on: boolean): string => (on ? "🤖 Claude answers: ✅" : "🤖 Claude answers: off"),
   othersToggle: (on: boolean): string => (on ? "👥 Others too: ⚠️ on" : "👥 Others too: off"),
   groupClaude: (p: { on: boolean; others: boolean; limit: number; heldBy: string | null }) =>
@@ -440,7 +459,7 @@ const ru: Texts = {
   routineGuide:
     "<b>Настройка</b>\n\n" +
     "1. Открой рутины на claude.ai → New routine.\n" +
-    "2. Вставь промпт из «Прислать промпт». Модель — Sonnet. Подключи репозитории, в которых Claude может работать, если нужны. Коннекторы оставь: среди них должен быть Telegram.\n" +
+    "2. Вставь промпт из «Прислать промпт». Модель — Sonnet: она общается, а задачи сама отдаёт агентам на Opus. Подключи репозитории, в которых Claude может работать, если нужны. Коннекторы оставь: среди них должен быть Telegram.\n" +
     "3. Add trigger → API → Generate token. Скопируй id триггера (trig_…) и токен.\n" +
     "4. Пришли мне оба одним сообщением. Я сразу его удалю, токен сохраню только в зашифрованном виде и запущу тестовую сессию — она напишет сюда «ok».",
   buttonOpenRoutines: "Открыть рутины",
@@ -480,6 +499,25 @@ const ru: Texts = {
     }[reason],
   inChat: (title) => `«${escapeHtml(title)}»:`,
   tooManyStarts: "⚠️ Слишком много запусков за последний час; новых не будет, пока он не пройдёт.",
+  guestAnswering: "✍️ Отвечаю…",
+  guestFailed: "⚠️ Не получилось запустить Claude.",
+  buttonGuestChats: "🕊 Гостевые чаты",
+  guestChatsScreen: (lines) =>
+    "🕊 <b>Гостевые чаты</b>\n\nЧаты, где меня нет, но куда меня позвали тегом. Первый вызов привязывает чат к тому, кто позвал: дальше там отвечает твоя рутина и действуют твои правила. Чужие вызовы считаются, только если включишь «Отвечать другим».\n\n" +
+    (lines.length
+      ? lines.join("\n")
+      : "Пока ни одного: тегни меня в любом чате. У бота в @BotFather должен быть включён Guest Mode."),
+  guestChatScreen: (p) =>
+    `🕊 <b>${escapeHtml(p.title)}</b>\n\nЯ здесь не участник: вижу только сообщение, которым меня зовут, и то, на которое оно отвечает, и отвечаю одним сообщением.\n\n` +
+    (p.others
+      ? `⚠️ Меня могут звать и другие, до ${p.limit} раз в час. Им я помогаю только с тем, что любой мог бы сделать сам.`
+      : "Считаются только твои вызовы."),
+  guestHeld: (title, holder) =>
+    `ℹ️ Ты позвал меня в «${escapeHtml(title)}», но этот чат привязан к ${holder}: там я отвечаю ему, а остальным — только если он разрешит.`,
+  buttonGuestRelease: "🔌 Отвязать",
+  guestReleased: "Отвязано. Следующий вызов привяжет чат заново.",
+  guestNoAnswer: (title) =>
+    `⚠️ Ты позвал меня в «${escapeHtml(title)}», но Telegram не дал мне там ответить. Проверь, что у бота в @BotFather включён Guest Mode, и попробуй ещё раз.`,
   startsButton: "📜 Запуски",
   startsScreen: (title, lines) =>
     `<b>${escapeHtml(title)}</b> — последние запуски, сначала новые (UTC):\n\n${lines.join("\n")}`,
@@ -514,7 +552,7 @@ const ru: Texts = {
     "⚠️ Ретранслятор замолчал: сообщения сессиям не доходят, реплаи запускают новые сессии. Проверь машину: <code>systemctl status tg-relay</code>.",
   claudeHere: (on) => (on ? "💬 Здесь: вкл ✅" : "💬 Здесь: выкл"),
   claudeHereHint:
-    "Здесь каждое сообщение идёт Claude: с 🛰 ретранслятором сообщения за день уходят в одну сессию (с 00:00 UTC), а реплай на сообщение сессии — обратно в неё; без него каждое сообщение запускает свою. В группах включается в 👥 Группы.",
+    "Здесь каждое сообщение идёт Claude: с 🛰 ретранслятором сообщения чата за день уходят в одну сессию (с 00:00 UTC), а реплай на сообщение сессии — обратно в неё; без него каждое сообщение запускает свою. В группах включается в 👥 Группы. Меня можно звать и из чатов, где меня нет, — тегом: см. 🕊 Гостевые чаты.",
   claudeToggle: (on) => (on ? "🤖 Claude отвечает: ✅" : "🤖 Claude отвечает: выкл"),
   othersToggle: (on) => (on ? "👥 Отвечать другим: ⚠️ вкл" : "👥 Отвечать другим: выкл"),
   groupClaude: (p) =>

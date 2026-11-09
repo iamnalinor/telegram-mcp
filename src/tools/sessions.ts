@@ -13,7 +13,7 @@ import { z } from "zod";
 
 import { Fence, formatTime } from "../format";
 import { enqueue, parseSession, relayProblem, relayState, sessionEnvelope } from "../relay";
-import type { KnownSession, RelayOrigin } from "../store";
+import { isGuestKey, type KnownSession, type RelayOrigin } from "../store";
 import { sessionArg, sessionId, text, ToolError, toolError, type ToolContext } from "./common";
 
 const SHOWN = 20;
@@ -67,7 +67,15 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
         const titles = new Map<number, string>();
         for (const id of new Set(sessions.flatMap((s) => [s.started?.chat_id, s.wrote?.chat_id]))) {
           if (id === undefined) continue;
-          titles.set(id, id > 0 ? "me" : ((await ctx.store.getChat(id))?.title ?? String(id)));
+          // Guest chats, where the bot is not a member, are filed under keys of their own.
+          titles.set(
+            id,
+            isGuestKey(id)
+              ? `${(await ctx.store.guestChatByKey(id))?.title ?? "a chat"} (guest call)`
+              : id > 0
+                ? "me"
+                : ((await ctx.store.getChat(id))?.title ?? String(id)),
+          );
         }
         const where = (id: number) => JSON.stringify(titles.get(id) ?? String(id));
         const entries = sessions.map((session) => describe(session, where));

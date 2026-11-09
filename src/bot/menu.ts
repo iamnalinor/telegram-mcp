@@ -29,6 +29,8 @@
  *   m:go:<id>     other members too: asks first; m:goy:<id> turns it on
  *   m:gl:<id>     their hourly limit: steps through 5, 10, 20, 50
  *   m:gs:<id>     the log of starts there
+ *   m:gq          guest chats: where the bot was called without being a member
+ *   m:q:<n>       one of them; m:qo / m:qoy / m:ql / m:qs as for a group, m:qx lets it go
  *
  * Every press is checked again: anyone can send any callback_data.
  */
@@ -38,6 +40,7 @@ import { formatTime } from "../format";
 import { isAllowed } from "../env";
 import { fallBack, relayState, relayToken, tokenHash } from "../relay";
 import { routinePrompt, tokenOf } from "../routine";
+import { GUEST_BASE } from "../store";
 import { memoryTitle } from "../tools/memory";
 import { TelegramError } from "../telegram/api";
 import type { CallbackQuery, InlineKeyboardMarkup, User } from "../telegram/types";
@@ -219,6 +222,46 @@ async function signInsScreen(ctx: BotContext, user: User): Promise<Screen> {
   };
 }
 
+/** Telegram's limit for one message, less room for the intro and the tags. */
+const PROMPT_PART = 3800;
+
+/**
+ * The routine's prompt, to copy. It is longer than one ordinary message, so
+ * it goes out as a rich message with one block to tap; where Telegram refuses
+ * that, as ordinary messages split between paragraphs, to paste one after
+ * another.
+ */
+async function sendPrompt(ctx: BotContext, user: User, intro: string): Promise<void> {
+  const prompt = routinePrompt(user.username ?? null);
+  const block = (part: string) => `<pre>${escapeHtml(part)}</pre>`;
+  try {
+    await ctx.api.call("sendRichMessage", {
+      chat_id: user.id,
+      rich_message: { html: `<p>${escapeHtml(intro)}</p>${block(prompt)}` },
+    });
+    return;
+  } catch (error) {
+    if (!(error instanceof TelegramError)) throw error;
+  }
+  const parts: string[] = [];
+  for (const paragraph of prompt.split("\n\n")) {
+    const last = parts.at(-1);
+    if (last !== undefined && last.length + paragraph.length + 2 <= PROMPT_PART) {
+      parts[parts.length - 1] = `${last}\n\n${paragraph}`;
+    } else {
+      parts.push(paragraph);
+    }
+  }
+  for (const [index, part] of parts.entries()) {
+    const head = parts.length > 1 ? `${intro} (${index + 1}/${parts.length})` : intro;
+    await ctx.api.call("sendMessage", {
+      chat_id: user.id,
+      text: `${escapeHtml(head)}\n${block(part)}`,
+      parse_mode: "HTML",
+    });
+  }
+}
+
 async function routineScreen(ctx: BotContext, user: User): Promise<Screen> {
   const t = texts(user.language_code);
   const row = await ctx.store.getRoutine(user.id);
@@ -253,6 +296,7 @@ async function routineScreen(ctx: BotContext, user: User): Promise<Screen> {
         ...(state === "set"
           ? [[button(t.buttonRelay(relayState(await ctx.store.getRelay(user.id))), "rl")]]
           : []),
+        ...(state === "set" ? [[button(t.buttonGuestChats, "gq")]] : []),
         ...(row ? [[button(t.buttonDeleteRoutine, "cldel")]] : []),
         [button(t.buttonBack, "main")],
       ],
@@ -352,6 +396,7 @@ async function startsScreen(
   user: User,
   chatId: number,
   title: string,
+  back = `g:${chatId}`,
 ): Promise<Screen> {
   const t = texts(user.language_code);
   const { fires, limited } = await ctx.store.firesIn(
@@ -372,7 +417,51 @@ async function startsScreen(
     text:
       (lines.length ? t.startsScreen(title, lines) : t.startsEmpty(title)) +
       (limited ? `\n\n${t.startsLimited(limited)}` : ""),
-    reply_markup: { inline_keyboard: [[button(t.buttonBack, `g:${chatId}`)]] },
+    reply_markup: { inline_keyboard: [[button(t.buttonBack, back)]] },
+  };
+}
+
+/** The chats this user holds as a guest: called there by a tag, never a member. */
+async function guestChatsScreen(ctx: BotContext, user: User): Promise<Screen> {
+  const t = texts(user.language_code);
+  const chats = await ctx.store.guestChatsOf(user.id);
+  const name = (chat: { title: string | null; id: number }) => chat.title ?? `#${chat.id}`;
+  return {
+    text: t.guestChatsScreen(
+      chats.map((chat) => `${chat.others ? "🤖⚠️" : "🤖"} ${escapeHtml(name(chat))}`),
+    ),
+    reply_markup: {
+      inline_keyboard: [
+        ...chats.map((chat) => [button(name(chat), `q:${chat.id}`)]),
+        [button(t.buttonBack, "cl")],
+      ],
+    },
+  };
+}
+
+function guestChatScreen(
+  user: User,
+  chat: { id: number; title: string | null },
+  claim: { others: number; others_limit: number },
+): Screen {
+  const t = texts(user.language_code);
+  return {
+    text: t.guestChatScreen({
+      title: chat.title ?? `#${chat.id}`,
+      others: claim.others === 1,
+      limit: claim.others_limit,
+    }),
+    reply_markup: {
+      inline_keyboard: [
+        [button(t.othersToggle(claim.others === 1), `qo:${chat.id}`)],
+        ...(claim.others === 1
+          ? [[button(t.othersLimitButton(claim.others_limit), `ql:${chat.id}`)]]
+          : []),
+        [button(t.startsButton, `qs:${chat.id}`)],
+        [button(t.buttonGuestRelease, `qx:${chat.id}`)],
+        [button(t.buttonBack, "gq")],
+      ],
+    },
   };
 }
 
@@ -488,11 +577,7 @@ async function render(
   if (name === "cl") return routineScreen(ctx, user);
   if (name === "clh") return guideScreen(user);
   if (name === "clp") {
-    await ctx.api.call("sendMessage", {
-      chat_id: user.id,
-      text: `${t.routinePromptIntro}\n<pre>${escapeHtml(routinePrompt(user.username ?? null))}</pre>`,
-      parse_mode: "HTML",
-    });
+    await sendPrompt(ctx, user, t.routinePromptIntro);
     return { ...guideScreen(user), note: t.promptSent };
   }
   if (name === "clset") {
@@ -557,6 +642,46 @@ async function render(
         ],
       },
     };
+  }
+
+  if (name === "gq") return guestChatsScreen(ctx, user);
+  const guest = /^(q|qo|qoy|ql|qs|qx):(\d{1,12})$/.exec(name);
+  if (guest) {
+    const key = GUEST_BASE + Number(guest[2]);
+    const chat = await ctx.store.guestChatByKey(key);
+    let claim = await ctx.store.getClaudeChat(key);
+    // Not theirs (any more): the list, not someone else's chat.
+    if (!chat || claim?.user_id !== user.id) {
+      return { ...(await guestChatsScreen(ctx, user)), note: t.menuGone };
+    }
+    const title = chat.title ?? `#${chat.id}`;
+    if (guest[1] === "qx") {
+      await ctx.store.releaseClaudeChat(user.id, key);
+      return { ...(await guestChatsScreen(ctx, user)), note: t.guestReleased };
+    }
+    if (guest[1] === "qs") return startsScreen(ctx, user, key, title, `q:${chat.id}`);
+    if (guest[1] === "qo") {
+      if (!claim.others) {
+        return {
+          text: t.othersWarning(title),
+          reply_markup: {
+            inline_keyboard: [
+              [button(t.buttonTurnOn, `qoy:${chat.id}`)],
+              [button(t.buttonCancel, `q:${chat.id}`)],
+            ],
+          },
+        };
+      }
+      await ctx.store.setClaudeOthers(user.id, key, false);
+    }
+    if (guest[1] === "qoy") await ctx.store.setClaudeOthers(user.id, key, true);
+    if (guest[1] === "ql") {
+      const next =
+        OTHERS_LIMITS[(OTHERS_LIMITS.indexOf(claim.others_limit) + 1) % OTHERS_LIMITS.length];
+      await ctx.store.setClaudeOthersLimit(user.id, key, next);
+    }
+    claim = (await ctx.store.getClaudeChat(key)) ?? claim;
+    return guestChatScreen(user, chat, claim);
   }
 
   const group = /^(g|rv|gc|go|goy|gl|gs):(-?\d+)$/.exec(name);

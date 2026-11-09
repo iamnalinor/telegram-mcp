@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = 16;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -46,6 +46,7 @@ const MESSAGES_COLUMNS = `
     session_id TEXT,
     awaited_until INTEGER,
     album TEXT,
+    agent TEXT,
     PRIMARY KEY (account_id, chat_id, message_id)`;
 
 /** Every column of `messages` but account_id, as they stood before version 4. */
@@ -276,6 +277,37 @@ const SCHEMA: string[] = [
   `CREATE INDEX IF NOT EXISTS relay_jobs_by_user ON relay_jobs (user_id, status, created_at)`,
   `CREATE INDEX IF NOT EXISTS relay_jobs_by_status ON relay_jobs (status, created_at)`,
 
+  // Chats the bot was called in without being a member (guest mode). Such a
+  // chat's id may coincide with one of the bot's own chats, so each gets a key
+  // of its own (GUEST_BASE + id, see src/store.ts) under which its holder
+  // (`claude_chats`), its starts (`fires`) and its relay jobs are filed.
+  `CREATE TABLE IF NOT EXISTS guest_chats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id INTEGER NOT NULL,
+    chat_type TEXT NOT NULL,
+    title TEXT,
+    UNIQUE (chat_type, chat_id)
+  )`,
+
+  // The calls themselves. `inline_message_id` names the bot's one message for
+  // that call, which every answer edits.
+  `CREATE TABLE IF NOT EXISTS guest_calls (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    chat_key INTEGER NOT NULL,
+    query_id TEXT NOT NULL UNIQUE,
+    inline_message_id TEXT,
+    from_id INTEGER NOT NULL,
+    from_name TEXT,
+    from_username TEXT,
+    by_other INTEGER NOT NULL DEFAULT 0,
+    text TEXT NOT NULL DEFAULT '',
+    file TEXT,
+    reply TEXT,
+    answer TEXT,
+    at INTEGER NOT NULL
+  )`,
+
   // A user's Telegram Business connection: the bot reads their private chats,
   // and acts in them only as far as `rights` (set by the user in Telegram) allow.
   `CREATE TABLE IF NOT EXISTS business_connections (
@@ -368,6 +400,7 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
     target: 15,
     alter: ["ALTER TABLE relay_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply'"],
   },
+  { target: 16, alter: ["ALTER TABLE messages ADD COLUMN agent TEXT"] },
 ];
 
 const ready = new WeakMap<D1Database, Promise<void>>();

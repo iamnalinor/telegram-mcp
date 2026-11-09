@@ -44,6 +44,8 @@ export interface StoredMessage {
   as_chat: boolean;
   /** For the bot's own messages: the Claude Code cloud session that sent it (session_…). */
   session_id: string | null;
+  /** For the bot's own messages: the session's subagent that sent it, by the name the session gave it. */
+  agent?: string | null;
   /** Read only (markAwaited sets it): until when that session waits for an answer. */
   awaited_until?: number | null;
   /** Telegram's media_group_id: the photos and files sent together, shown as one message. */
@@ -54,6 +56,7 @@ export interface StoredButton {
   text: string;
   data?: string;
   url?: string;
+  style?: "primary" | "success" | "danger";
 }
 
 interface MessageRow extends Omit<
@@ -123,8 +126,12 @@ export interface RelayJob {
   thread_id: number | null;
   status: "queued" | "taken" | "done" | "failed";
   error: string | null;
-  /** reply: a Telegram reply to the session's message; day: a private-chat message for the day's session. */
-  kind: "reply" | "day" | "ask";
+  /**
+   * reply: a Telegram reply to the session's message; day: a message for the
+   * chat's session of the day; guest: a call from a chat the bot is not in
+   * (`message_id` is the call's id, `chat_id` 0); ask: from another session.
+   */
+  kind: "reply" | "day" | "guest" | "ask";
   /** 1 when the sender waits for answer_session; a notice expects none. */
   wants_answer: number;
   answer: string | null;
@@ -145,6 +152,55 @@ export interface KnownSession {
   };
   wrote?: { chat_id: number; at: number; text: string };
   asked_at?: number;
+}
+
+/**
+ * Chats the bot is called in as a guest are filed under keys of their own,
+ * above any id Telegram gives out: such a chat's id may coincide with one of
+ * the bot's chats. `GUEST_BASE + guest_chats.id`.
+ */
+export const GUEST_BASE = 8_000_000_000_000_000;
+
+export const isGuestKey = (chatId: number): boolean => chatId >= GUEST_BASE;
+
+export interface GuestChat {
+  id: number;
+  chat_id: number;
+  chat_type: string;
+  title: string | null;
+}
+
+/** A call on the bot from a chat it is not in (guest mode). */
+export interface GuestCall {
+  id: number;
+  /** The chat's holder: whose routine answers there. */
+  user_id: number;
+  chat_key: number;
+  query_id: string;
+  /** The bot's one message for this call; null until Telegram accepted the placeholder. */
+  inline_message_id: string | null;
+  from_id: number;
+  from_name: string | null;
+  from_username: string | null;
+  /** 1 when someone other than the holder called. */
+  by_other: number;
+  text: string;
+  /** The attachment, as "kind name": guest chats' files are not fetched. */
+  file: string | null;
+  /** JSON of `GuestReply`: the message the call replied to. */
+  reply: string | null;
+  /** What the bot's message there says now. */
+  answer: string | null;
+  at: number;
+}
+
+export interface GuestReply {
+  from_id: number | null;
+  from_name: string | null;
+  from_username: string | null;
+  text: string;
+  /** The bot's own earlier message there. */
+  own: boolean;
 }
 
 export interface FireRow {
@@ -375,6 +431,7 @@ const MESSAGE_COLUMNS = [
   "as_chat",
   "session_id",
   "album",
+  "agent",
 ] as const;
 
 function messageValues(message: StoredMessage): unknown[] {
@@ -408,6 +465,7 @@ function messageValues(message: StoredMessage): unknown[] {
     message.as_chat ? 1 : 0,
     message.session_id,
     message.album ?? null,
+    message.agent ?? null,
   ];
 }
 
@@ -1765,15 +1823,30 @@ export class Store {
     return row !== null;
   }
 
-  /** The session the holder's messages in this chat went to most recently since `since`. */
-  async latestSession(userId: number, chatId: number, since: number): Promise<string | null> {
+  /**
+   * The session messages in these chats went to most recently since `since`:
+   * the holder's own, or the one other members' messages go to. The two are
+   * kept apart, so a session the user works in never hears a third party.
+   * Only a session started for that audience in these chats counts: a reply
+   * passed into someone else's session must not make it theirs for the day.
+   */
+  async latestSession(
+    userId: number,
+    chatIds: number[],
+    since: number,
+    byOther: boolean,
+  ): Promise<string | null> {
     const row = await this.db
       .prepare(
-        `SELECT session_id FROM fires WHERE user_id = ? AND at >= ? AND chat_id = ?
-         AND status IN ('started', 'relayed') AND session_id IS NOT NULL
-         ORDER BY at DESC, message_id DESC LIMIT 1`,
+        `SELECT f.session_id FROM fires f WHERE f.user_id = ?1 AND f.at >= ?2 AND f.by_other = ?3
+         AND f.chat_id IN (${chatIds.map((_, i) => `?${i + 4}`).join(", ")})
+         AND f.status IN ('started', 'relayed') AND f.session_id IS NOT NULL
+         AND EXISTS (SELECT 1 FROM fires s WHERE s.user_id = ?1 AND s.session_id = f.session_id
+                     AND s.status = 'started' AND s.by_other = ?3
+                     AND s.chat_id IN (${chatIds.map((_, i) => `?${i + 4}`).join(", ")}))
+         ORDER BY f.at DESC, f.message_id DESC LIMIT 1`,
       )
-      .bind(userId, since, chatId)
+      .bind(userId, since, byOther ? 1 : 0, ...chatIds)
       .first<{ session_id: string }>();
     return row?.session_id ?? null;
   }
@@ -2071,6 +2144,94 @@ export class Store {
     return [...known.values()].sort((a, b) => last(b) - last(a)).slice(0, limit);
   }
 
+  // --- guest calls ---------------------------------------------------------
+
+  /** The chat a guest call came from, known since the first call there. */
+  guestChat(chatType: string, chatId: number): Promise<GuestChat | null> {
+    return this.db
+      .prepare("SELECT * FROM guest_chats WHERE chat_type = ? AND chat_id = ?")
+      .bind(chatType, chatId)
+      .first<GuestChat>();
+  }
+
+  guestChatByKey(key: number): Promise<GuestChat | null> {
+    return this.db
+      .prepare("SELECT * FROM guest_chats WHERE id = ?")
+      .bind(key - GUEST_BASE)
+      .first<GuestChat>();
+  }
+
+  /** Remember the chat, and its title when it changed. */
+  async upsertGuestChat(chatType: string, chatId: number, title: string | null) {
+    const row = await this.db
+      .prepare(
+        `INSERT INTO guest_chats (chat_type, chat_id, title) VALUES (?, ?, ?)
+         ON CONFLICT (chat_type, chat_id) DO UPDATE SET title = excluded.title RETURNING *`,
+      )
+      .bind(chatType, chatId, title)
+      .first<GuestChat>();
+    return row!;
+  }
+
+  /** The guest chats this user holds, latest first, with whether others may call there. */
+  async guestChatsOf(userId: number): Promise<(GuestChat & { others: number })[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT g.*, c.others FROM claude_chats c JOIN guest_chats g ON g.id = c.chat_id - ?
+         WHERE c.user_id = ? AND c.chat_id >= ? ORDER BY c.since DESC LIMIT 30`,
+      )
+      .bind(GUEST_BASE, userId, GUEST_BASE)
+      .all<GuestChat & { others: number }>();
+    return results;
+  }
+
+  /** Record a call from a chat the bot is not in. Null when Telegram already delivered it. */
+  async insertGuestCall(call: Omit<GuestCall, "id" | "inline_message_id" | "answer" | "at">) {
+    const row = await this.db
+      .prepare(
+        `INSERT INTO guest_calls
+           (user_id, chat_key, query_id, from_id, from_name, from_username, by_other, text, file, reply, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (query_id) DO NOTHING RETURNING id`,
+      )
+      .bind(
+        call.user_id,
+        call.chat_key,
+        call.query_id,
+        call.from_id,
+        call.from_name,
+        call.from_username,
+        call.by_other,
+        redactSecrets(call.text),
+        call.file,
+        call.reply,
+        nowSeconds(),
+      )
+      .first<{ id: number }>();
+    return row?.id ?? null;
+  }
+
+  /** The bot's one message in that chat, which answers edit. */
+  async setGuestMessage(id: number, inlineMessageId: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE guest_calls SET inline_message_id = ? WHERE id = ?")
+      .bind(inlineMessageId, id)
+      .run();
+  }
+
+  getGuestCall(userId: number, id: number): Promise<GuestCall | null> {
+    return this.db
+      .prepare("SELECT * FROM guest_calls WHERE id = ? AND user_id = ?")
+      .bind(id, userId)
+      .first<GuestCall>();
+  }
+
+  async setGuestAnswer(id: number, answer: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE guest_calls SET answer = ? WHERE id = ?")
+      .bind(redactSecrets(answer), id)
+      .run();
+  }
+
   // --- refresh sessions ----------------------------------------------------
 
   /**
@@ -2190,6 +2351,15 @@ export class Store {
       this.db.prepare("DELETE FROM day_marks WHERE day < ?").bind(Math.floor(cutoff / DAY)),
       this.db.prepare("DELETE FROM fires WHERE at < ?").bind(cutoff),
       this.db.prepare("DELETE FROM relay_jobs WHERE created_at < ?").bind(cutoff),
+      this.db.prepare("DELETE FROM guest_calls WHERE at < ?").bind(cutoff),
+      // Guest chats nobody holds any more: disconnected in the menu, or their holder is gone.
+      this.db
+        .prepare(
+          `DELETE FROM guest_chats WHERE NOT EXISTS (
+             SELECT 1 FROM claude_chats c WHERE c.chat_id = guest_chats.id + ?
+           )`,
+        )
+        .bind(GUEST_BASE),
       // People nobody has heard from within retention.
       this.db.prepare(
         `DELETE FROM personal_chats WHERE NOT EXISTS (

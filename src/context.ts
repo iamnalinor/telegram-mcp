@@ -33,6 +33,7 @@ export async function botContext(core: Base, origin: string): Promise<BotContext
     bot: {
       id: me.id,
       username: me.username ?? "",
+      aliases: core.config.aliases,
       canReadAll: me.can_read_all_group_messages === true,
     },
   };
@@ -59,7 +60,12 @@ export async function toolContext(
     userId,
     user: { id: userId, username: profile.username, name: profile.name },
     client: profile.client ?? null,
-    bot: { id: me.id, username, canReadAll: me.can_read_all_group_messages === true },
+    bot: {
+      id: me.id,
+      username,
+      aliases: core.config.aliases,
+      canReadAll: me.can_read_all_group_messages === true,
+    },
     access: new Access(core.store, core.api, userId, username),
   };
 }

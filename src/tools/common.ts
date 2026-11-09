@@ -9,7 +9,13 @@ import { z } from "zod";
 import { AccessError, telegramChat, type Access, type ChatView } from "../access";
 import type { Config } from "../env";
 import { messageLink } from "../links";
-import { markdownToHtml, splitMarkdown, splitPlain, TELEGRAM_CAPTION_LIMIT } from "../markdown";
+import {
+  markdownToHtml,
+  splitMarkdown,
+  splitPlain,
+  TELEGRAM_CAPTION_LIMIT,
+  TELEGRAM_TEXT_LIMIT,
+} from "../markdown";
 import { BOT_ACCOUNT, type StoredButton, type Store } from "../store";
 import { TelegramError, type TelegramApi } from "../telegram/api";
 import type { UserRef } from "../prompts";
@@ -28,7 +34,7 @@ export interface ToolContext {
   client: string | null;
   /** Public origin of the Worker, for upload and download links. */
   origin: string;
-  bot: { id: number; username: string; canReadAll: boolean };
+  bot: { id: number; username: string; aliases?: string[]; canReadAll: boolean };
 }
 
 export function text(body: string) {
@@ -63,6 +69,12 @@ function describe(error: unknown, ctx: Pick<ToolContext, "bot">): string {
     }
     if (error.code === 429) {
       return `Telegram is rate-limiting the bot. Retry in ${error.retryAfter ?? 30} s, and send fewer messages.`;
+    }
+    if (/WIDGET_(TOO_LARGE|HTML_INVALID|DATA)/i.test(error.description)) {
+      return (
+        `Telegram refused the widget: ${error.description}. The HTML must be at most 32768 bytes and 4096 ` +
+        "after zlib compression, and each state at most 1024 bytes: cut repetition, comments and inline images."
+      );
     }
     if (
       /not enough rights|need administrator rights|CHAT_ADMIN_REQUIRED/i.test(error.description)
@@ -119,6 +131,39 @@ export function sessionId(value: string | undefined): string | null {
   return match ? `session_${match[1]}` : null;
 }
 
+/** A subagent's name: plain enough to travel in a start payload and a relayed line. */
+const AGENT_NAME = /^[\w.:-]{1,64}$/;
+
+// Lenient like `session`: a name that does not fit is dropped, not the message.
+export const agentArg = z
+  .string()
+  .max(100)
+  .optional()
+  .describe(
+    "If you are a subagent of that session: the name it gave you (letters, digits, . : - _). Replies to " +
+      "this message then reach the session marked as yours.",
+  );
+
+function agentName(value: string | undefined): string | null {
+  return value && AGENT_NAME.test(value) ? value : null;
+}
+
+/** Who is sending, for the record: the cloud session and, within it, the subagent. */
+export interface Sender {
+  session?: string;
+  agent?: string;
+}
+
+export const richFormatArg = z
+  .enum(["markdown", "rich", "plain"])
+  .optional()
+  .describe(
+    "markdown (default): **bold**, _italic_, `code`, ```blocks```, [links](url), > quotes. rich: a rich " +
+      "message — GitHub-flavoured Markdown with # headings, tables, lists and task lists, <details> blocks, " +
+      "$formulas$, footnotes; up to 32k characters, never split; for a comparison, a report, a long answer " +
+      "that needs structure. plain: sent as is.",
+  );
+
 export const formatArg = z
   .enum(["markdown", "plain"])
   .optional()
@@ -139,6 +184,10 @@ const buttonSchema = z
       .url()
       .optional()
       .describe("Makes it a link button instead; presses are not reported."),
+    style: z
+      .enum(["primary", "success", "danger"])
+      .optional()
+      .describe("Colour: primary (the main choice), success (confirm), danger (destructive)."),
   })
   .refine((button) => !(button.url && button.data), "A button has either url or data, not both.");
 
@@ -156,11 +205,11 @@ export function keyboard(buttons: Buttons): InlineKeyboardMarkup | undefined {
   if (!buttons?.length) return undefined;
   return {
     inline_keyboard: buttons.map((row, r) =>
-      row.map((button, c) =>
-        button.url
-          ? { text: button.text, url: button.url }
-          : { text: button.text, callback_data: `cb:${r}.${c}` },
-      ),
+      row.map((button, c) => ({
+        text: button.text,
+        ...(button.url ? { url: button.url } : { callback_data: `cb:${r}.${c}` }),
+        ...(button.style ? { style: button.style } : {}),
+      })),
     ),
   };
 }
@@ -168,11 +217,11 @@ export function keyboard(buttons: Buttons): InlineKeyboardMarkup | undefined {
 export function storedButtons(buttons: Buttons): string | null {
   if (!buttons?.length) return null;
   const rows: StoredButton[][] = buttons.map((row) =>
-    row.map((button) =>
-      button.url
-        ? { text: button.text, url: button.url }
-        : { text: button.text, data: button.data ?? button.text },
-    ),
+    row.map((button) => ({
+      text: button.text,
+      ...(button.url ? { url: button.url } : { data: button.data ?? button.text }),
+      ...(button.style ? { style: button.style } : {}),
+    })),
   );
   return JSON.stringify(rows);
 }
@@ -210,16 +259,17 @@ export function parseTime(value: string | undefined, field: string): number | un
 
 // --- sending ---------------------------------------------------------------
 
-export interface SendOptions {
+export interface SendOptions extends Sender {
   text: string;
-  format?: "markdown" | "plain";
+  format?: "markdown" | "rich" | "plain";
+  /** Show it to this member only (an ephemeral message): groups, and the bot must be an admin. */
+  onlyFor?: number;
   buttons?: Buttons;
   replyTo?: number;
   silent?: boolean;
   linkPreview?: boolean;
   topic?: number;
   markChoice?: boolean;
-  session?: string;
 }
 
 /** The forum topic to post in: given, or the one of the message being replied to. */
@@ -276,7 +326,7 @@ export async function recordSent(
   ctx: ToolContext,
   chat: ChatView,
   sent: Message,
-  extra: { text?: string; buttons?: string | null; markChoice?: boolean; session?: string } = {},
+  extra: { text?: string; buttons?: string | null; markChoice?: boolean } & Sender = {},
 ): Promise<void> {
   const personal = chat.account_id !== BOT_ACCOUNT;
   const stored = toStored(sent, ctx.bot, personal ? chat.account_id : undefined);
@@ -287,6 +337,7 @@ export async function recordSent(
   stored.mark_choice = extra.markChoice ?? false;
   stored.sent_by = ctx.userId;
   stored.session_id = sessionId(extra.session);
+  stored.agent = stored.session_id ? agentName(extra.agent) : null;
   await ctx.store.insertMessage(stored, personal ? "personal" : "always");
 }
 
@@ -304,7 +355,10 @@ export function sentLink(ctx: ToolContext, chat: ChatView, message: Message): st
   return messageLink(chat, message.message_id, topic, ctx.bot.username);
 }
 
-/** Send text, split if long, buttons on the last part. Every part is stored. */
+/**
+ * Send text, split if long, buttons on the last part. Every part is stored —
+ * except a message for one member only, which Telegram keeps nowhere either.
+ */
 export async function sendText(
   ctx: ToolContext,
   chat: ChatView,
@@ -312,7 +366,20 @@ export async function sendText(
 ): Promise<Message[]> {
   await mayPost(ctx, chat, options.buttons);
   const format = options.format ?? "markdown";
-  const parts = format === "markdown" ? splitMarkdown(options.text) : splitPlain(options.text);
+  if (options.onlyFor !== undefined && chat.kind !== "group") {
+    throw new ToolError("only_for works in groups: a private chat has one reader already.");
+  }
+  if (options.onlyFor !== undefined && options.buttons?.length) {
+    throw new ToolError(
+      "only_for takes no buttons: the message is not stored, so presses would be lost.",
+    );
+  }
+  const parts =
+    format === "rich"
+      ? [options.text]
+      : format === "markdown"
+        ? splitMarkdown(options.text)
+        : splitPlain(options.text);
   const thread = await resolveTopic(ctx, chat, options);
   const markup = keyboard(options.buttons);
   const sent: Message[] = [];
@@ -321,31 +388,46 @@ export async function sendText(
     const last = index === parts.length - 1;
     const params: Record<string, unknown> = {
       ...telegramChat(chat),
-      text: format === "markdown" ? markdownToHtml(part) : part,
+      ...(format === "rich"
+        ? { rich_message: { markdown: part } }
+        : { text: format === "markdown" ? markdownToHtml(part) : part }),
       ...(format === "markdown" ? { parse_mode: "HTML" } : {}),
       ...(thread ? { message_thread_id: thread } : {}),
       ...(index === 0 && options.replyTo
         ? { reply_parameters: { message_id: options.replyTo, allow_sending_without_reply: true } }
         : {}),
       ...(options.silent ? { disable_notification: true } : {}),
-      link_preview_options: { is_disabled: options.linkPreview !== true },
+      ...(format === "rich"
+        ? {}
+        : { link_preview_options: { is_disabled: options.linkPreview !== true } }),
+      ...(options.onlyFor !== undefined
+        ? { ephemeral_message_parameters: { receiver_user_id: options.onlyFor } }
+        : {}),
       ...(last && markup ? { reply_markup: markup } : {}),
     };
 
     const message = await withPlainFallback((plain) => {
       if (plain) {
         // Markup Telegram cannot parse should not lose the message: send it as written.
+        richAsPlain(part);
         delete params.parse_mode;
+        delete params.rich_message;
         params.text = part;
       }
-      return ctx.api.call<Message>("sendMessage", params);
+      return ctx.api.call<Message>(
+        format === "rich" && !plain ? "sendRichMessage" : "sendMessage",
+        params,
+      );
     });
-    await recordSent(ctx, chat, message, {
-      text: part,
-      buttons: last ? storedButtons(options.buttons) : null,
-      markChoice: last ? options.markChoice : false,
-      session: options.session,
-    });
+    if (options.onlyFor === undefined) {
+      await recordSent(ctx, chat, message, {
+        text: part,
+        buttons: last ? storedButtons(options.buttons) : null,
+        markChoice: last ? options.markChoice : false,
+        session: options.session,
+        agent: options.agent,
+      });
+    }
     sent.push(message);
   }
   return sent;
@@ -362,7 +444,7 @@ export const UPLOAD_KINDS: [UploadKind, ...UploadKind[]] = [
   "animation",
 ];
 
-export interface FileSendOptions {
+export interface FileSendOptions extends Sender {
   as?: UploadKind;
   caption?: string;
   format?: "markdown" | "plain";
@@ -370,7 +452,6 @@ export interface FileSendOptions {
   replyTo?: number;
   topic?: number;
   silent?: boolean;
-  session?: string;
 }
 
 /** A file to send: bytes in hand, or a stream of known size straight from the uploader. */
@@ -385,10 +466,26 @@ export async function withPlainFallback<T>(send: (plain: boolean) => Promise<T>)
   try {
     return await send(false);
   } catch (error) {
-    if (error instanceof TelegramError && /can't parse entities/i.test(error.description)) {
+    if (
+      error instanceof TelegramError &&
+      /can't parse (entities|rich)|RICH_MESSAGE_\w*INVALID/i.test(error.description)
+    ) {
       return send(true);
     }
     throw error;
+  }
+}
+
+/**
+ * A rich message Telegram could not parse goes out as plain text only when it
+ * fits one message; a longer one is not cut behind the model's back.
+ */
+export function richAsPlain(text: string): void {
+  if (text.length > TELEGRAM_TEXT_LIMIT) {
+    throw new ToolError(
+      `Telegram could not parse this as a rich message, and it is too long to send as plain text ` +
+        `(${TELEGRAM_TEXT_LIMIT} characters). Fix the markup or shorten it. Nothing was sent.`,
+    );
   }
 }
 
@@ -437,6 +534,7 @@ export async function sendUpload(
     text: caption ?? "",
     buttons: storedButtons(options.buttons),
     session: options.session,
+    agent: options.agent,
   });
   return message;
 }
