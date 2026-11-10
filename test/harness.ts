@@ -313,13 +313,11 @@ export class Harness {
   }
 
   /** POST /token with a refresh grant. */
-  async refresh(refreshToken: string, clientId?: string) {
-    const form = new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken });
-    if (clientId) form.set("client_id", clientId);
+  async refresh(refreshToken: string) {
     const response = await this.fetch("/token", {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
-      body: form,
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken }),
     });
     return {
       status: response.status,
@@ -534,7 +532,7 @@ export class Harness {
         client_id,
       }),
     });
-    return { ...(await token.json<{ access_token: string; refresh_token: string }>()), client_id };
+    return token.json<{ access_token: string; refresh_token: string }>();
   }
 
   private rpcId = 1;

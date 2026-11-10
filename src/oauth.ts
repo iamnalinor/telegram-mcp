@@ -148,19 +148,15 @@ function redirectOwner(target: string): string | null {
 /**
  * How the sign-in is listed: the verified callback's owner, or for an app on
  * this computer the name it registered with — its own claim, but only the
- * user's machine can receive that code anyway. Without `redirectUri` (a
- * refresh), the registered client's own callbacks stand in; a client id this
- * server did not sign names nothing.
+ * user's machine can receive that code anyway.
  */
 async function clientName(
   deps: OAuthDeps,
   clientId: string,
-  redirectUri?: string,
+  redirectUri: string,
 ): Promise<string | undefined> {
+  if (Object.hasOwn(CALLBACKS, redirectUri)) return CALLBACKS[redirectUri];
   const client = await verify<ClientBlob>(deps.config.signingKey, "client", clientId);
-  const uri = redirectUri ?? client?.r.find((r) => Object.hasOwn(CALLBACKS, r)) ?? client?.r[0];
-  if (!uri) return undefined;
-  if (Object.hasOwn(CALLBACKS, uri)) return CALLBACKS[uri];
   return client?.n ? `${client.n} (on this computer)` : "An app on this computer";
 }
 
@@ -625,12 +621,11 @@ async function rotate(
   deps: OAuthDeps,
   token: string,
   blob: RefreshBlob,
-  client: string | null,
 ): Promise<RefreshSession | null> {
   const id = blob.s ?? (await sha256Base64Url(token));
   const presented = blob.g ?? 0;
   const expiresAt = nowSeconds() + REFRESH_TTL;
-  if (await deps.store.advanceRefresh(id, blob.u, presented, expiresAt, client)) {
+  if (await deps.store.advanceRefresh(id, blob.u, presented, expiresAt)) {
     return { id, generation: presented + 1 };
   }
   const current = await deps.store.getRefreshSession(id);
@@ -693,12 +688,10 @@ async function handleToken(request: Request, deps: OAuthDeps): Promise<Response>
   if (grantType === "refresh_token") {
     const presented = form.get("refresh_token") ?? "";
     const blob = await verify<RefreshBlob>(deps.config.signingKey, "refresh", presented);
-    // Names a sign-in recorded without one (from before names were kept); a named one keeps its own.
-    const client = (await clientName(deps, readClientId(form, request))) ?? null;
     const tokens =
       blob &&
       (await stillValid(deps, blob, "refresh")) &&
-      (await issueTokens(deps, blob.u, () => rotate(deps, presented, blob, client)));
+      (await issueTokens(deps, blob.u, () => rotate(deps, presented, blob)));
     if (!tokens) {
       return oauthError("invalid_grant", "The refresh token is not valid any more. Connect again.");
     }
