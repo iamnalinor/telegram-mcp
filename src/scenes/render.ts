@@ -10,7 +10,14 @@
 
 import { escapeHtml } from "../bot/texts";
 import { escapeMarkdown, markdownToHtml } from "../markdown";
-import { DefinitionError, PRESS_NAME, type Compiled, type CompiledButton } from "./definition";
+import {
+  DefinitionError,
+  PRESS_NAME,
+  STYLES,
+  type ButtonStyle,
+  type Compiled,
+  type CompiledButton,
+} from "./definition";
 import type { Actor } from "./engine";
 import {
   evaluate,
@@ -29,7 +36,7 @@ export interface RenderedButton {
   press?: string;
   arg?: Value;
   url?: string;
-  style?: string;
+  style?: ButtonStyle;
 }
 
 export interface Rendered {
@@ -47,6 +54,7 @@ export interface Rendered {
 const RENDER_STEPS = 4000;
 const BUTTON_TEXT = 64;
 const PER_VIEW = 100;
+const PER_ROW = 8;
 /** A value's stand-in while the Markdown around it is converted. */
 const MARK = "\u0001";
 const END = "\u0002";
@@ -140,10 +148,17 @@ export function render(
   const places: string[][] = [];
   let count = 0;
   let dropped = 0;
-  const push = (row: RenderedButton[], place: (c: number) => string) => {
+  const push = (row: RenderedButton[], place: (c: number) => string, rowPlace: string) => {
     const shown = row.slice(0, Math.max(0, PER_VIEW - count));
     dropped += row.length - shown.length;
     if (dropped) throw new RenderError(`a view shows at most ${PER_VIEW} buttons`, "buttons");
+    // Only what is shown counts: a row may define more and let show pick.
+    if (shown.length > PER_ROW) {
+      throw new RenderError(
+        `a row shows at most ${PER_ROW} buttons; this one would show ${shown.length}`,
+        rowPlace,
+      );
+    }
     for (const [c, button] of shown.entries()) {
       if (button.press && bytes(callbackData(env.sceneId ?? ID_ROOM, button)) > CALLBACK_BYTES) {
         throw new RenderError(
@@ -157,18 +172,34 @@ export function render(
     rows.push(shown);
     places.push(shown.map((_, c) => place(c)));
   };
-  const one = (button: CompiledButton, inner: Scope): RenderedButton | null => {
+  /** The button's colour: a literal as it is, a template filled in for this button. */
+  const styleOf = (button: CompiledButton, inner: Scope, place: string): ButtonStyle | null => {
+    if (button.style === undefined) return null;
+    if (typeof button.style === "string") return button.style;
+    const value = plainText(button.style, inner, budget).trim();
+    if (!value) return null;
+    if (!(STYLES as readonly string[]).includes(value)) {
+      throw new RenderError(
+        // The value itself may come from members: it is not echoed back.
+        `style must come out as ${STYLES.join(", ")} or empty`,
+        `${place}.style`,
+      );
+    }
+    return value as ButtonStyle;
+  };
+  const one = (button: CompiledButton, inner: Scope, place: string): RenderedButton | null => {
     if (button.show && !truthy(evaluate(button.show, inner, budget))) return null;
     const label = cut(plainText(button.text, inner, budget), BUTTON_TEXT) || "·";
     if (button.url) {
       const url = safeUrl(plainText(button.url, inner, budget));
       return url ? { text: label, url } : null;
     }
+    const style = styleOf(button, inner, place);
     return {
       text: label,
       press: button.press,
       ...(button.arg ? { arg: evaluate(button.arg, inner, budget) } : {}),
-      ...(button.style ? { style: button.style } : {}),
+      ...(style ? { style } : {}),
     };
   };
   const within = (it: Value, i: number, key: string | null): Scope => ({
@@ -185,11 +216,12 @@ export function render(
   for (const [r, row] of screen.rows.entries()) {
     if (row.kind === "row") {
       const shown = row.buttons
-        .map((button, c) => ({ button: one(button, scope), c }))
+        .map((button, c) => ({ button: one(button, scope, `buttons[${r}][${c}]`), c }))
         .filter((entry): entry is { button: RenderedButton; c: number } => entry.button !== null);
       push(
         shown.map((entry) => entry.button),
         (c) => `buttons[${r}][${shown[c].c}]`,
+        `buttons[${r}]`,
       );
       continue;
     }
@@ -199,11 +231,12 @@ export function render(
         const inner = within(item, i, key);
         // Hidden buttons drop out of the row: a place counts in the template's own row.
         const shown = row.row
-          .map((button, c) => ({ button: one(button, inner), c }))
+          .map((button, c) => ({ button: one(button, inner, `buttons[${r}].row[${c}]`), c }))
           .filter((entry): entry is { button: RenderedButton; c: number } => entry.button !== null);
         push(
           shown.map((entry) => entry.button),
           (c) => `buttons[${r}].row[${shown[c].c}]`,
+          `buttons[${r}]`,
         );
       }
       continue;
@@ -211,16 +244,16 @@ export function render(
     const size = row.kind === "grid" ? row.width : row.perRow;
     let current: RenderedButton[] = [];
     for (const [i, [key, item]] of items.entries()) {
-      const shown = one(row.button, within(item, i, key));
+      const shown = one(row.button, within(item, i, key), `buttons[${r}]`);
       // A grid keeps its geometry: a hidden cell still takes its place, as a blank.
       if (shown) current.push(shown);
       else if (row.kind === "grid") current.push({ text: " ", press: row.button.press, arg: i });
       if (current.length === size) {
-        push(current, () => `buttons[${r}]`);
+        push(current, () => `buttons[${r}]`, `buttons[${r}]`);
         current = [];
       }
     }
-    push(current, () => `buttons[${r}]`);
+    push(current, () => `buttons[${r}]`, `buttons[${r}]`);
   }
   return {
     text,

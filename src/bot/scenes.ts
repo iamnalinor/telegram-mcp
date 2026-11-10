@@ -128,7 +128,7 @@ function keyboard(rows: RenderedButton[][], sceneId: number): InlineKeyboardMark
       row.map((button) => ({
         text: button.text,
         ...(button.url ? { url: button.url } : { callback_data: callbackData(sceneId, button) }),
-        ...(button.style ? { style: button.style as "primary" | "success" | "danger" } : {}),
+        ...(button.style ? { style: button.style } : {}),
       })),
     ),
   };

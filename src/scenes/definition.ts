@@ -27,8 +27,10 @@ const LIMITS = {
   stateBytes: 8192,
   rules: 40,
   views: 8,
-  buttonsPerView: 100,
+  /** What Telegram shows; checked on the rendered keyboard, where show has had its say. */
   buttonsPerRow: 8,
+  /** Buttons a row may define: variants that show picks between count, so it is above 8. */
+  buttonsDefinedPerRow: 100,
   callbackBytes: 64,
   ifDepth: 3,
   wakeLimit: 10,
@@ -57,9 +59,13 @@ export interface CompiledButton {
   press?: string;
   arg?: Expr;
   url?: Template;
-  style?: "primary" | "success" | "danger";
+  /** A literal colour, or a template that yields one (or nothing) per button. */
+  style?: ButtonStyle | Template;
   show?: Expr;
 }
+
+export const STYLES = ["primary", "success", "danger"] as const;
+export type ButtonStyle = (typeof STYLES)[number];
 
 type CompiledRow =
   | { kind: "row"; buttons: CompiledButton[] }
@@ -96,7 +102,8 @@ export interface Compiled {
 
 // --- the model's JSON -------------------------------------------------------
 
-const style = z.enum(["primary", "success", "danger"]).optional();
+/** primary, success, danger, or a template such as "{it == 'x' ? 'danger' : ''}". */
+const style = z.string().max(200).optional();
 const buttonInput = z.strictObject({
   text: z.string().min(1).max(200),
   press: z.string().optional(),
@@ -289,9 +296,25 @@ class Compiler {
           ? { arg: implicitArg }
           : {}),
       ...(input.url === undefined ? {} : { url: this.template(`${where}.url`, input.url) }),
-      ...(input.style ? { style: input.style } : {}),
+      ...(input.style ? { style: this.style(`${where}.style`, input.style) } : {}),
       ...(input.show === undefined ? {} : { show: this.expr(`${where}.show`, input.show) }),
     };
+  }
+
+  /** A literal stays a literal; anything with {expression} is checked when it renders. */
+  private style(where: string, source: string): ButtonStyle | Template {
+    const template = this.template(where, source);
+    if (template.every((part) => typeof part === "string")) {
+      const literal = template.join("").trim();
+      if (!(STYLES as readonly string[]).includes(literal)) {
+        throw new DefinitionError(
+          `style is ${STYLES.join(", ")}, or a template such as "{i % 2 ? 'success' : ''}"`,
+          where,
+        );
+      }
+      return literal as ButtonStyle;
+    }
+    return template;
   }
 
   view(where: string, input: z.infer<typeof viewInput>): CompiledView {
@@ -302,8 +325,11 @@ class Compiler {
       rows: (input.buttons ?? []).map((row, r): CompiledRow => {
         const place = `${where}.buttons[${r}]`;
         if (Array.isArray(row)) {
-          if (row.length > LIMITS.buttonsPerRow) {
-            throw new DefinitionError(`a row holds at most ${LIMITS.buttonsPerRow} buttons`, place);
+          if (row.length > LIMITS.buttonsDefinedPerRow) {
+            throw new DefinitionError(
+              `a row defines at most ${LIMITS.buttonsDefinedPerRow} buttons (and shows at most ${LIMITS.buttonsPerRow})`,
+              place,
+            );
           }
           return { kind: "row", buttons: row.map((b, c) => this.button(`${place}[${c}]`, b)) };
         }
@@ -316,8 +342,11 @@ class Compiler {
           };
         }
         if ("row" in row) {
-          if (row.row.length > LIMITS.buttonsPerRow) {
-            throw new DefinitionError(`a row holds at most ${LIMITS.buttonsPerRow} buttons`, place);
+          if (row.row.length > LIMITS.buttonsDefinedPerRow) {
+            throw new DefinitionError(
+              `a row defines at most ${LIMITS.buttonsDefinedPerRow} buttons (and shows at most ${LIMITS.buttonsPerRow})`,
+              place,
+            );
           }
           return {
             kind: "each",
