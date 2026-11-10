@@ -352,6 +352,7 @@ const SCHEMA: string[] = [
     poll TEXT,
     last_query TEXT,
     template_id INTEGER,
+    template_version INTEGER,
     created INTEGER NOT NULL,
     updated INTEGER NOT NULL
   )`,
@@ -382,7 +383,11 @@ const SCHEMA: string[] = [
   // Saved scenes: each user's library of definitions, as written (not
   // compiled), to start again or change. create_scene saves every new one.
   // `version` makes a change conditional on what its writer read; `used` is
-  // when one last started a scene, for making room in a full library.
+  // when one last started a scene, for making room in a full library, where
+  // only auto-saved ones go: `kept` marks those saved on purpose (save_scene).
+  // `shape` is a hash of the definition but for its title and state, which a
+  // start from a saved scene may change: a scene that differs only there is
+  // not saved again.
   `CREATE TABLE IF NOT EXISTS scene_templates (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     owner INTEGER NOT NULL,
@@ -392,6 +397,8 @@ const SCHEMA: string[] = [
     definition TEXT NOT NULL,
     version INTEGER NOT NULL DEFAULT 1,
     uses INTEGER NOT NULL DEFAULT 0,
+    kept INTEGER NOT NULL DEFAULT 0,
+    shape TEXT,
     created INTEGER NOT NULL,
     updated INTEGER NOT NULL,
     used INTEGER NOT NULL,
@@ -497,7 +504,13 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
       "ALTER TABLE fires ADD COLUMN scene_id INTEGER",
     ],
   },
-  { target: 19, alter: ["ALTER TABLE scenes ADD COLUMN template_id INTEGER"] },
+  {
+    target: 19,
+    alter: [
+      "ALTER TABLE scenes ADD COLUMN template_id INTEGER",
+      "ALTER TABLE scenes ADD COLUMN template_version INTEGER",
+    ],
+  },
 ];
 
 const ready = new WeakMap<D1Database, Promise<void>>();

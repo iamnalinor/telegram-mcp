@@ -332,15 +332,19 @@ nobody used for `RETENTION_DAYS` ends and is deleted a retention later, and its 
 long as it is. Scenes end when you lose access to the group or `/disconnect`.
 
 **Saved scenes.** Every scene Claude creates is saved in your library, as written, under a name
-from its title (`counter`, `кто-идёт`, `counter-2` when the name is taken; `save_as` picks one); a
-definition already saved is not saved twice. A later session lists the library before building a
-scene and starts one that fits with `create_scene` `template` (with `state` and `title` for that
-run), changes it for good with `save_scene` and the version it read — the 20 versions before it are
-kept — or copies and adapts it under a new name. Up to 100 saved scenes per person: a new scene
-makes room by dropping the one unused the longest, while `save_scene` refuses a new name in a full
-library. Saved scenes stay when the scenes started from them end and are deleted; they are your own,
-and go only with `delete_saved_scene`, or when you are taken off `ALLOWED_USER_IDS`. Built-in
-presets stay as they are.
+from its title (`counter`, `кто-идёт`, `हिंदी-क्विज़`, `counter-2` when the name is taken; `save_as`
+picks one). A definition already saved is not saved twice, nor is one that differs from a saved one
+only in its title or starting state: that is the same scene, started with other values. A later
+session lists the library before building a scene and starts one that fits with `create_scene`
+`template` (with `state` and `title` for that run), changes it for good with `save_scene` and the
+version it read — the 20 versions before it are kept — or copies and adapts it under a new name.
+
+Up to 100 saved scenes per person. What `save_scene` made, changed or renamed is kept on purpose; a
+new scene makes room only by dropping the auto-saved one unused the longest, and when all 100 were
+kept on purpose it runs without being saved. `save_scene` refuses a new name in a full library.
+Saved scenes are not Telegram history: they outlive `RETENTION_DAYS` and the scenes started from
+them, on purpose. They are your own, and go only with `delete_saved_scene`, or when you are taken off
+`ALLOWED_USER_IDS`. Built-in presets stay as they are.
 
 Scenes were tested against a fake Bot API only. On a live bot, check: the ephemeral reply to a press
 (`whisper`), poll updates reaching the bot, `setChatMemberTag` (`tag`, needs the bot to be an admin

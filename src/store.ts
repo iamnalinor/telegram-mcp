@@ -422,8 +422,9 @@ export interface SceneRow {
   poll: string | null;
   /** The last press committed: a redelivered update is not applied twice. */
   last_query: string | null;
-  /** The saved scene it was started from, or saved as. */
+  /** The saved scene it was started from, or saved as, and that scene's version then. */
   template_id: number | null;
+  template_version: number | null;
   created: number;
   updated: number;
 }
@@ -439,13 +440,17 @@ export interface SceneTemplateRow {
   definition: string;
   version: number;
   uses: number;
+  /** 1 when saved on purpose (save_scene): a full library never drops it. */
+  kept: number;
+  /** A hash of the definition but for its title and state. */
+  shape: string | null;
   created: number;
   updated: number;
   /** When it last started a scene. */
   used: number;
 }
 
-export type SceneTemplateEntry = Omit<SceneTemplateRow, "definition">;
+export type SceneTemplateEntry = Omit<SceneTemplateRow, "definition" | "shape">;
 
 export interface SceneMessage {
   id: number;
@@ -2555,13 +2560,14 @@ export class Store {
     state: string;
     wake_limit: number;
     template_id?: number | null;
+    template_version?: number | null;
   }): Promise<number> {
     const now = nowSeconds();
     const created = await this.db
       .prepare(
         `INSERT INTO scenes (chat_id, thread_id, owner, owner_name, session_id, agent, title, brief,
-           def, state, wake_limit, template_id, created, updated)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+           def, state, wake_limit, template_id, template_version, created, updated)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       )
       .bind(
         row.chat_id,
@@ -2576,6 +2582,7 @@ export class Store {
         row.state,
         row.wake_limit,
         row.template_id ?? null,
+        row.template_version ?? null,
         now,
         now,
       )
@@ -2948,7 +2955,7 @@ export class Store {
   async listTemplates(owner: number): Promise<SceneTemplateEntry[]> {
     const { results } = await this.db
       .prepare(
-        `SELECT id, owner, name, title, brief, version, uses, created, updated, used
+        `SELECT id, owner, name, title, brief, version, uses, kept, created, updated, used
          FROM scene_templates WHERE owner = ? ORDER BY used DESC, id DESC`,
       )
       .bind(owner)
@@ -2970,11 +2977,14 @@ export class Store {
       .first<SceneTemplateRow>();
   }
 
-  /** A saved scene with exactly this definition, if the user has one. */
-  templateWithDefinition(owner: number, definition: string): Promise<SceneTemplateRow | null> {
+  /** A saved scene of this shape, the one with exactly this definition first. */
+  templateLike(owner: number, shape: string, definition: string): Promise<SceneTemplateRow | null> {
     return this.db
-      .prepare("SELECT * FROM scene_templates WHERE owner = ? AND definition = ? LIMIT 1")
-      .bind(owner, definition)
+      .prepare(
+        `SELECT * FROM scene_templates WHERE owner = ? AND shape = ?
+         ORDER BY definition = ? DESC, used DESC LIMIT 1`,
+      )
+      .bind(owner, shape, definition)
       .first<SceneTemplateRow>();
   }
 
@@ -2997,21 +3007,61 @@ export class Store {
     return row?.n ?? 0;
   }
 
-  /** Save a new one; null when the name is taken. `uses` is 1 when it starts a scene now. */
+  /** Save a new one; null when the name is taken. */
   async insertTemplate(
     owner: number,
-    t: { name: string; title: string; brief: string | null; definition: string; uses: number },
+    t: {
+      name: string;
+      title: string;
+      brief: string | null;
+      definition: string;
+      shape: string;
+      kept: boolean;
+    },
   ): Promise<number | null> {
     const now = nowSeconds();
     const row = await this.db
       .prepare(
-        `INSERT INTO scene_templates (owner, name, title, brief, definition, uses, created, updated, used)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO scene_templates (owner, name, title, brief, definition, shape, kept, created,
+           updated, used)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (owner, name) DO NOTHING RETURNING id`,
       )
-      .bind(owner, t.name, t.title, t.brief, t.definition, t.uses, now, now, now)
+      .bind(owner, t.name, t.title, t.brief, t.definition, t.shape, t.kept ? 1 : 0, now, now, now)
       .first<{ id: number }>();
     return row?.id ?? null;
+  }
+
+  /**
+   * Bring the library down to `limit` by dropping auto-saved scenes, the one
+   * unused the longest first — possibly the one just saved, when all others
+   * were saved on purpose. One transaction, so scenes saved at once never
+   * leave more than `limit`. Returns the names dropped.
+   */
+  async trimTemplates(owner: number, limit: number): Promise<string[]> {
+    const victims = `SELECT id FROM scene_templates WHERE owner = ?1 AND kept = 0
+      ORDER BY used, id
+      LIMIT MAX(0, (SELECT COUNT(*) FROM scene_templates WHERE owner = ?1) - ?2)`;
+    const results = await this.db.batch<{ name: string }>([
+      this.db
+        .prepare(`UPDATE scenes SET template_id = NULL WHERE template_id IN (${victims})`)
+        .bind(owner, limit),
+      this.db
+        .prepare(`DELETE FROM scene_template_history WHERE template_id IN (${victims})`)
+        .bind(owner, limit),
+      this.db
+        .prepare(`DELETE FROM scene_templates WHERE id IN (${victims}) RETURNING name`)
+        .bind(owner, limit),
+    ]);
+    return results[2].results.map((row) => row.name);
+  }
+
+  /** Saved on purpose: a full library never drops it. */
+  async keepTemplate(owner: number, name: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE scene_templates SET kept = 1 WHERE owner = ? AND name = ? AND kept = 0")
+      .bind(owner, name)
+      .run();
   }
 
   /**
@@ -3022,7 +3072,7 @@ export class Store {
     owner: number,
     name: string,
     version: number,
-    t: { title: string; brief: string | null; definition: string },
+    t: { title: string; brief: string | null; definition: string; shape: string },
   ): Promise<boolean> {
     const now = nowSeconds();
     const results = await this.db.batch([
@@ -3035,11 +3085,11 @@ export class Store {
         .bind(owner, name, version, now),
       this.db
         .prepare(
-          `UPDATE scene_templates SET title = ?4, brief = ?5, definition = ?6, version = version + 1,
-             updated = ?7
+          `UPDATE scene_templates SET title = ?4, brief = ?5, definition = ?6, shape = ?8,
+             version = version + 1, updated = ?7, kept = 1
            WHERE owner = ?1 AND name = ?2 AND version = ?3`,
         )
-        .bind(owner, name, version, t.title, t.brief, t.definition, now),
+        .bind(owner, name, version, t.title, t.brief, t.definition, now, t.shape),
       this.db
         .prepare(
           `DELETE FROM scene_template_history WHERE template_id =
@@ -3055,7 +3105,8 @@ export class Store {
   async renameTemplate(owner: number, name: string, newName: string): Promise<boolean> {
     const result = await this.db
       .prepare(
-        `UPDATE OR IGNORE scene_templates SET name = ?3, updated = ?4 WHERE owner = ?1 AND name = ?2`,
+        `UPDATE OR IGNORE scene_templates SET name = ?3, updated = ?4, kept = 1
+         WHERE owner = ?1 AND name = ?2`,
       )
       .bind(owner, name, newName, nowSeconds())
       .run();
@@ -3089,17 +3140,6 @@ export class Store {
       this.dropTemplatesStatements("owner = ? AND name = ?", [owner, name]),
     );
     return (results[2].meta.changes ?? 0) > 0;
-  }
-
-  /** Drop the saved scene unused the longest; its name, or null when there is none. */
-  async evictTemplate(owner: number): Promise<string | null> {
-    const oldest = await this.db
-      .prepare("SELECT name FROM scene_templates WHERE owner = ? ORDER BY used, id LIMIT 1")
-      .bind(owner)
-      .first<{ name: string }>();
-    if (!oldest) return null;
-    await this.deleteTemplate(owner, oldest.name);
-    return oldest.name;
   }
 
   async templateUsers(): Promise<number[]> {

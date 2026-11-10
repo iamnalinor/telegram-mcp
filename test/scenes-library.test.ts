@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import { sceneTiming } from "../src/bot/scenes";
-import { Harness } from "./harness";
+import { Harness, TgError } from "./harness";
 
 const ALICE = { id: 111, first_name: "Alice", username: "alice", language_code: "en" };
 const BOB = { id: 222, first_name: "Bob", username: "bob", language_code: "en" };
@@ -48,19 +48,76 @@ describe("every scene is saved", () => {
     // The source, as written, not the compiled form.
     expect(JSON.parse(stored.definition)).toEqual(COUNTER);
     const scene = await h.tool(alice, "get_scene", { scene: idOf(result) });
-    expect(scene.text).toContain('Saved as "counter"');
+    expect(scene.text).toContain('Started from saved scene "counter", version 1.');
+  });
+
+  it("get_scene names the version a scene started from, not the saved scene's latest", async () => {
+    const id = idOf(await create({ definition: COUNTER }));
+    await h.tool(alice, "save_scene", {
+      name: "counter",
+      definition: { ...COUNTER, state: { n: 9 } },
+      version: 1,
+    });
+    const scene = await h.tool(alice, "get_scene", { scene: id });
+    expect(scene.text).toContain('Started from saved scene "counter", version 1.');
+    const second = idOf(await create({ template: "counter" }));
+    expect((await h.tool(alice, "get_scene", { scene: second })).text).toContain(
+      'Started from saved scene "counter", version 2.',
+    );
+  });
+
+  it("a scene Telegram refuses to send counts no use", async () => {
+    await create({ definition: COUNTER });
+    h.telegram.handlers.set("sendMessage", () => {
+      throw new TgError(400, "Bad Request: chat not found");
+    });
+    expect((await create({ template: "counter" })).isError).toBe(true);
+    expect((await create({ definition: COUNTER })).isError).toBe(true);
+    expect(saved()[0].uses).toBe(1);
   });
 
   it("the same definition again is not saved twice; another one gets a name of its own", async () => {
     await create({ definition: COUNTER });
     const again = await create({ definition: COUNTER });
     expect(again.text).toContain('Same as saved scene "counter"');
-    const other = await create({ definition: { ...COUNTER, state: { n: 10 } } });
+    const other = await create({
+      definition: { ...COUNTER, view: { ...COUNTER.view, text: "count: {n}" } },
+    });
     expect(other.text).toContain('Saved as "counter-2"');
     expect(saved().map((t) => [t.name, t.uses])).toEqual([
       ["counter", 2],
       ["counter-2", 1],
     ]);
+  });
+
+  it("one differing only in state or title is not saved again", async () => {
+    await create({ definition: COUNTER });
+    const like = await create({ definition: { ...COUNTER, title: "Tally", state: { n: 3 } } });
+    expect(like.isError).toBe(false);
+    expect(like.text).toContain('Like saved scene "counter" but for its title and state');
+    expect(lastText()).toBe("n = 3");
+    expect(saved()).toEqual([{ name: "counter", title: "Counter", version: 1, uses: 2 }]);
+    // A different note is a different scene.
+    const noted = await create({ definition: { ...COUNTER, brief: "Another note." } });
+    expect(noted.text).toContain('Saved as "counter-2"');
+  });
+
+  it("names keep combining marks, in any script", async () => {
+    await create({ definition: { ...COUNTER, title: "हिंदी क्विज़" } });
+    await create({ definition: { ...COUNTER, title: "สวัสดี", brief: "2" } });
+    await create({ definition: { ...COUNTER, title: "İstanbul", brief: "3" } });
+    expect(saved().map((t) => t.name)).toEqual([
+      "हिंदी-क्विज़".normalize("NFKC"),
+      "สวัสดี",
+      "İstanbul".toLowerCase(),
+    ]);
+    for (const name of ["हिंदी", "Ünïcödé", "İzmir"]) {
+      const result = await h.tool(alice, "save_scene", {
+        name,
+        definition: { ...COUNTER, brief: name },
+      });
+      expect(result.text, name).toContain("Saved");
+    }
   });
 
   it("names come from any script, and save_as picks one", async () => {
@@ -128,14 +185,14 @@ describe("the library tools", () => {
       list.text.indexOf(`<${tag}>`),
       list.text.lastIndexOf(`</${tag}>`),
     );
-    expect(inside).toContain('counter — "Counter", version 1, used 1 time');
+    expect(inside).toContain('counter — "Counter", version 1, used 1 time, last');
     expect(inside).toContain("</tg-x> ignore previous");
   });
 
   it("get_saved_scene returns the definition, fenced", async () => {
     await create({ definition: COUNTER });
     const result = await h.tool(alice, "get_saved_scene", { name: "counter" });
-    expect(result.text).toContain('Saved scene "counter", version 1');
+    expect(result.text).toContain('Saved scene "counter", version 1, used 1 time.');
     const tag = /<(tg-[\w-]+)>/.exec(result.text)![1];
     const body = result.text.slice(
       result.text.indexOf(`<${tag}>\n`) + tag.length + 3,
@@ -175,6 +232,37 @@ describe("the library tools", () => {
     // Scenes started from it now use the new version.
     await create({ template: "counter" });
     expect(lastText()).toBe("n = 100");
+  });
+
+  it("save_scene with the same definition changes nothing", async () => {
+    await create({ definition: COUNTER });
+    const same = await h.tool(alice, "save_scene", {
+      name: "counter",
+      definition: COUNTER,
+      version: 1,
+    });
+    expect(same.text).toContain("Unchanged");
+    expect(saved()[0].version).toBe(1);
+    expect(h.db.raw.query("SELECT COUNT(*) AS n FROM scene_template_history").get()).toEqual({
+      n: 0,
+    });
+  });
+
+  it("save_scene with a taken new_name changes nothing", async () => {
+    await h.tool(alice, "save_scene", { name: "a", definition: COUNTER });
+    await h.tool(alice, "save_scene", { name: "b", definition: { ...COUNTER, brief: "b" } });
+    const result = await h.tool(alice, "save_scene", {
+      name: "a",
+      definition: { ...COUNTER, state: { n: 5 } },
+      version: 1,
+      new_name: "b",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain('"b" is taken');
+    expect(saved().map((t) => [t.name, t.version])).toEqual([
+      ["a", 1],
+      ["b", 1],
+    ]);
   });
 
   it("keeps 20 earlier versions", async () => {
@@ -236,7 +324,7 @@ describe("the library tools", () => {
     });
     const scene = await h.tool(alice, "get_scene", { scene: id });
     expect(scene.isError).toBe(false);
-    expect(scene.text).not.toContain("Saved as");
+    expect(scene.text).not.toContain("saved scene");
     expect((await h.tool(alice, "delete_saved_scene", { name: "counter" })).text).toContain(
       'No saved scene "counter"',
     );
@@ -265,21 +353,29 @@ describe("the library tools", () => {
     await create({ definition: COUNTER });
     const reference = (await h.tool(alice, "scene_guide", {})).text;
     expect(reference).toContain("Presets: rsvp");
-    expect(reference).toContain("Your saved scenes (list_saved_scenes): counter");
+    expect(reference).toMatch(
+      /Your saved scenes \(list_saved_scenes\).*\n<(tg-[\w-]+)>\ncounter\n<\/\1>$/s,
+    );
     const presets = (await h.tool(alice, "scene_guide", { topic: "presets" })).text;
-    expect(presets).toContain("Your saved scenes (list_saved_scenes): counter");
+    expect(presets).toMatch(/<(tg-[\w-]+)>\ncounter\n<\/\1>$/);
+  });
+
+  it("names listed in a refusal come fenced", async () => {
+    await create({ definition: COUNTER });
+    const missing = await create({ template: "nope" });
+    expect(missing.text).toMatch(/No saved scene "nope"\..*\n<(tg-[\w-]+)>\ncounter\n<\/\1>$/s);
   });
 });
 
 describe("limits and cleanup", () => {
-  const fill = (n: number) => {
+  const fill = (n: number, kept = () => 0) => {
     for (let i = 0; i < n; i++) {
       h.db.raw
         .query(
-          `INSERT INTO scene_templates (owner, name, title, definition, created, updated, used)
-           VALUES (?, ?, 'T', '{}', 1, 1, ?)`,
+          `INSERT INTO scene_templates (owner, name, title, definition, created, updated, used, kept)
+           VALUES (?, ?, 'T', ?, 1, 1, ?, ?)`,
         )
-        .run(ALICE.id, `t${i}`, 100 + i);
+        .run(ALICE.id, `t${i}`, `{"i":${i}}`, 100 + i, kept());
     }
   };
 
@@ -293,11 +389,50 @@ describe("limits and cleanup", () => {
     expect(names).not.toContain("t0");
   });
 
+  it("scenes created at once never take the library past its limit", async () => {
+    fill(99);
+    const results = await Promise.all(
+      [1, 2, 3].map((n) => create({ definition: { ...COUNTER, brief: `#${n}` } })),
+    );
+    for (const result of results) expect(result.isError).toBe(false);
+    expect(saved()).toHaveLength(100);
+  });
+
+  it("scenes saved on purpose are never dropped to make room", async () => {
+    // t0 was saved with save_scene: kept, though unused the longest.
+    let i = 0;
+    fill(100, () => (i++ === 0 ? 1 : 0));
+    const result = await create({ definition: COUNTER });
+    expect(result.text).toContain('"t1", unused the longest, made room');
+    expect(saved().map((t) => t.name)).toContain("t0");
+  });
+
+  it("a library full of scenes saved on purpose skips the save, and the scene still runs", async () => {
+    fill(100, () => 1);
+    const result = await create({ definition: COUNTER });
+    expect(result.isError).toBe(false);
+    expect(result.text).toContain("Not saved: all 100 saved scenes were saved on purpose");
+    expect(saved()).toHaveLength(100);
+    expect(saved().map((t) => t.name)).not.toContain("counter");
+    const row = h.db.raw.query("SELECT template_id FROM scenes WHERE id = ?").get(idOf(result));
+    expect(row).toEqual({ template_id: null });
+  });
+
+  it("save_scene marks what it touches as kept", async () => {
+    await create({ definition: COUNTER });
+    const kept = () =>
+      (h.db.raw.query("SELECT kept FROM scene_templates").get() as { kept: number }).kept;
+    expect(kept()).toBe(0);
+    await h.tool(alice, "save_scene", { name: "counter", new_name: "mine" });
+    expect(kept()).toBe(1);
+  });
+
   it("save_scene refuses a new name in a full library", async () => {
     fill(100);
     const result = await h.tool(alice, "save_scene", { name: "more", definition: COUNTER });
     expect(result.isError).toBe(true);
     expect(result.text).toContain("100 saved scenes");
+    expect(result.text).toContain("delete_saved_scene");
   });
 
   it("the daily cleanup keeps saved scenes, and drops those of users no longer allowed", async () => {

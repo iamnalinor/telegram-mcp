@@ -441,7 +441,8 @@ describe("schema upgrade", () => {
     const { ensureSchema } = await import("../src/schema");
     const db = new SqliteD1();
     await ensureSchema(db.asD1());
-    db.raw.exec(`ALTER TABLE scenes DROP COLUMN template_id;
+    db.raw
+      .exec(`ALTER TABLE scenes DROP COLUMN template_id; ALTER TABLE scenes DROP COLUMN template_version;
       DROP TABLE scene_templates; DROP TABLE scene_template_history;
       UPDATE meta SET value = '18' WHERE key = 'schema_version';`);
     await ensureSchema(new SqliteD1Proxy(db).asD1());
@@ -449,7 +450,7 @@ describe("schema upgrade", () => {
     db.raw
       .exec(`INSERT INTO scene_templates (owner, name, title, definition, created, updated, used)
       VALUES (1, 'a', 'A', '{}', 1, 1, 1);
-      UPDATE scenes SET template_id = 1;`);
+      UPDATE scenes SET template_id = 1, template_version = 1;`);
   });
 
   it("brings a database made by schema v1 up to date", async () => {

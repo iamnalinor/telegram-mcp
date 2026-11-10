@@ -39,8 +39,9 @@ import {
   nameArg,
   noSuchSaved,
   registerSavedSceneTools,
+  type Saved,
   savedName,
-  savedNames,
+  savedForGuide,
 } from "./saved-scenes";
 import { originOf } from "./sessions";
 
@@ -168,14 +169,15 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
       annotations: { readOnlyHint: true },
     },
     async (args) => {
-      const answer = guide(args.topic);
-      if (args.topic && args.topic !== "language" && args.topic !== "presets") return text(answer);
-      const names = await savedNames(ctx);
-      return text(
-        names.length
-          ? `${answer}\n\nYour saved scenes (list_saved_scenes): ${names.join(", ")}.`
-          : answer,
-      );
+      try {
+        const answer = guide(args.topic);
+        if (args.topic && args.topic !== "language" && args.topic !== "presets") {
+          return text(answer);
+        }
+        return text(answer + (await savedForGuide(ctx)));
+      } catch (error) {
+        return toolError(error, ctx);
+      }
     },
   );
 
@@ -284,9 +286,9 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
           );
         }
         // Saved before it is sent: a definition that compiled is worth keeping even if Telegram refuses.
-        const saved = template
+        const saved: Saved = template
           ? {
-              id: template.id,
+              template: { id: template.id, version: template.version },
               note: `From saved scene ${JSON.stringify(template.name)} (version ${template.version}).`,
             }
           : await autoSave(ctx, source, scene, saveAs);
@@ -298,11 +300,12 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
           agent: session && args.agent && /^[\w.:-]{1,64}$/.test(args.agent) ? args.agent : null,
           compiled: scene,
           state,
-          templateId: saved.id,
+          template: saved.template,
           replyTo: args.reply_to,
           silent: args.silent,
         });
-        if (template) await ctx.store.useTemplate(template.id);
+        // Counted once it runs: a scene Telegram refused is no use of it.
+        if (saved.template) await ctx.store.useTemplate(saved.template.id);
         const link = sentLink(ctx, chat, message);
         return text(
           `Scene ${id} is running in ${where(chat)} as #${message.message_id}.` +
@@ -337,20 +340,28 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
             : await ctx.store.sceneEvents(row.id, args.events_after, EVENTS_SHOWN);
         const { lines, contents } = eventsBlock(ctx, events);
         const stateText = JSON.stringify(state);
-        const body =
-          `Title: ${row.title}\nYour note when you set it up: ${row.brief ?? "(none)"}\n` +
-          `State: ${stateText}\nEvents:\n${lines || "(none)"}`;
-        const fence = new Fence(ctx.user, [row.title, row.brief ?? "", stateText, ...contents]);
         const template =
           row.template_id === null
             ? null
             : await ctx.store.getTemplateById(ctx.userId, row.template_id);
+        // The version it started from: the saved scene may have changed since.
         const saved = template
-          ? ` Saved as ${JSON.stringify(template.name)} (version ${template.version}).`
+          ? `Started from saved scene ${JSON.stringify(template.name)}, version ` +
+            `${row.template_version ?? template.version}.\n`
           : "";
+        const body =
+          `${saved}Title: ${row.title}\nYour note when you set it up: ${row.brief ?? "(none)"}\n` +
+          `State: ${stateText}\nEvents:\n${lines || "(none)"}`;
+        const fence = new Fence(ctx.user, [
+          saved,
+          row.title,
+          row.brief ?? "",
+          stateText,
+          ...contents,
+        ]);
         return text(
           `Scene ${row.id} — ${row.status}, version ${row.version}, chat ${row.chat_id}, view ${row.view}, ` +
-            `wakes at most ${row.wake_limit} an hour.${saved}\n${fence.note()}\n${fence.wrap(body)}`,
+            `wakes at most ${row.wake_limit} an hour.\n${fence.note()}\n${fence.wrap(body)}`,
         );
       } catch (error) {
         return toolError(error, ctx);

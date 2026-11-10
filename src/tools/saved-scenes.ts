@@ -10,37 +10,43 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
+import { sha256Base64Url } from "../crypto";
 import { Fence, formatTime } from "../format";
 import { compile, DefinitionError, type Compiled } from "../scenes/definition";
 import type { SceneTemplateRow } from "../store";
 import { text, ToolError, toolError, type ToolContext } from "./common";
 
-/** Saved scenes a user keeps; create_scene makes room by dropping the one unused the longest. */
+/** Saved scenes a user keeps; create_scene makes room by dropping an auto-saved one. */
 const TEMPLATES_PER_USER = 100;
-const NAME = /^[\p{Ll}\p{Lo}\p{Nd}_-]{1,40}$/u;
+/** Letters with their marks (Devanagari, Thai, a dotted İ), digits, - and _. */
+const NAME = /^[\p{L}\p{M}\p{N}_-]{1,40}$/u;
 const NAME_RULE = "A name is 1–40 lowercase letters, digits, - or _.";
+const SLUG_GRAPHEMES = 32;
 const BRIEF_KEPT = 300;
 const BRIEF_SHOWN = 160;
 
 export const nameArg = z.string().min(1).max(40).describe("The saved scene's name.");
 
 const quoted = (name: string) => JSON.stringify(name);
+const times = (n: number) => `${n} time${n === 1 ? "" : "s"}`;
+
+const normal = (value: string) => value.toLowerCase().normalize("NFKC");
 
 /** A name as the user's library keys it, or a refusal. */
 export function savedName(name: string): string {
-  const normal = name.normalize("NFC").toLowerCase();
-  if (!NAME.test(normal)) throw new ToolError(NAME_RULE);
-  return normal;
+  const key = normal(name);
+  if (!NAME.test(key)) throw new ToolError(NAME_RULE);
+  return key;
 }
 
 /** A name from a title, in whatever script it is written: "Кто идёт?" → "кто-идёт". */
 function slug(title: string): string {
-  const cut = title
-    .normalize("NFC")
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, "-")
-    .replace(/^-+|-+$/g, "");
-  const name = Array.from(cut).slice(0, 32).join("").replace(/-+$/, "");
+  const dashed = normal(title)
+    .replace(/[^\p{L}\p{M}\p{N}]+/gu, "-")
+    .replace(/^[-\p{M}]+|-+$/gu, "");
+  // Cut between characters, never between a letter and its marks.
+  const graphemes = Array.from(new Intl.Segmenter().segment(dashed), (part) => part.segment);
+  const name = graphemes.slice(0, SLUG_GRAPHEMES).join("").replace(/-+$/, "");
   return NAME.test(name) ? name : "scene";
 }
 
@@ -50,12 +56,27 @@ function clip(value: string | null, length: number): string | null {
   return chars.length > length ? `${chars.slice(0, length - 1).join("")}…` : value;
 }
 
-export async function noSuchSaved(ctx: ToolContext, name: string): Promise<ToolError> {
+/**
+ * The user's saved scene names, fenced: they are made from titles sessions
+ * wrote, which may quote Telegram content.
+ */
+async function fencedNames(ctx: ToolContext, head: string): Promise<string | null> {
   const names = (await ctx.store.listTemplates(ctx.userId)).map((t) => t.name);
-  return new ToolError(
-    `No saved scene ${quoted(name)}. ` +
-      (names.length ? `There are: ${names.join(", ")}.` : "There are none yet."),
-  );
+  if (!names.length) return null;
+  const list = names.join(", ");
+  const fence = new Fence(ctx.user, [list]);
+  return `${head} — names made from titles sessions wrote. ${fence.note()}\n${fence.wrap(list)}`;
+}
+
+export async function noSuchSaved(ctx: ToolContext, name: string): Promise<ToolError> {
+  const names = await fencedNames(ctx, "There are these");
+  return new ToolError(`No saved scene ${quoted(name)}. ${names ?? "There are none yet."}`);
+}
+
+/** scene_guide's tail: the user's saved scenes, beside the presets. */
+export async function savedForGuide(ctx: ToolContext): Promise<string> {
+  const names = await fencedNames(ctx, "Your saved scenes (list_saved_scenes)");
+  return names ? `\n\n${names}` : "";
 }
 
 /** Check a definition the way create_scene would; its mistakes come back to the model. */
@@ -68,6 +89,14 @@ function checked(definition: unknown, describe: (error: DefinitionError) => stri
   }
 }
 
+/** A definition but for what a start from a saved scene may change: its title and state. */
+function shapeOf(definition: Record<string, unknown>): Promise<string> {
+  const rest = Object.fromEntries(
+    Object.entries(definition).filter(([key]) => key !== "title" && key !== "state"),
+  );
+  return sha256Base64Url(JSON.stringify(rest));
+}
+
 /** A name not yet in the user's library, from `base`. */
 async function freeName(ctx: ToolContext, base: string): Promise<string> {
   const taken = new Set((await ctx.store.listTemplates(ctx.userId)).map((t) => t.name));
@@ -77,66 +106,96 @@ async function freeName(ctx: ToolContext, base: string): Promise<string> {
   }
 }
 
+/** What create_scene saved, or found saved: the scene to link, and a line for the result. */
+export interface Saved {
+  template: { id: number; version: number } | null;
+  note: string;
+}
+
 /**
- * Save what create_scene was given — unless the library has this very
- * definition already — and say so for the result. A full library loses the
- * saved scene unused the longest. `saveAs` is the name the model chose,
- * checked by `checkSaveAs` beforehand.
+ * Save what create_scene was given — unless the library has it already, or
+ * one that differs only in title and state — and say so for the result. A
+ * full library drops the auto-saved scene unused the longest; when every
+ * other one was saved on purpose, this one is not kept. `saveAs` is the name
+ * the model chose, checked by `checkSaveAs` beforehand.
  */
 export async function autoSave(
   ctx: ToolContext,
   definition: Record<string, unknown>,
   scene: Compiled,
   saveAs: string | null,
-): Promise<{ id: number; note: string }> {
+): Promise<Saved> {
   const source = JSON.stringify(definition);
+  const shape = await shapeOf(definition);
   if (saveAs === null) {
-    const same = await ctx.store.templateWithDefinition(ctx.userId, source);
-    if (same) {
-      await ctx.store.useTemplate(same.id);
+    const like = await ctx.store.templateLike(ctx.userId, shape, source);
+    if (like) {
+      const template = { id: like.id, version: like.version };
+      if (like.definition === source) {
+        return {
+          template,
+          note: `Same as saved scene ${quoted(like.name)}; next time pass template ${quoted(like.name)}.`,
+        };
+      }
+      const saved = JSON.parse(like.definition) as Record<string, unknown>;
+      const differ = (["title", "state"] as const).filter(
+        (key) => JSON.stringify(saved[key]) !== JSON.stringify(definition[key]),
+      );
+      const what = differ.join(" and ");
       return {
-        id: same.id,
-        note: `Same as saved scene ${quoted(same.name)}; next time pass template ${quoted(same.name)}.`,
+        template,
+        note:
+          `Like saved scene ${quoted(like.name)} but for its ${what}, so not saved again: next time ` +
+          `pass template ${quoted(like.name)} with ${what}.`,
       };
     }
   }
-  let made = "";
-  if ((await ctx.store.countTemplates(ctx.userId)) >= TEMPLATES_PER_USER) {
-    const dropped = await ctx.store.evictTemplate(ctx.userId);
-    if (dropped) made = ` (${quoted(dropped)}, unused the longest, made room.)`;
-  }
-  const row = { title: scene.title, brief: clip(scene.brief, BRIEF_KEPT), definition: source };
+  const row = {
+    title: scene.title,
+    brief: clip(scene.brief, BRIEF_KEPT),
+    definition: source,
+    shape,
+    kept: false,
+  };
   for (let tries = 0; tries < 5; tries++) {
     const name = saveAs ?? (await freeName(ctx, slug(scene.title)));
-    const id = await ctx.store.insertTemplate(ctx.userId, { ...row, name, uses: 1 });
-    if (id !== null) {
+    const id = await ctx.store.insertTemplate(ctx.userId, { ...row, name });
+    if (id === null) {
+      // Taken meanwhile: a chosen name is refused, a made-up one is made again.
+      if (saveAs !== null) break;
+      continue;
+    }
+    const dropped = await ctx.store.trimTemplates(ctx.userId, TEMPLATES_PER_USER);
+    if (dropped.includes(name)) {
       return {
-        id,
+        template: null,
         note:
-          `Saved as ${quoted(name)}: start it again with create_scene template, change it with ` +
-          `save_scene.${made}`,
+          `Not saved: all ${TEMPLATES_PER_USER} saved scenes were saved on purpose (save_scene). ` +
+          "Delete one (delete_saved_scene) to make room.",
       };
     }
-    // Taken meanwhile: a chosen name is refused, a made-up one is made again.
-    if (saveAs !== null) break;
+    const made = dropped.length
+      ? ` (${dropped.map(quoted).join(", ")}, unused the longest, made room.)`
+      : "";
+    return {
+      template: { id, version: 1 },
+      note:
+        `Saved as ${quoted(name)}: start it again with create_scene template, change it with ` +
+        `save_scene.${made}`,
+    };
   }
   throw new ToolError(`${quoted(saveAs ?? slug(scene.title))} is taken: choose another name.`);
 }
 
 /** create_scene's save_as: a valid name, free in the user's library. */
 export async function checkSaveAs(ctx: ToolContext, name: string): Promise<string> {
-  const normal = savedName(name);
-  if (await ctx.store.getTemplate(ctx.userId, normal)) {
+  const key = savedName(name);
+  if (await ctx.store.getTemplate(ctx.userId, key)) {
     throw new ToolError(
-      `${quoted(normal)} is taken: choose another name, or change that saved scene with save_scene.`,
+      `${quoted(key)} is taken: choose another name, or change that saved scene with save_scene.`,
     );
   }
-  return normal;
-}
-
-/** The user's saved scene names, for scene_guide. */
-export async function savedNames(ctx: ToolContext): Promise<string[]> {
-  return (await ctx.store.listTemplates(ctx.userId)).map((t) => t.name);
+  return key;
 }
 
 function definitionOf(row: Pick<SceneTemplateRow, "definition">): string {
@@ -170,13 +229,14 @@ export function registerSavedSceneTools(
         }
         const lines = rows.map(
           (row) =>
-            `- ${row.name} — ${JSON.stringify(row.title)}, version ${row.version}, used ` +
-            `${row.uses} time${row.uses === 1 ? "" : "s"}, last ${formatTime(row.used)}` +
+            `- ${row.name} — ${JSON.stringify(row.title)}, version ${row.version}` +
+            `${row.kept ? ", saved on purpose" : ""}, used ` +
+            `${times(row.uses)}, last ${formatTime(row.used)}` +
             (row.brief ? ` — ${clip(row.brief, BRIEF_SHOWN)}` : ""),
         );
         const fence = new Fence(
           ctx.user,
-          rows.flatMap((row) => [row.title, row.brief ?? ""]),
+          rows.flatMap((row) => [row.name, row.title, row.brief ?? ""]),
         );
         return text(
           `Saved scenes: ${rows.length} of ${TEMPLATES_PER_USER}, the most recently used first. Titles and ` +
@@ -207,7 +267,7 @@ export function registerSavedSceneTools(
         const name = savedName(args.name);
         const row = await ctx.store.getTemplate(ctx.userId, name);
         if (!row) throw await noSuchSaved(ctx, name);
-        let head = `Saved scene ${quoted(name)}, version ${row.version}, used ${row.uses} times.`;
+        let head = `Saved scene ${quoted(name)}, version ${row.version}, used ${times(row.uses)}.`;
         let body = definitionOf(row);
         if (args.version !== undefined && args.version !== row.version) {
           const old =
@@ -267,7 +327,8 @@ export function registerSavedSceneTools(
           }
           if ((await ctx.store.countTemplates(ctx.userId)) >= TEMPLATES_PER_USER) {
             throw new ToolError(
-              `You have ${TEMPLATES_PER_USER} saved scenes: delete one (delete_saved_scene) first.`,
+              `You have ${TEMPLATES_PER_USER} saved scenes, the most there can be: delete one ` +
+                "(delete_saved_scene) first, or change one of them in place.",
             );
           }
           const scene = checked(args.definition, describe);
@@ -276,7 +337,8 @@ export function registerSavedSceneTools(
             title: scene.title,
             brief: clip(scene.brief, BRIEF_KEPT),
             definition: JSON.stringify(args.definition),
-            uses: 0,
+            shape: await shapeOf(args.definition),
+            kept: true,
           });
           if (id === null) throw new ToolError(`${quoted(name)} is taken: choose another name.`);
           return text(`Saved ${quoted(name)}, version 1. Start it with create_scene template.`);
@@ -284,8 +346,18 @@ export function registerSavedSceneTools(
         if (!args.definition && newName === null) {
           throw new ToolError("Pass definition, new_name or both.");
         }
+        const renaming = newName !== null && newName !== name;
+        // Before anything changes: a refused rename leaves the definition as it was too.
+        if (renaming && (await ctx.store.getTemplate(ctx.userId, newName))) {
+          throw new ToolError(`${quoted(newName)} is taken; nothing changed.`);
+        }
         const said: string[] = [];
-        if (args.definition) {
+        if (args.definition && JSON.stringify(args.definition) === existing.definition) {
+          await ctx.store.keepTemplate(ctx.userId, name);
+          said.push(
+            `Unchanged: ${quoted(name)} is this definition already, at version ${existing.version}.`,
+          );
+        } else if (args.definition) {
           if (args.version === undefined) {
             throw new ToolError(
               `${quoted(name)} exists, at version ${existing.version}: to change it, read it ` +
@@ -297,6 +369,7 @@ export function registerSavedSceneTools(
             title: scene.title,
             brief: clip(scene.brief, BRIEF_KEPT),
             definition: JSON.stringify(args.definition),
+            shape: await shapeOf(args.definition),
           });
           if (!changed) {
             const now = await ctx.store.getTemplate(ctx.userId, name);
@@ -311,7 +384,7 @@ export function registerSavedSceneTools(
               `(get_saved_scene version ${args.version}).`,
           );
         }
-        if (newName !== null && newName !== name) {
+        if (renaming) {
           if (!(await ctx.store.renameTemplate(ctx.userId, name, newName))) {
             throw new ToolError(`${said.join(" ")} ${quoted(newName)} is taken.`.trim());
           }
