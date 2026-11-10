@@ -2,7 +2,7 @@
  * The relay's installer, served at /relay/install.sh. One command on any
  * always-on Linux machine (an Oracle free VM will do):
  *
- *   curl -fsSL https://<worker>/relay/install.sh | RELAY_TOKEN=relay_… RELAY_AGENT=claude bash
+ *   curl -fsSL https://<worker>/relay/install.sh | RELAY_TOKEN=relay_... RELAY_AGENT=<claude|codex> bash
  *
  * A relay serves one assistant, named on the first install — RELAY_AGENT=claude
  * passes messages into Claude Code cloud sessions, RELAY_AGENT=codex runs the
@@ -292,19 +292,15 @@ export function installScript(origin: string): string {
 set -euo pipefail
 main() {
 ORIGIN='${origin.replaceAll("'", "")}'
-# Run again without a token or an agent, it updates the relay and keeps the ones it has. An env file
-# from before there was a choice served Claude, or Codex where it says RELAY_CODEX=1.
+# Run again without a token or an agent, it updates the relay and keeps the ones it has.
 if [ -f "$HOME/.tg-relay/env" ]; then
   [ -z "${"$"}{RELAY_TOKEN:-}" ] && RELAY_TOKEN=$(sed -n 's/^RELAY_TOKEN=//p' "$HOME/.tg-relay/env")
   if [ -z "${"$"}{RELAY_AGENT:-}" ]; then
     RELAY_AGENT=$(sed -n 's/^RELAY_AGENT=//p' "$HOME/.tg-relay/env")
-    if [ -z "$RELAY_AGENT" ]; then
-      if grep -qx 'RELAY_CODEX=1' "$HOME/.tg-relay/env"; then RELAY_AGENT=codex; else RELAY_AGENT=claude; fi
-    fi
   fi
 fi
 if [ -z "${"$"}{RELAY_TOKEN:-}" ]; then
-  echo "Run it as: curl -fsSL $ORIGIN/relay/install.sh | RELAY_TOKEN=relay_... RELAY_AGENT=claude bash" >&2
+  echo "Run it as: curl -fsSL $ORIGIN/relay/install.sh | RELAY_TOKEN=relay_... RELAY_AGENT=<claude|codex> bash" >&2
   echo "(the bot's menu gives you the command with your token)" >&2
   exit 1
 fi

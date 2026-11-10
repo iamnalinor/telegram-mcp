@@ -474,9 +474,7 @@ asks for it on the first install rather than assume one, and each screen's comma
 You have one relay: a new install command turns the old one off. It installs curl, jq and Claude
 Code if missing and runs the relay as a systemd service. Then sign Claude Code in there once
 (`claude`, then `/login`) and `sudo systemctl restart tg-relay`. To update the relay later, run the
-same `curl … | bash` without `RELAY_TOKEN` and `RELAY_AGENT`: it keeps the ones it has (an env file
-from an older installer, which had no choice, means Claude, or Codex where it says
-`RELAY_CODEX=1`).
+same `curl … | bash` without `RELAY_TOKEN` and `RELAY_AGENT`: it keeps the ones it has.
 
 With the relay:
 
