@@ -187,7 +187,7 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
           );
         }
         await mayPost(ctx, chat);
-        if ((await ctx.store.activeScenes(chat.chat_id)).length >= ACTIVE_PER_CHAT) {
+        if ((await ctx.store.countScenesOf(ctx.userId, chat.chat_id)) >= ACTIVE_PER_CHAT) {
           throw new ToolError(
             `${where(chat)} has ${ACTIVE_PER_CHAT} active scenes already: finish one (update_scene finish).`,
           );

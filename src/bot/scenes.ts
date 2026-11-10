@@ -33,6 +33,7 @@ import {
   callbackData,
   parseCallback,
   render,
+  RenderError,
   type Rendered,
   type RenderedButton,
 } from "../scenes/render";
@@ -48,8 +49,17 @@ import { toStored } from "./extract";
 import { texts } from "./texts";
 import { deliverWake, gateWake, releaseWake, type WakeGate } from "../scenes/wake";
 
-/** The answer for whoever caused the event; `applied` when a rule ran, `noRule` when none took it. */
-export type Answer = { text?: string; alert?: boolean; applied?: boolean; noRule?: boolean };
+/**
+ * The answer for whoever caused the event: `applied` when a rule ran,
+ * `said` when a rule refused in its own words, `noRule` when none took it.
+ */
+export type Answer = {
+  text?: string;
+  alert?: boolean;
+  applied?: boolean;
+  said?: boolean;
+  noRule?: boolean;
+};
 
 /** What a scene's I/O needs; tools pass their own context, which has these too. */
 type SceneContext = Pick<BotContext, "api" | "store" | "bot" | "config" | "defer" | "sceneLimit">;
@@ -58,11 +68,33 @@ const ATTEMPTS = 3;
 const EDIT_GAP_MS = 1000;
 /** How long a held-back edit waits; tests shorten it. */
 export const sceneTiming = { redrawDelayMs: 1200 };
+/** A held-back edit waits out Telegram's quiet if it is this short; a longer one is left to the next event. */
+const QUIET_WAIT_MS = 20_000;
+/** A scene in use but unchanged is marked used once a day, so the daily cleanup leaves it. */
+const TOUCH_AFTER = 86_400;
+/** Telegram's limit for a press's answer. */
+const ANSWER_LENGTH = 200;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function actorOf(user: User): Actor {
   return { id: user.id, name: displayName(user) };
+}
+
+/** Compiled definitions by their text: parsed once per isolate, not once per render. */
+const compiledCache = new Map<string, Compiled>();
+const COMPILED_KEPT = 64;
+
+function compiledOf(def: string): Compiled {
+  let compiled = compiledCache.get(def);
+  if (!compiled) {
+    compiled = JSON.parse(def) as Compiled;
+    if (compiledCache.size >= COMPILED_KEPT) {
+      compiledCache.delete(compiledCache.keys().next().value!);
+    }
+    compiledCache.set(def, compiled);
+  }
+  return compiled;
 }
 
 /** The scene's tree and state, parsed from its row. */
@@ -72,18 +104,20 @@ export function loaded(row: SceneRow): {
   messages: SceneMessage[];
 } {
   return {
-    compiled: JSON.parse(row.def) as Compiled,
+    compiled: compiledOf(row.def),
     state: JSON.parse(row.state) as Record<string, Value>,
     messages: JSON.parse(row.messages) as SceneMessage[],
   };
 }
 
+/** How the user is named to members ("This button is only for …"). */
+function nameOf(user: { username: string | null; first_name: string | null } | null, id: number) {
+  return user?.username ? `@${user.username}` : (user?.first_name ?? String(id));
+}
+
 async function ownerOf(ctx: SceneContext, row: SceneRow): Promise<Actor> {
-  const user = await ctx.store.getUser(row.owner);
-  return {
-    id: row.owner,
-    name: user?.username ? `@${user.username}` : (user?.first_name ?? String(row.owner)),
-  };
+  if (row.owner_name) return { id: row.owner, name: row.owner_name };
+  return { id: row.owner, name: nameOf(await ctx.store.getUser(row.owner), row.owner) };
 }
 
 function keyboard(rows: RenderedButton[][], sceneId: number): InlineKeyboardMarkup {
@@ -116,9 +150,22 @@ function body(rendered: Rendered): Record<string, unknown> {
     : { text: rendered.text, parse_mode: "HTML", link_preview_options: { is_disabled: true } };
 }
 
-function screenOf(row: SceneRow, view: string, owner: Actor): Rendered {
-  const { compiled, state } = loaded(row);
-  return render(compiled, view, state, { owner, now: nowSeconds() });
+/** The view each live message shows: the main one follows the scene's view. */
+function viewOf(row: SceneRow, messages: SceneMessage[], index: number): string {
+  return index === 0 ? row.view : messages[index].view;
+}
+
+/** Every view the scene's live messages show, each rendered once. */
+function screens(row: SceneRow, owner: Actor): Map<string, Rendered> {
+  const { compiled, state, messages } = loaded(row);
+  const drawn = new Map<string, Rendered>();
+  for (const index of messages.keys()) {
+    const view = viewOf(row, messages, index);
+    if (!drawn.has(view)) {
+      drawn.set(view, render(compiled, view, state, { owner, now: nowSeconds(), sceneId: row.id }));
+    }
+  }
+  return drawn;
 }
 
 /** Send one of the scene's views as a new live message, and keep it like any the bot sent. */
@@ -129,7 +176,8 @@ async function sendView(
   options: { replyTo?: number; silent?: boolean } = {},
 ): Promise<Message> {
   const owner = await ownerOf(ctx, row);
-  const rendered = screenOf(row, view, owner);
+  const { compiled, state } = loaded(row);
+  const rendered = render(compiled, view, state, { owner, now: nowSeconds(), sceneId: row.id });
   const message = await ctx.api.call<Message>(
     rendered.format === "rich" ? "sendRichMessage" : "sendMessage",
     {
@@ -178,6 +226,7 @@ export async function startScene(
     chat_id: p.chatId,
     thread_id: p.threadId,
     owner: p.owner,
+    owner_name: nameOf(await ctx.store.getUser(p.owner), p.owner),
     session_id: p.session,
     agent: p.agent,
     title: p.compiled.title,
@@ -201,6 +250,11 @@ export async function startScene(
   return { id, message };
 }
 
+function cut(text: string, length: number): string {
+  const chars = Array.from(text);
+  return chars.length > length ? `${chars.slice(0, length - 1).join("")}…` : text;
+}
+
 /** A press on a scene's button: the answer goes back as the webhook's response. */
 export async function handleScenePress(
   ctx: BotContext,
@@ -209,25 +263,33 @@ export async function handleScenePress(
   const t = texts(query.from.language_code);
   const parsed = parseCallback(query.data ?? "");
   const message = query.message;
-  const answer =
-    parsed && message
-      ? await applyEvent(
-          ctx,
-          parsed.sceneId,
-          { on: `press:${parsed.press}`, user: actorOf(query.from), arg: parsed.arg },
-          {
-            query,
-            chatId: message.chat.id,
-            messageId: message.message_id,
-            arg: parsed.arg,
-            press: parsed.press,
-          },
-        )
-      : { text: t.sceneStale };
+  let answer: Answer;
+  try {
+    answer =
+      parsed && message
+        ? await applyEvent(
+            ctx,
+            parsed.sceneId,
+            { on: `press:${parsed.press}`, user: actorOf(query.from), arg: parsed.arg },
+            {
+              query,
+              chatId: message.chat.id,
+              messageId: message.message_id,
+              arg: parsed.arg,
+              press: parsed.press,
+            },
+          )
+        : { text: t.sceneStale };
+  } catch (error) {
+    // Failures after the commit are handled inside; anything here came before it.
+    console.error(JSON.stringify({ event: "scene_press_failed", error: String(error) }));
+    answer = { text: t.sceneFailed };
+  }
   return {
     method: "answerCallbackQuery",
     callback_query_id: query.id,
-    ...(answer.text ? { text: answer.text } : {}),
+    // Telegram refuses a longer answer, and the press would keep spinning.
+    ...(answer.text ? { text: cut(answer.text, ANSWER_LENGTH) } : {}),
     ...(answer.alert ? { show_alert: true } : {}),
   };
 }
@@ -251,6 +313,11 @@ function onScreen(rendered: Rendered, press: Press): boolean {
           : press.arg !== undefined && equal(button.arg, press.arg)),
     ),
   );
+}
+
+/** Events no person caused one by one (poll totals, a die's value): not counted per person. */
+function limited(event: Omit<SceneEvent, "owner" | "now">): boolean {
+  return event.user.id !== TELEGRAM.id && event.on !== DICE_EVENT;
 }
 
 /**
@@ -281,6 +348,14 @@ interface Wake {
   used: boolean;
 }
 
+/** After the commit nothing may undo the event: a failure is logged and kept for the session. */
+async function afterCommit(ctx: SceneContext, row: SceneRow, user: Actor, error: unknown) {
+  console.error(
+    JSON.stringify({ event: "scene_after_commit_failed", scene: row.id, error: String(error) }),
+  );
+  await recordError(ctx, row, user, "after", String(error)).catch(() => undefined);
+}
+
 async function attempt(
   ctx: SceneContext,
   sceneId: number,
@@ -292,30 +367,48 @@ async function attempt(
   const t = texts(press?.query.from.language_code ?? language);
   for (let attempt = 0; attempt < ATTEMPTS; attempt++) {
     const row = await ctx.store.getScene(sceneId);
-    if (!row || row.status !== "active") return { text: t.sceneOver };
+    if (!row) return { text: t.sceneOver };
+    if (row.status !== "active") {
+      // A finished scene's last drawing may still be owed (Telegram asked for quiet then).
+      if (row.dirty) await drawOwed(ctx, row.id);
+      return { text: t.sceneOver };
+    }
+    // A redelivered update: this press was applied already.
+    if (press && row.last_query === press.query.id) return { applied: true };
+    // Before anything is drawn: stale and forged presses count against the limit too.
+    if (attempt === 0 && limited(incoming)) {
+      if (!(await allow(ctx.sceneLimit, `${sceneId}:${incoming.user.id}`))) {
+        return { text: t.sceneTooFast };
+      }
+    }
     const owner = await ownerOf(ctx, row);
     const { compiled, state, messages } = loaded(row);
 
     if (press) {
       // Only a button on the message as drawn now counts: an old keyboard, or
       // callback_data made up by a client, changes nothing.
-      const shown = messages.find((message) => message.id === press.messageId);
-      if (row.chat_id !== press.chatId || !shown) return { text: t.sceneStale };
-      const view = shown === messages[0] ? row.view : shown.view;
+      const index = messages.findIndex((message) => message.id === press.messageId);
+      if (row.chat_id !== press.chatId || index < 0) return { text: t.sceneStale };
       let current: Rendered;
       try {
-        current = render(compiled, view, state, { owner, now: nowSeconds() });
+        current = render(compiled, viewOf(row, messages, index), state, {
+          owner,
+          now: nowSeconds(),
+          sceneId: row.id,
+        });
       } catch {
         return { text: t.sceneFailed };
       }
       if (!onScreen(current, press)) return { text: t.sceneStale };
     }
-    if (attempt === 0 && !(await allow(ctx.sceneLimit, `${sceneId}:${incoming.user.id}`))) {
-      return { text: t.sceneTooFast };
-    }
 
     const event: SceneEvent = { ...incoming, now: nowSeconds(), owner };
-    const found = match(compiled, state, event);
+    let found: ReturnType<typeof match>;
+    try {
+      found = match(compiled, state, event);
+    } catch (error) {
+      found = { refused: "broken", text: String(error) };
+    }
     if ("refused" in found) {
       if (found.refused === "broken") {
         await recordError(ctx, row, event.user, "rule", found.text ?? "");
@@ -325,7 +418,7 @@ async function attempt(
         return { text: found.who === "owner" ? t.sceneNotForYou(owner.name) : t.sceneDenied };
       }
       if (found.refused === "no_rule") return { text: t.sceneDenied, noRule: true };
-      return { text: found.refused === "said" && found.text ? found.text : t.sceneDenied };
+      return found.text ? { text: found.text, said: true } : { text: t.sceneDenied, said: true };
     }
     if (found.wakes && !wake.gate) {
       const gate = await gateWake(ctx, row, event.user);
@@ -338,7 +431,12 @@ async function attempt(
       wake.row = row;
     }
 
-    const result = run(compiled, state, event, found.rule);
+    let result: ReturnType<typeof run>;
+    try {
+      result = run(compiled, state, event, found.rule);
+    } catch (error) {
+      result = { refused: "broken", detail: String(error) };
+    }
     if ("refused" in result) {
       if (result.refused === "full") return { text: t.sceneFull };
       await recordError(ctx, row, event.user, "rule", result.detail);
@@ -353,33 +451,54 @@ async function attempt(
     const changed =
       !equal(result.state, state) ||
       (patch.view !== undefined && patch.view !== row.view) ||
-      patch.status;
+      patch.status !== undefined;
+    let current = row;
     if (changed) {
       const next: SceneRow = { ...row, ...patch, state: JSON.stringify(result.state) };
-      // The new state must draw; a screen that cannot is refused before anything is written.
+      // The new state must draw; a screen Telegram would refuse is refused before anything is written.
+      let drawn: Map<string, Rendered>;
       try {
-        for (const message of messages)
-          screenOf(next, message === messages[0] ? next.view : message.view, owner);
+        drawn = screens(next, owner);
       } catch (error) {
-        if (!(error instanceof LangError)) throw error;
-        await recordError(ctx, row, event.user, "view", error.message);
+        if (error instanceof RenderError) return { text: t.sceneFull };
+        await recordError(
+          ctx,
+          row,
+          event.user,
+          "view",
+          String(error instanceof Error ? error.message : error),
+        );
         return { text: t.sceneFailed };
       }
       const now = Date.now();
-      const drawNow = now - row.edited_at >= EDIT_GAP_MS && now >= row.quiet_until;
+      // The last drawing of a finished scene does not wait its second; Telegram's quiet it does.
+      const drawNow =
+        (patch.status !== undefined || now - row.edited_at >= EDIT_GAP_MS) &&
+        now >= row.quiet_until;
       patch.state = next.state;
+      if (press) patch.last_query = press.query.id;
       if (drawNow) patch.edited_at = now;
       else patch.dirty = 1;
       if (!(await ctx.store.commitScene(row.id, row.version, patch))) continue;
-      const committed: SceneRow = { ...next, ...patch, version: row.version + 1 };
-      if (drawNow) await redraw(ctx, committed);
-      else later(ctx, row.id);
+      current = { ...next, ...patch, version: row.version + 1 };
+      try {
+        if (drawNow) await redraw(ctx, current, drawn);
+        else later(ctx, row.id);
+      } catch (error) {
+        await afterCommit(ctx, current, event.user, error);
+      }
+    } else if (row.updated < nowSeconds() - TOUCH_AFTER) {
+      await ctx.store.touchScene(row.id);
     }
-    const current: SceneRow = changed ? { ...row, ...patch, version: row.version + 1 } : row;
-    return {
-      ...(await perform(ctx, current, event, result.effects, wake, press?.query.id)),
-      applied: true,
-    };
+    try {
+      return {
+        ...(await perform(ctx, current, event, result.effects, wake, press?.query.id)),
+        applied: true,
+      };
+    } catch (error) {
+      await afterCommit(ctx, current, event.user, error);
+      return { applied: true };
+    }
   }
   return { text: t.sceneFailed };
 }
@@ -444,7 +563,6 @@ async function perform(
         break;
     }
   }
-  await out.save();
   return answer;
 }
 
@@ -457,23 +575,17 @@ const DICE_EVENT = "dice";
 /**
  * The actions that talk to Telegram, carried out after the commit. What
  * Telegram refuses is recorded for the session to see; the state stays.
+ * What they keep on the scene (posts, live messages, the poll) changes by
+ * targeted statements, so concurrent events cannot overwrite each other.
  */
 class Outbox {
-  private posts: number[];
-  private messages: SceneMessage[];
-  private poll: { message_id: number; poll_id: string } | null;
-  private changed = false;
   private readonly main: number | undefined;
 
   constructor(
     private readonly ctx: SceneContext,
     private readonly row: SceneRow,
   ) {
-    const now = nowSeconds();
-    this.posts = ((row.posts ? JSON.parse(row.posts) : []) as number[]).filter((t) => t > now - 60);
-    this.messages = loaded(row).messages;
-    this.poll = row.poll ? (JSON.parse(row.poll) as { message_id: number; poll_id: string }) : null;
-    this.main = this.messages[0]?.id;
+    this.main = loaded(row).messages[0]?.id;
   }
 
   private where(): Record<string, unknown> {
@@ -484,14 +596,6 @@ class Outbox {
         ? { reply_parameters: { message_id: this.main, allow_sending_without_reply: true } }
         : {}),
     };
-  }
-
-  /** One more post this minute, if the limit allows it. */
-  private spend(): boolean {
-    if (this.posts.length >= POSTS_PER_MINUTE) return false;
-    this.posts.push(nowSeconds());
-    this.changed = true;
-    return true;
   }
 
   private async keep(message: Message, text: string): Promise<void> {
@@ -515,6 +619,8 @@ class Outbox {
 
   private async perform(effect: Effect, event: SceneEvent, callbackId: string | undefined) {
     const refuse = (why: string) => recordError(this.ctx, this.row, event.user, effect.kind, why);
+    const spend = () => this.ctx.store.spendScenePost(this.row.id, POSTS_PER_MINUTE);
+    const overLimit = `at most ${POSTS_PER_MINUTE} posts a minute`;
     switch (effect.kind) {
       case "whisper": {
         // An ephemeral reply to the press (Bot API 10.4): only the presser sees it.
@@ -527,13 +633,21 @@ class Outbox {
         return;
       }
       case "post": {
-        if (!this.spend()) return refuse(`at most ${POSTS_PER_MINUTE} posts a minute`);
+        if (effect.view && loaded(this.row).messages.length >= LIVE_MESSAGES) {
+          return refuse(`a scene has at most ${LIVE_MESSAGES} live messages`);
+        }
+        if (!(await spend())) return refuse(overLimit);
         if (effect.view) {
-          if (this.messages.length >= LIVE_MESSAGES) {
+          const sent = await sendView(this.ctx, this.row, effect.view, { replyTo: this.main });
+          const entry = { id: sent.message_id, view: effect.view };
+          if (!(await this.ctx.store.addLiveMessage(this.row.id, entry, LIVE_MESSAGES))) {
+            // Another event took the last slot meanwhile: this one is taken back.
+            await this.ctx.store.unlinkScene("message", `${this.row.chat_id}:${sent.message_id}`);
+            await this.ctx.api
+              .call("deleteMessage", { chat_id: this.row.chat_id, message_id: sent.message_id })
+              .catch(() => undefined);
             return refuse(`a scene has at most ${LIVE_MESSAGES} live messages`);
           }
-          const sent = await sendView(this.ctx, this.row, effect.view, { replyTo: this.main });
-          this.messages.push({ id: sent.message_id, view: effect.view });
           return;
         }
         // Sent as written: a member's name in it must not become markup.
@@ -546,43 +660,55 @@ class Outbox {
         return;
       }
       case "poll": {
-        if (this.poll) return refuse("a scene has one open poll: close_poll() first");
-        if (!this.spend()) return refuse(`at most ${POSTS_PER_MINUTE} posts a minute`);
-        const sent = await this.ctx.api.call<Message & { poll?: { id: string } }>("sendPoll", {
-          ...this.where(),
-          question: effect.question,
-          options: effect.options.map((option) => ({ text: option })),
-          is_anonymous: effect.opts.anonymous === true,
-          allows_multiple_answers: effect.opts.multiple === true,
-        });
-        await this.keep(sent, `📊 ${effect.question}`);
-        if (sent.poll?.id) {
-          this.poll = { message_id: sent.message_id, poll_id: sent.poll.id };
-          await this.ctx.store.linkScene("poll", sent.poll.id, this.row.id);
-          this.changed = true;
+        // The slot is taken before the poll is sent: two events cannot both open one.
+        const pending = JSON.stringify({ pending: `${Date.now()}-${Math.random()}` });
+        if (!(await this.ctx.store.claimScenePoll(this.row.id, pending))) {
+          return refuse("a scene has one open poll: close_poll() first");
         }
+        let sent: Message & { poll?: { id: string } };
+        try {
+          if (!(await spend())) {
+            await this.ctx.store.setScenePoll(this.row.id, pending, null);
+            return refuse(overLimit);
+          }
+          sent = await this.ctx.api.call<Message & { poll?: { id: string } }>("sendPoll", {
+            ...this.where(),
+            question: effect.question,
+            options: effect.options.map((option) => ({ text: option })),
+            is_anonymous: effect.opts.anonymous === true,
+            allows_multiple_answers: effect.opts.multiple === true,
+          });
+        } catch (error) {
+          await this.ctx.store.setScenePoll(this.row.id, pending, null);
+          throw error;
+        }
+        await this.keep(sent, `📊 ${effect.question}`);
+        const poll = sent.poll?.id ? { message_id: sent.message_id, poll_id: sent.poll.id } : null;
+        await this.ctx.store.setScenePoll(this.row.id, pending, poll ? JSON.stringify(poll) : null);
+        if (poll) await this.ctx.store.linkScene("poll", poll.poll_id, this.row.id);
         return;
       }
       case "close_poll": {
-        if (!this.poll) return refuse("there is no open poll");
-        const poll = this.poll;
-        this.poll = null;
-        this.changed = true;
+        const open = (await this.ctx.store.getScene(this.row.id))?.poll ?? null;
+        const poll = open ? (JSON.parse(open) as { message_id?: number; poll_id?: string }) : null;
+        if (!open || !poll?.message_id || !poll.poll_id) return refuse("there is no open poll");
+        // Cleared only once Telegram has stopped it; its votes stop reaching the scene.
         await this.ctx.api.call("stopPoll", {
           chat_id: this.row.chat_id,
           message_id: poll.message_id,
         });
+        await this.ctx.store.setScenePoll(this.row.id, open, null);
+        await this.ctx.store.unlinkScene("poll", poll.poll_id);
         return;
       }
       case "dice": {
         // A die's own event may not throw another: no chain of throws.
         if (event.on === DICE_EVENT) return refuse("a dice event cannot throw dice");
-        if (!this.spend()) return refuse(`at most ${POSTS_PER_MINUTE} posts a minute`);
+        if (!(await spend())) return refuse(overLimit);
         const sent = await this.ctx.api.call<Message & { dice?: { emoji: string; value: number } }>(
           "sendDice",
           { ...this.where(), emoji: effect.emoji },
         );
-        await this.save();
         if (sent.dice) {
           await applyEvent(this.ctx, this.row.id, {
             on: DICE_EVENT,
@@ -601,20 +727,12 @@ class Outbox {
         return;
     }
   }
-
-  /** Posts, live messages and the open poll: kept beside the state, not part of it. */
-  async save(): Promise<void> {
-    if (!this.changed) return;
-    this.changed = false;
-    await this.ctx.store.updateSceneExtras(this.row.id, {
-      posts: JSON.stringify(this.posts),
-      messages: JSON.stringify(this.messages),
-      poll: this.poll ? JSON.stringify(this.poll) : null,
-    });
-  }
 }
 
-/** A failure the session should see in get_scene: an action Telegram refused, a rule that broke. */
+/**
+ * A failure the session should see in get_scene: an action Telegram refused,
+ * a rule that broke. The same failure twice in a row is kept once.
+ */
 async function recordError(
   ctx: SceneContext,
   row: SceneRow,
@@ -622,27 +740,42 @@ async function recordError(
   action: string,
   description: string,
 ): Promise<void> {
+  const data = JSON.stringify({ action, description: description.slice(0, 300) });
+  const [last] = await ctx.store.lastSceneEvents(row.id, 1);
+  if (last?.name === "error" && last.data === data) return;
   await ctx.store.addSceneEvent(row.id, {
     name: "error",
     user_id: user?.id ?? null,
     user_name: user?.name ?? null,
-    data: JSON.stringify({ action, description: description.slice(0, 300) }),
+    data,
   });
 }
 
-/** An edit held back: one of those waiting draws, a little later. */
+/** Draw what is owed, if nobody else is drawing it and Telegram allows it now. */
+async function drawOwed(ctx: SceneContext, sceneId: number): Promise<boolean> {
+  const row = await ctx.store.claimRedraw(sceneId, Date.now());
+  if (!row) return false;
+  await redraw(ctx, row);
+  return true;
+}
+
+/**
+ * An edit held back: one of those waiting draws, a little later. If Telegram
+ * asked for quiet, it waits that out when it is short; a longer quiet is left
+ * to the next event (or, for a finished scene, the daily run).
+ */
 function later(ctx: SceneContext, sceneId: number): void {
   const work = (async () => {
-    await sleep(sceneTiming.redrawDelayMs);
-    if (!(await ctx.store.claimRedraw(sceneId))) return;
-    const row = await ctx.store.getScene(sceneId);
-    if (!row) return;
-    if (Date.now() < row.quiet_until) {
-      await ctx.store.markSceneDrawn(sceneId, { dirty: 1 });
-      return;
+    let wait = sceneTiming.redrawDelayMs;
+    for (let tries = 0; tries < 3; tries++) {
+      await sleep(wait);
+      if (await drawOwed(ctx, sceneId)) return;
+      const row = await ctx.store.getScene(sceneId);
+      if (!row?.dirty) return;
+      const quiet = row.quiet_until - Date.now();
+      if (quiet > QUIET_WAIT_MS) return;
+      wait = Math.max(0, quiet) + 50;
     }
-    await ctx.store.markSceneDrawn(sceneId, { edited_at: Date.now() });
-    await redraw(ctx, row);
   })().catch((error: unknown) =>
     console.error(
       JSON.stringify({ event: "scene_redraw_failed", scene: sceneId, error: String(error) }),
@@ -651,23 +784,36 @@ function later(ctx: SceneContext, sceneId: number): void {
   if (ctx.defer) ctx.defer(work);
 }
 
+/** For the daily run: draw a finished scene whose last drawing is still owed. */
+export async function drawFinished(ctx: SceneContext, sceneId: number): Promise<void> {
+  await drawOwed(ctx, sceneId);
+}
+
 /**
  * Bring every live message of the scene up to its state, editing only those
  * whose text or buttons changed since they were last drawn. A finished scene
- * loses its buttons.
+ * loses its buttons. `drawn`: the screens, when the caller rendered them already.
  */
-async function redraw(ctx: SceneContext, row: SceneRow): Promise<void> {
+async function redraw(
+  ctx: SceneContext,
+  row: SceneRow,
+  drawn?: Map<string, Rendered>,
+): Promise<void> {
   const owner = await ownerOf(ctx, row);
   const { messages } = loaded(row);
   const finished = row.status !== "active";
   const chat = { account_id: BOT_ACCOUNT, chat_id: row.chat_id };
-  for (const [index, message] of messages.entries()) {
-    let rendered: Rendered;
+  let current = drawn;
+  if (!current) {
     try {
-      rendered = screenOf(row, index === 0 ? row.view : message.view, owner);
+      current = screens(row, owner);
     } catch {
-      continue;
+      return;
     }
+  }
+  for (const [index, message] of messages.entries()) {
+    const rendered = current.get(viewOf(row, messages, index));
+    if (!rendered) continue;
     const buttons = finished ? null : storedButtons(rendered.rows, row.id);
     const stored = await ctx.store.getMessage(chat, message.id);
     if (stored && stored.text === rendered.plain && stored.buttons === buttons) continue;
@@ -681,7 +827,7 @@ async function redraw(ctx: SceneContext, row: SceneRow): Promise<void> {
     } catch (error) {
       if (!(error instanceof TelegramError)) throw error;
       if (error.code === 429) {
-        // Everything is committed; the scene stays quiet and the next event draws it.
+        // Everything is committed; the scene stays quiet and the edit is owed.
         await ctx.store.markSceneDrawn(row.id, {
           dirty: 1,
           quiet_until: Date.now() + (error.retryAfter ?? 30) * 1000,
@@ -689,11 +835,14 @@ async function redraw(ctx: SceneContext, row: SceneRow): Promise<void> {
         return;
       }
       if (/message to edit not found|message can't be edited/i.test(error.description)) {
-        // The main message is gone: no press can reach the scene any more.
         if (index === 0) {
+          // The main message is gone: no press can reach the scene any more.
           await ctx.store.finishScene(row.id);
           return;
         }
+        // Another live message is gone: it leaves the list, and its slot is free.
+        await ctx.store.dropLiveMessage(row.id, message.id);
+        await ctx.store.unlinkScene("message", `${row.chat_id}:${message.id}`);
         continue;
       }
       if (!/message is not modified/i.test(error.description)) {
@@ -708,7 +857,7 @@ async function redraw(ctx: SceneContext, row: SceneRow): Promise<void> {
 /**
  * The owner's session changes the state itself (update_scene): the fields
  * given replace those of the state. Null when it is done; otherwise why
- * the change was refused.
+ * the change was refused. It keeps to the edits' pace like any event.
  */
 export async function mergeState(
   ctx: SceneContext,
@@ -725,35 +874,39 @@ export async function mergeState(
     const size = new TextEncoder().encode(JSON.stringify(next)).byteLength;
     if (size > 8192) return `The state would be ${size} bytes; it holds 8192.`;
     const changed: SceneRow = { ...row, state: JSON.stringify(next) };
-    const owner = await ownerOf(ctx, row);
+    let drawn: Map<string, Rendered>;
     try {
-      for (const [index, message] of loaded(changed).messages.entries()) {
-        screenOf(changed, index === 0 ? row.view : message.view, owner);
-      }
+      drawn = screens(changed, await ownerOf(ctx, row));
     } catch (error) {
-      if (error instanceof LangError)
+      if (error instanceof LangError) {
         return `The scene could not draw that state: ${error.message}`;
+      }
       throw error;
     }
-    const edited = Date.now();
-    if (
-      !(await ctx.store.commitScene(row.id, row.version, {
-        state: changed.state,
-        edited_at: edited,
-      }))
-    )
-      continue;
-    await redraw(ctx, { ...changed, version: row.version + 1, edited_at: edited });
+    const now = Date.now();
+    const drawNow = now - row.edited_at >= EDIT_GAP_MS && now >= row.quiet_until;
+    const patch: ScenePatch = {
+      state: changed.state,
+      ...(drawNow ? { edited_at: now } : { dirty: 1 }),
+    };
+    if (!(await ctx.store.commitScene(row.id, row.version, patch))) continue;
+    if (drawNow) await redraw(ctx, { ...changed, ...patch, version: row.version + 1 }, drawn);
+    else later(ctx, row.id);
     return null;
   }
   return "The scene kept changing under the update; try again.";
 }
 
-/** End the scene: no more events, and its messages lose their buttons. */
+/** End the scene: no more events, and its messages lose their buttons (once Telegram allows). */
 export async function endScene(ctx: SceneContext, sceneId: number): Promise<boolean> {
   const row = await ctx.store.getScene(sceneId);
   if (!row || row.status !== "active") return false;
   await ctx.store.finishScene(sceneId);
+  if (Date.now() < row.quiet_until) {
+    await ctx.store.markSceneDrawn(sceneId, { dirty: 1 });
+    later(ctx, sceneId);
+    return true;
+  }
   await redraw(ctx, { ...row, status: "finished" });
   return true;
 }
@@ -764,8 +917,9 @@ const REPLY_LENGTH = 256;
 /**
  * A message that replies to a scene's message: the scene's `reply` event. A
  * rule that takes it is the whole answer (no session starts); a rule that
- * refuses gets 👎 on the reply. False when no scene or no rule took it: the
- * message goes its usual way.
+ * refuses in its own words gets 👎 on the reply. Anything else — no rule took
+ * it, the scene is over, too fast, a failure — is not the scene's: the
+ * message goes its usual way, and may well be for Claude.
  */
 export async function sceneReply(ctx: BotContext, message: Message): Promise<boolean> {
   const target = message.reply_to_message;
@@ -786,8 +940,8 @@ export async function sceneReply(ctx: BotContext, message: Message): Promise<boo
     undefined,
     message.from.language_code,
   );
-  if (answer.noRule) return false;
-  if (!answer.applied) {
+  if (!answer.applied && !answer.said) return false;
+  if (answer.said) {
     await ctx.api
       .call("setMessageReaction", {
         chat_id: message.chat.id,

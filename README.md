@@ -311,10 +311,14 @@ in the menu: chat → 🎬 Scenes) and the starts every tag shares. Otherwise th
 nothing changes. A wake goes into the session that made the scene, through the relay, or starts
 your routine; either way it shows in 📜 Starts.
 
-**Cost.** A press that changes something is one Worker request, one row read and one row written; a
-refused press writes nothing; `log()` and `wake()` write one more row. Edits keep to one a second
-per message. Up to 20 active scenes per chat; an untouched scene ends after `RETENTION_DAYS` and is
-deleted a retention later. Scenes end when you lose access to the group or `/disconnect`.
+**Cost.** A press that changes something is one Worker request; it reads the scene's row and, for
+each of its live messages, the stored copy, and writes two rows: the scene and the redrawn message's
+record. A press within a second of the last edit writes two more when the held-back edit is made. A
+refused press writes nothing, and a press that changes nothing writes nothing (except once a day, to
+mark the scene as in use). `log()` and `wake()` write one more row each; a scene keeps its latest 200
+events. Edits keep to one a second per message. Up to 20 active scenes per person per chat; a scene
+nobody used for `RETENTION_DAYS` ends and is deleted a retention later, and its messages are kept as
+long as it is. Scenes end when you lose access to the group or `/disconnect`.
 
 Scenes were tested against a fake Bot API only. On a live bot, check: the ephemeral reply to a press
 (`whisper`), poll updates reaching the bot, `setChatMemberTag` (`tag`, needs the bot to be an admin
@@ -462,7 +466,8 @@ low:
 - `messages` has no secondary index (each index entry is one more billed row).
 - OAuth codes, tokens and file links are signed, not stored.
 - Command answers go back in the webhook response itself, without a separate Bot API call.
-- A scene writes one row per press that changes it, and nothing for one that does not.
+- A scene writes two rows per press that changes it (the scene and its redrawn message), and nothing
+  for one that does not.
 
 Reads are cheaper but not free: a keyword search scans the stored messages of the chats and time
 window it covers (pass `since` and it starts at that day), so searching a very busy group hundreds

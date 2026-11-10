@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 17;
+const SCHEMA_VERSION = 18;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -238,6 +238,7 @@ const SCHEMA: string[] = [
     from_name TEXT,
     excerpt TEXT,
     album TEXT,
+    scene_id INTEGER,
     PRIMARY KEY (chat_id, message_id)
   ) WITHOUT ROWID`,
   `CREATE INDEX IF NOT EXISTS fires_by_user ON fires (user_id, at)`,
@@ -324,13 +325,17 @@ const SCHEMA: string[] = [
   // `version` makes every commit conditional, so concurrent events never lose
   // a write. `messages` lists the scene's live messages, the first being the
   // main one (`view` is what it shows); `posts` the times of recent posts.
+  // `session_id` takes the owner's wakes, `others_session_id` third parties':
+  // the session the user works in never hears a third party.
   `CREATE TABLE IF NOT EXISTS scenes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     chat_id INTEGER NOT NULL,
     thread_id INTEGER,
     owner INTEGER NOT NULL,
     session_id TEXT,
+    others_session_id TEXT,
     agent TEXT,
+    owner_name TEXT,
     title TEXT NOT NULL,
     brief TEXT,
     def TEXT NOT NULL,
@@ -345,6 +350,7 @@ const SCHEMA: string[] = [
     edited_at INTEGER NOT NULL DEFAULT 0,
     posts TEXT,
     poll TEXT,
+    last_query TEXT,
     created INTEGER NOT NULL,
     updated INTEGER NOT NULL
   )`,
@@ -454,6 +460,15 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
     alter: ["ALTER TABLE relay_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'reply'"],
   },
   { target: 16, alter: ["ALTER TABLE messages ADD COLUMN agent TEXT"] },
+  {
+    target: 18,
+    alter: [
+      "ALTER TABLE scenes ADD COLUMN others_session_id TEXT",
+      "ALTER TABLE scenes ADD COLUMN owner_name TEXT",
+      "ALTER TABLE scenes ADD COLUMN last_query TEXT",
+      "ALTER TABLE fires ADD COLUMN scene_id INTEGER",
+    ],
+  },
 ];
 
 const ready = new WeakMap<D1Database, Promise<void>>();

@@ -553,6 +553,8 @@ export class Harness {
       body: JSON.stringify({ jsonrpc: "2.0", id: this.rpcId++, method, params }),
     });
     const raw = await response.text();
+    // A streamed answer runs the tool while the body is read: what it deferred settles now.
+    await Promise.allSettled(this.waits);
     const data = raw.includes("data:")
       ? raw
           .split("\n")
