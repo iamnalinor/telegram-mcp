@@ -728,7 +728,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
       title: "Send an interactive widget",
       description:
         "Send a small interactive block drawn inside a message: a checklist to tick off, a counter, a " +
-        "tracker, a board, a chart, a picker, a small game. Offer it unasked when tapping or a live view " +
+        "tracker, a board, a chart, a picker. Offer it unasked when tapping or a live view " +
         "beats text. For now Telegram shows widgets only in the private chat with the bot; in a group, use " +
         "create_scene. A widget is one " +
         "self-contained HTML document with inline <style> and <script>: at most 32768 bytes and 4096 after " +

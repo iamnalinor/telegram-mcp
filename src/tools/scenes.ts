@@ -26,7 +26,7 @@ import { compile, DefinitionError, wakingRules, type Compiled } from "../scenes/
 import { guide, PRESETS } from "../scenes/guide";
 import type { Value } from "../scenes/lang";
 import { render } from "../scenes/render";
-import { GROUP_NOTE } from "../prompts";
+import { GAMES_NOTE, GROUP_NOTE } from "../prompts";
 import type { GuestCall, GuestMedia, SceneEventRow, SceneRow, SceneTemplateRow } from "../store";
 import {
   agentArg,
@@ -272,7 +272,7 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
         "finish(), {if, do, else}. Text, labels and a button's style take {expression}. Functions: len, count, has, each, line.\n" +
         'Example: {"title":"Lunch?","state":{"yes":{}},"view":{"text":"Coming: {len(yes)}","buttons":' +
         '[[{"text":"Me","press":"me"}]]},"rules":[{"on":"press:me","do":["yes[user.id] = user.name"]}]}\n' +
-        `dry_run checks and previews without sending. The result says who can wake you. ${GROUP_NOTE}`,
+        `dry_run checks and previews without sending. The result says who can wake you. ${GAMES_NOTE} ${GROUP_NOTE}`,
       inputSchema: z.object({
         definition: z
           .record(z.string(), z.unknown())

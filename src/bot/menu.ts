@@ -97,6 +97,7 @@ import {
   revokeAccess,
   signOutAll,
   startScene,
+  StartTaken,
   stopAllScenes,
 } from "./scenes";
 import { holderName, stillMember } from "./triggers";
@@ -850,8 +851,8 @@ async function startSaved(
 }
 
 /**
- * A ready-made game's card. ▶ names the user's newest scene, so a second tap
- * on the same card finds one newer and starts nothing.
+ * A ready-made game's card. ▶ names the user's newest scene, so of two taps
+ * on the same card (or on two cards shown together) only one starts a game.
  */
 async function gameScreen(ctx: BotContext, user: User, key: GameKey): Promise<Screen> {
   const t = texts(user.language_code);
@@ -870,6 +871,8 @@ async function gameScreen(ctx: BotContext, user: User, key: GameKey): Promise<Sc
 /**
  * Start a ready-made game: built from code in the user's language, in their
  * private chat, as theirs, with no session; nothing is saved to the library.
+ * The scene goes in only if the user's newest scene is still the one the card
+ * named and the chat is under its limit, in one statement.
  */
 async function startGame(
   ctx: BotContext,
@@ -878,12 +881,6 @@ async function startGame(
   shown: number,
 ): Promise<{ note: string; again: boolean }> {
   const t = texts(user.language_code);
-  if ((await ctx.store.lastSceneOf(user.id)) !== shown) {
-    return { note: t.savedStartedAlready, again: true };
-  }
-  if ((await ctx.store.countScenesOf(user.id, user.id)) >= ACTIVE_PER_CHAT) {
-    return { note: t.scenesFull(ACTIVE_PER_CHAT), again: true };
-  }
   const lang = user.language_code?.toLowerCase().startsWith("ru") ? "ru" : "en";
   const { compiled, state } = compile(GAMES[key](lang));
   try {
@@ -895,8 +892,14 @@ async function startGame(
       agent: null,
       compiled,
       state,
+      claim: { newest: shown, limit: ACTIVE_PER_CHAT },
     });
   } catch (error) {
+    if (error instanceof StartTaken) {
+      return (await ctx.store.lastSceneOf(user.id)) !== shown
+        ? { note: t.savedStartedAlready, again: true }
+        : { note: t.scenesFull(ACTIVE_PER_CHAT), again: true };
+    }
     if (error instanceof TelegramError) return { note: t.sceneStartRefused, again: true };
     throw error;
   }

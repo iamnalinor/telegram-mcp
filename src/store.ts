@@ -680,6 +680,30 @@ const TEMPLATE_VERSIONS = 20;
 
 const DAY = 86_400;
 
+/** A scene to insert: what `createScene` takes. */
+type NewScene = {
+  chat_id: number;
+  thread_id: number | null;
+  owner: number;
+  owner_name: string;
+  session_id: string | null;
+  agent: string | null;
+  title: string;
+  brief: string | null;
+  def: string;
+  state: string;
+  wake_limit: number;
+  template_id?: number | null;
+  template_version?: number | null;
+  inline_id?: string | null;
+  /** Its live messages, when they are known before anything is drawn (a guest call's). */
+  messages?: string;
+};
+
+/** The condition of `createSceneIf`: the owner's newest scene, and their count in the chat. */
+const GUARD = `WHERE (SELECT COALESCE(MAX(id), 0) FROM scenes WHERE owner = ?) = ?
+  AND (SELECT COUNT(*) FROM scenes WHERE chat_id = ? AND owner = ? AND status = 'active') < ?`;
+
 export class Store {
   constructor(readonly db: D1Database) {}
 
@@ -3089,30 +3113,30 @@ export class Store {
 
   // --- scenes --------------------------------------------------------------
 
-  async createScene(row: {
-    chat_id: number;
-    thread_id: number | null;
-    owner: number;
-    owner_name: string;
-    session_id: string | null;
-    agent: string | null;
-    title: string;
-    brief: string | null;
-    def: string;
-    state: string;
-    wake_limit: number;
-    template_id?: number | null;
-    template_version?: number | null;
-    inline_id?: string | null;
-    /** Its live messages, when they are known before anything is drawn (a guest call's). */
-    messages?: string;
-  }): Promise<number> {
+  async createScene(row: NewScene): Promise<number> {
+    return (await this.insertScene(row))!;
+  }
+
+  /**
+   * Insert a scene only if the owner's newest scene is still `newest` (0 for
+   * none) and they run fewer than `limit` in its chat: one statement, so of
+   * two starts keyed on the same `newest` one passes. Null when it did not.
+   */
+  createSceneIf(row: NewScene, claim: { newest: number; limit: number }): Promise<number | null> {
+    return this.insertScene(row, claim);
+  }
+
+  private async insertScene(
+    row: NewScene,
+    claim?: { newest: number; limit: number },
+  ): Promise<number | null> {
     const now = nowSeconds();
     const created = await this.db
       .prepare(
         `INSERT INTO scenes (chat_id, thread_id, owner, owner_name, session_id, agent, title, brief,
            def, state, wake_limit, template_id, template_version, inline_id, messages, created, updated)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+         SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+         ${claim ? GUARD : ""} RETURNING id`,
       )
       .bind(
         row.chat_id,
@@ -3132,9 +3156,10 @@ export class Store {
         row.messages ?? "[]",
         now,
         now,
+        ...(claim ? [row.owner, claim.newest, row.chat_id, row.owner, claim.limit] : []),
       )
       .first<{ id: number }>();
-    return created!.id;
+    return created?.id ?? null;
   }
 
   getScene(id: number): Promise<SceneRow | null> {
@@ -3445,7 +3470,6 @@ export class Store {
     return results;
   }
 
-  /** How many scenes the user has running anywhere. */
   /** The newest scene the user owns, running or not (0 for none): a ready-made game's ▶ names it. */
   async lastSceneOf(owner: number): Promise<number> {
     const row = await this.db
@@ -3455,6 +3479,7 @@ export class Store {
     return row?.id ?? 0;
   }
 
+  /** How many scenes the user has running anywhere. */
   async countActiveScenesOf(owner: number): Promise<number> {
     const row = await this.db
       .prepare("SELECT COUNT(*) AS n FROM scenes WHERE owner = ? AND status = 'active'")

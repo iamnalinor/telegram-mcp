@@ -4,9 +4,11 @@
  * definition; the tests compile and play them.
  */
 
+import { GAMES_NOTE } from "../prompts";
 import { checkers, ticTacToe } from "./games";
 
 const REFERENCE = `Scenes: a message the bot runs by itself. Its state lives in the bot; its rules say what each press, vote or reply does; you are woken only where a rule calls wake(). It needs no session to run; the user can also start your saved scenes from the bot's menu, with no assistant connected: where you can, let a scene do its job without its wakes.
+${GAMES_NOTE}
 
 Definition (JSON)
 - title, brief (your own note: what it is and what to do when it wakes you), state (an object), let (computed names: {name: "expression"}).

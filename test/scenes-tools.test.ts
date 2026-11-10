@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 
 import { sceneTiming } from "../src/bot/scenes";
+import { instructions } from "../src/prompts";
 import { compile } from "../src/scenes/definition";
 import { PRESETS } from "../src/scenes/guide";
 import { render } from "../src/scenes/render";
@@ -240,6 +241,29 @@ describe("the guide", () => {
       const shown = render(compiled, "main", state, { owner: { id: 1, name: "O" }, now: 1 });
       expect(shown.text.length, name).toBeGreaterThan(0);
     }
+  });
+
+  it("tells the model a game is a scene unless asked otherwise, in all three places", async () => {
+    const told = [
+      instructions({
+        retentionDays: 14,
+        botUsername: "bot",
+        user: { id: ALICE.id, username: null, name: null },
+      }),
+      (await h.tool(alice, "scene_guide", {})).text,
+    ];
+    const { body } = await h.mcp(alice, "tools/list");
+    const tools = (body as { result: { tools: { name: string; description: string }[] } }).result
+      .tools;
+    told.push(tools.find((tool) => tool.name === "create_scene")!.description);
+    for (const text of told) {
+      expect(text).toContain("A game is a scene by default");
+      expect(text).toContain("tictactoe, checkers, quiz, mafia");
+      expect(text).toContain("🎬 Scenes → Ready-made");
+      expect(text).toContain("an HTML artifact, a text game in the chat");
+    }
+    // A widget is not offered for games any more.
+    expect(tools.find((tool) => tool.name === "send_widget")!.description).not.toContain("game");
   });
 
   it("hands out the reference and a preset", async () => {

@@ -369,7 +369,8 @@ your assistant if one is set up, or else wakes nobody and says so. The 20-a-chat
 **Ready-made games.** 🎬 Scenes also offers ❌⭕ Tic-tac-toe and ⚪⚫ Checkers, shipped with the bot
 (`src/scenes/games.ts`) in English and Russian and shown even with an empty library. ▶ starts one in
 your private chat as yours, like a saved scene, without adding it to your library; a second tap on
-the same card starts nothing. Tic-tac-toe seats two (or one person on both seats, or you against
+the same card starts nothing, even one at the same moment, and neither does a start past 20 running
+scenes in the chat (one conditional insert checks both). Tic-tac-toe seats two (or one person on both seats, or you against
 🤖, which wins when it can, blocks when it must and otherwise takes the centre or a corner), lights
 up whose turn it is, the last move and the winning line, keeps a score and offers a rematch with
 sides swapped. Checkers plays Russian draughts on 64 buttons: men step forward and capture both
