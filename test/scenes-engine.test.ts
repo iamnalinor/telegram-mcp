@@ -182,6 +182,47 @@ describe("limits and mistakes", () => {
     );
   });
 
+  it("a mistake inside each() names the button it comes from, past hidden ones", () => {
+    const long = "'" + "y".repeat(60) + "'";
+    const view = {
+      text: "x",
+      buttons: [
+        { each: "items", row: [{ text: "ok", press: "a" }] },
+        {
+          each: "items",
+          row: [
+            { text: "hidden", press: "a", show: "false" },
+            { text: "shown", press: "a" },
+            { text: "long", press: "a", arg: long },
+          ],
+        },
+      ],
+    };
+    expect(definitionError({ ...base, state: { items: [1] }, view }).where).toBe(
+      "view.buttons[1].row[2]",
+    );
+    const { compiled, state } = compile({
+      ...base,
+      state: { items: [1, 2] },
+      view: {
+        text: "x",
+        buttons: [
+          {
+            each: "items",
+            row: [
+              { text: "hidden", press: "a", show: "false" },
+              { text: "shown", press: "a" },
+            ],
+          },
+        ],
+      },
+    });
+    expect(render(compiled, "main", state, { owner: OWNER, now: 0 }).places).toEqual([
+      ["buttons[0].row[1]"],
+      ["buttons[0].row[1]"],
+    ]);
+  });
+
   it("points at a mistake inside an expression", () => {
     const error = definitionError({
       ...base,

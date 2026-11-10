@@ -39,7 +39,7 @@ export interface Rendered {
   plain: string;
   format: "markdown" | "rich";
   rows: RenderedButton[][];
-  /** Where in the view each button comes from, e.g. "buttons[2]" or "buttons[0][1]". */
+  /** Where in the view each button comes from, e.g. "buttons[2]", "buttons[0][1]" or "buttons[1].row[0]". */
   places: string[][];
 }
 
@@ -197,9 +197,13 @@ export function render(
     if (row.kind === "each") {
       for (const [i, [key, item]] of items.entries()) {
         const inner = within(item, i, key);
+        // Hidden buttons drop out of the row: a place counts in the template's own row.
+        const shown = row.row
+          .map((button, c) => ({ button: one(button, inner), c }))
+          .filter((entry): entry is { button: RenderedButton; c: number } => entry.button !== null);
         push(
-          row.row.map((b) => one(b, inner)).filter((b): b is RenderedButton => b !== null),
-          () => `buttons[${r}]`,
+          shown.map((entry) => entry.button),
+          (c) => `buttons[${r}].row[${shown[c].c}]`,
         );
       }
       continue;

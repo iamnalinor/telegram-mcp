@@ -42,7 +42,14 @@ import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { handleAssistantButton, handleChatShared, handleCommand, handleRevoke } from "./commands";
 import { handleMemoryUndo, handleMenu, takeLimitAnswer } from "./menu";
 import { onGuestMessage } from "./guest";
-import { handleScenePress, sceneReaction, scenePoll, sceneReply, sceneVote } from "./scenes";
+import {
+  handleScenePress,
+  revokeAccess,
+  sceneReaction,
+  scenePoll,
+  sceneReply,
+  sceneVote,
+} from "./scenes";
 import { handleSecret } from "./routine";
 import { maybeStart } from "./triggers";
 import { parseCommand, realReply, toStored, topicName, topicOf } from "./extract";
@@ -278,7 +285,7 @@ async function onChatMember(ctx: BotContext, update: ChatMemberUpdated): Promise
 async function onMemberLeft(ctx: BotContext, chatId: number, user: User): Promise<void> {
   if (user.id === ctx.bot.id) return;
   if (!(await ctx.store.getGrant(user.id, chatId))) return;
-  await ctx.store.revokeGrant(user.id, chatId);
+  await revokeAccess(ctx, user.id, chatId);
 }
 
 async function onCallback(ctx: BotContext, query: CallbackQuery): Promise<WebhookReply | null> {

@@ -51,7 +51,7 @@ import { TelegramError } from "../telegram/api";
 import type { CallbackQuery, InlineKeyboardMarkup, Message, User } from "../telegram/types";
 import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { testRoutine } from "./routine";
-import { endScene } from "./scenes";
+import { endScene, revokeAccess, signOutAll } from "./scenes";
 import { holderName, stillMember } from "./triggers";
 import { escapeHtml, formatDate, texts } from "./texts";
 
@@ -555,7 +555,7 @@ async function toggleClaude(
   if (!(await ctx.store.getRoutine(user.id))) return t.routineFirst;
   if (claim) {
     if ((await stillMember(ctx, chatId, claim.user_id)) !== false) return t.chatHeld;
-    await ctx.store.revokeGrant(claim.user_id, chatId);
+    await revokeAccess(ctx, claim.user_id, chatId);
   }
   return (await ctx.store.claimClaudeChat(user.id, chatId)) ? undefined : t.chatHeld;
 }
@@ -633,7 +633,7 @@ async function render(
     };
   }
   if (name === "outyes") {
-    await ctx.store.bumpTokenVersion(user.id);
+    await signOutAll(ctx, user.id);
     return { ...(await signInsScreen(ctx, user)), note: t.disconnected };
   }
   // Ids are 16 characters, or 43 for sign-ins from before rotation (a token hash).
@@ -814,7 +814,7 @@ async function render(
     if (!grant) return { ...(await groupsScreen(ctx, user)), note: t.menuGone };
     const title = grant.title ?? String(grant.chat_id);
     if (group[1] === "rv") {
-      await ctx.store.revokeGrant(user.id, chatId);
+      await revokeAccess(ctx, user.id, chatId);
       return { ...(await groupsScreen(ctx, user)), note: t.revoked };
     }
     let note: string | undefined;

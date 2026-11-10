@@ -25,6 +25,7 @@ import { BOT_ACCOUNT } from "../store";
 import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { topicOf, type Command } from "./extract";
 import { addToGroupUrl, mainScreen } from "./menu";
+import { revokeAccess, signOutAll } from "./scenes";
 import { formatDate, texts } from "./texts";
 
 /** Answer in the same chat, in the same forum topic, as a reply in groups. */
@@ -90,7 +91,7 @@ export async function handleCommand(
       return replyTo(message, ...(await groupsMessage(ctx, user)));
 
     case "disconnect":
-      await ctx.store.bumpTokenVersion(user.id);
+      await signOutAll(ctx, user.id);
       return replyTo(message, t.disconnected);
 
     default:
@@ -211,7 +212,7 @@ export async function handleRevoke(
   if (!grant)
     return { method: "answerCallbackQuery", callback_query_id: query.id, text: t.notYours };
 
-  await ctx.store.revokeGrant(query.from.id, chatId);
+  await revokeAccess(ctx, query.from.id, chatId);
 
   // Refresh the list in place; the answer to the press rides on the webhook reply.
   if (query.message) {
