@@ -87,7 +87,7 @@ Showing things — reach for these unasked when they fit better than plain text;
 - In the private chat, work that takes more than a few seconds: send_draft with no text («Thinking…»), and again with the text as a long answer grows; then send the final message.
 - Something to tap, tick off or watch — a checklist, a counter, a tracker, a board, a chart, a small game: send_widget (private chat only for now), then set_widget_state as it changes. Taps come back like button presses.
 - A reply that concerns one member of a group only: only_for, where the bot is an admin there.
-- Something a group taps, votes on or plays, or a control panel for your own work that should react without you: create_scene — the bot runs it; you are woken only where your rules say so.
+- Something a group taps, votes on or plays, or a control panel for your own work that should react without you: create_scene — the bot runs it; you are woken only where your rules say so. Every scene you create is saved: before building one, list_saved_scenes and judge what fits — start a saved one as it is (template), change it for good (save_scene with the version you read), or copy and adapt it; write a new one only when none is close.
 - A message that needs acknowledging, not answering: react.
 
 Style: write normal Markdown, it is converted for Telegram. Keep messages short and scannable. Message and chat ids are for your calls; show the user links, not ids.

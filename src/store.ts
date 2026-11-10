@@ -422,9 +422,30 @@ export interface SceneRow {
   poll: string | null;
   /** The last press committed: a redelivered update is not applied twice. */
   last_query: string | null;
+  /** The saved scene it was started from, or saved as. */
+  template_id: number | null;
   created: number;
   updated: number;
 }
+
+/** A saved scene: a definition as written, to start again or change. */
+export interface SceneTemplateRow {
+  id: number;
+  owner: number;
+  name: string;
+  title: string;
+  brief: string | null;
+  /** JSON of the definition as written. */
+  definition: string;
+  version: number;
+  uses: number;
+  created: number;
+  updated: number;
+  /** When it last started a scene. */
+  used: number;
+}
+
+export type SceneTemplateEntry = Omit<SceneTemplateRow, "definition">;
 
 export interface SceneMessage {
   id: number;
@@ -593,6 +614,8 @@ const HISTORY_TABLES = ["button_presses", "reactions", "topics", "chats"];
 const USER_CHAT_TABLES = ["memory_docs", "memory_history", "memory_notices"];
 /** How many earlier versions of a memory document are kept for undo. */
 const MEMORY_VERSIONS = 20;
+/** How many earlier versions of a saved scene are kept. */
+const TEMPLATE_VERSIONS = 20;
 
 const DAY = 86_400;
 
@@ -2531,13 +2554,14 @@ export class Store {
     def: string;
     state: string;
     wake_limit: number;
+    template_id?: number | null;
   }): Promise<number> {
     const now = nowSeconds();
     const created = await this.db
       .prepare(
         `INSERT INTO scenes (chat_id, thread_id, owner, owner_name, session_id, agent, title, brief,
-           def, state, wake_limit, created, updated)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+           def, state, wake_limit, template_id, created, updated)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       )
       .bind(
         row.chat_id,
@@ -2551,6 +2575,7 @@ export class Store {
         row.def,
         row.state,
         row.wake_limit,
+        row.template_id ?? null,
         now,
         now,
       )
@@ -2916,5 +2941,176 @@ export class Store {
       .bind(sceneId, limit)
       .all<SceneEventRow>();
     return results.reverse();
+  }
+  // --- saved scenes -----------------------------------------------------------
+
+  /** The user's saved scenes, the most recently used first; definitions left out. */
+  async listTemplates(owner: number): Promise<SceneTemplateEntry[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT id, owner, name, title, brief, version, uses, created, updated, used
+         FROM scene_templates WHERE owner = ? ORDER BY used DESC, id DESC`,
+      )
+      .bind(owner)
+      .all<SceneTemplateEntry>();
+    return results;
+  }
+
+  getTemplate(owner: number, name: string): Promise<SceneTemplateRow | null> {
+    return this.db
+      .prepare("SELECT * FROM scene_templates WHERE owner = ? AND name = ?")
+      .bind(owner, name)
+      .first<SceneTemplateRow>();
+  }
+
+  getTemplateById(owner: number, id: number): Promise<SceneTemplateRow | null> {
+    return this.db
+      .prepare("SELECT * FROM scene_templates WHERE owner = ? AND id = ?")
+      .bind(owner, id)
+      .first<SceneTemplateRow>();
+  }
+
+  /** A saved scene with exactly this definition, if the user has one. */
+  templateWithDefinition(owner: number, definition: string): Promise<SceneTemplateRow | null> {
+    return this.db
+      .prepare("SELECT * FROM scene_templates WHERE owner = ? AND definition = ? LIMIT 1")
+      .bind(owner, definition)
+      .first<SceneTemplateRow>();
+  }
+
+  /** An earlier version of a saved scene, while it is kept. */
+  async templateVersion(templateId: number, version: number): Promise<string | null> {
+    const row = await this.db
+      .prepare(
+        "SELECT definition FROM scene_template_history WHERE template_id = ? AND version = ?",
+      )
+      .bind(templateId, version)
+      .first<{ definition: string }>();
+    return row?.definition ?? null;
+  }
+
+  async countTemplates(owner: number): Promise<number> {
+    const row = await this.db
+      .prepare("SELECT COUNT(*) AS n FROM scene_templates WHERE owner = ?")
+      .bind(owner)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  /** Save a new one; null when the name is taken. `uses` is 1 when it starts a scene now. */
+  async insertTemplate(
+    owner: number,
+    t: { name: string; title: string; brief: string | null; definition: string; uses: number },
+  ): Promise<number | null> {
+    const now = nowSeconds();
+    const row = await this.db
+      .prepare(
+        `INSERT INTO scene_templates (owner, name, title, brief, definition, uses, created, updated, used)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (owner, name) DO NOTHING RETURNING id`,
+      )
+      .bind(owner, t.name, t.title, t.brief, t.definition, t.uses, now, now, now)
+      .first<{ id: number }>();
+    return row?.id ?? null;
+  }
+
+  /**
+   * Replace a saved scene's definition if it is still at `version`, keeping
+   * the one it replaces. False when it moved on (or is gone).
+   */
+  async updateTemplate(
+    owner: number,
+    name: string,
+    version: number,
+    t: { title: string; brief: string | null; definition: string },
+  ): Promise<boolean> {
+    const now = nowSeconds();
+    const results = await this.db.batch([
+      this.db
+        .prepare(
+          `INSERT OR REPLACE INTO scene_template_history (template_id, version, definition, changed_at)
+           SELECT id, version, definition, ?4 FROM scene_templates
+           WHERE owner = ?1 AND name = ?2 AND version = ?3`,
+        )
+        .bind(owner, name, version, now),
+      this.db
+        .prepare(
+          `UPDATE scene_templates SET title = ?4, brief = ?5, definition = ?6, version = version + 1,
+             updated = ?7
+           WHERE owner = ?1 AND name = ?2 AND version = ?3`,
+        )
+        .bind(owner, name, version, t.title, t.brief, t.definition, now),
+      this.db
+        .prepare(
+          `DELETE FROM scene_template_history WHERE template_id =
+             (SELECT id FROM scene_templates WHERE owner = ?1 AND name = ?2)
+           AND version <= (SELECT version FROM scene_templates WHERE owner = ?1 AND name = ?2) - 1 - ?3`,
+        )
+        .bind(owner, name, TEMPLATE_VERSIONS),
+    ]);
+    return (results[1].meta.changes ?? 0) > 0;
+  }
+
+  /** False when there is no such saved scene or the new name is taken. */
+  async renameTemplate(owner: number, name: string, newName: string): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE OR IGNORE scene_templates SET name = ?3, updated = ?4 WHERE owner = ?1 AND name = ?2`,
+      )
+      .bind(owner, name, newName, nowSeconds())
+      .run();
+    return (result.meta.changes ?? 0) > 0;
+  }
+
+  /** It started a scene. */
+  async useTemplate(id: number): Promise<void> {
+    await this.db
+      .prepare("UPDATE scene_templates SET uses = uses + 1, used = ? WHERE id = ?")
+      .bind(nowSeconds(), id)
+      .run();
+  }
+
+  private dropTemplatesStatements(where: string, values: unknown[]): D1PreparedStatement[] {
+    const ids = `SELECT id FROM scene_templates WHERE ${where}`;
+    return [
+      this.db
+        .prepare(`UPDATE scenes SET template_id = NULL WHERE template_id IN (${ids})`)
+        .bind(...values),
+      this.db
+        .prepare(`DELETE FROM scene_template_history WHERE template_id IN (${ids})`)
+        .bind(...values),
+      this.db.prepare(`DELETE FROM scene_templates WHERE ${where}`).bind(...values),
+    ];
+  }
+
+  /** A saved scene and its versions; scenes started from it go on. */
+  async deleteTemplate(owner: number, name: string): Promise<boolean> {
+    const results = await this.db.batch(
+      this.dropTemplatesStatements("owner = ? AND name = ?", [owner, name]),
+    );
+    return (results[2].meta.changes ?? 0) > 0;
+  }
+
+  /** Drop the saved scene unused the longest; its name, or null when there is none. */
+  async evictTemplate(owner: number): Promise<string | null> {
+    const oldest = await this.db
+      .prepare("SELECT name FROM scene_templates WHERE owner = ? ORDER BY used, id LIMIT 1")
+      .bind(owner)
+      .first<{ name: string }>();
+    if (!oldest) return null;
+    await this.deleteTemplate(owner, oldest.name);
+    return oldest.name;
+  }
+
+  async templateUsers(): Promise<number[]> {
+    const { results } = await this.db
+      .prepare("SELECT DISTINCT owner FROM scene_templates")
+      .all<{ owner: number }>();
+    return results.map((row) => row.owner);
+  }
+
+  /** Every saved scene of the user, with their versions. */
+  async wipeTemplates(owner: number): Promise<void> {
+    await this.db.batch(this.dropTemplatesStatements("owner = ?", [owner]));
   }
 }
