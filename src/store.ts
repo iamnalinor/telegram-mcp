@@ -131,7 +131,15 @@ export interface RelayRow {
   last_seen: number | null;
   login_failed_at: number | null;
   offline_noticed_at: number | null;
+  /** What it said it can run, comma separated; null: a relay too old to say, Claude only. */
+  runners: string | null;
 }
+
+/**
+ * What the relay does with a job: pass it into a Claude cloud session, start
+ * a Codex thread on the machine, or carry one on.
+ */
+export type Runner = "claude-continue" | "codex-start" | "codex-resume";
 
 /** Who stands behind a message to a session, by the bot's records. */
 export type RelayOrigin = "user" | "other" | "unknown";
@@ -158,6 +166,9 @@ export interface RelayJob {
   kind: "reply" | "day" | "guest" | "ask" | "scene";
   /** 1 when the sender waits for answer_session; a notice expects none. */
   wants_answer: number;
+  runner: Runner;
+  /** The runner's settings, JSON: model, sandbox, working directory. */
+  params: string | null;
   answer: string | null;
   answered_at: number | null;
   created_at: number;
@@ -2378,15 +2389,16 @@ export class Store {
       | "thread_id"
       | "wants_answer"
       | "kind"
-    >,
+    > &
+      Partial<Pick<RelayJob, "runner" | "params">>,
     /** `done`: passed on already, by a provider that needs no relay (src/agents/openai.ts). */
     status: "queued" | "done" = "queued",
   ): Promise<void> {
     await this.db
       .prepare(
         `INSERT INTO relay_jobs (id, user_id, target_session, body, origin, from_session,
-           chat_id, message_id, thread_id, wants_answer, kind, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           chat_id, message_id, thread_id, wants_answer, kind, status, created_at, runner, params)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         job.id,
@@ -2402,24 +2414,64 @@ export class Store {
         job.kind,
         status,
         nowSeconds(),
+        job.runner ?? "claude-continue",
+        job.params ?? null,
       )
       .run();
   }
 
-  /** Hand the oldest queued jobs to the relay, each once. */
-  async takeJobs(userId: number, limit: number): Promise<RelayJob[]> {
+  /**
+   * Hand the oldest queued jobs the relay can run (`runners`) to it, each
+   * once. A Codex thread is carried on only once its start told the thread's
+   * id, and only one job of a thread at a time: the rest wait their turn.
+   * `thread`: that id, for a job that carries one on.
+   */
+  async takeJobs(
+    userId: number,
+    limit: number,
+    runners: readonly Runner[],
+  ): Promise<(RelayJob & { thread: string | null })[]> {
     const { results } = await this.db
       .prepare(
         `UPDATE relay_jobs SET status = 'taken', taken_at = ?1
-         WHERE id IN (SELECT id FROM relay_jobs WHERE user_id = ?2 AND status = 'queued'
-                      ORDER BY created_at, message_id LIMIT ?3)
-         RETURNING *`,
+         WHERE id IN (SELECT j.id FROM relay_jobs j
+                      LEFT JOIN agent_sessions s ON s.id = j.target_session
+                      WHERE j.user_id = ?2 AND j.status = 'queued'
+                        AND instr(?4, ',' || j.runner || ',') > 0
+                        AND (j.runner != 'codex-resume' OR (s.external_id IS NOT NULL
+                          AND NOT EXISTS (SELECT 1 FROM relay_jobs t
+                                          WHERE t.user_id = ?2 AND t.status = 'taken'
+                                            AND t.target_session = j.target_session)))
+                      ORDER BY j.created_at, j.message_id LIMIT ?3)
+         RETURNING *, (SELECT external_id FROM agent_sessions
+                       WHERE id = relay_jobs.target_session) AS thread`,
       )
-      .bind(nowSeconds(), userId, limit)
-      .all<RelayJob>();
+      .bind(nowSeconds(), userId, limit, `,${runners.join(",")},`)
+      .all<RelayJob & { thread: string | null }>();
     return results.sort(
       (a, b) => a.created_at - b.created_at || (a.message_id ?? 0) - (b.message_id ?? 0),
     );
+  }
+
+  /** What the relay said it can run, when that changed. */
+  async setRelayRunners(userId: number, runners: string | null): Promise<void> {
+    await this.db
+      .prepare("UPDATE relays SET runners = ? WHERE user_id = ?")
+      .bind(runners, userId)
+      .run();
+  }
+
+  /**
+   * A Codex start the relay took told the thread's id: kept on the session,
+   * whose queued messages can follow now. The first id told stands.
+   */
+  async setAgentThread(userId: number, session: string, thread: string): Promise<void> {
+    await this.db
+      .prepare(
+        "UPDATE agent_sessions SET external_id = ? WHERE id = ? AND user_id = ? AND external_id IS NULL",
+      )
+      .bind(thread, session, userId)
+      .run();
   }
 
   /** The relay's report on a job it took; null when it was not that relay's or not taken. */
@@ -2438,21 +2490,51 @@ export class Store {
   }
 
   /**
-   * Jobs gone stale fail now: queued ones nobody took since `queuedBefore`
-   * (the relay is gone), and taken ones never reported since `takenBefore`
-   * (it restarted or lost the report).
+   * Jobs gone stale fail now. Claude's: queued ones nobody took since
+   * `queued` (the relay is gone), and taken ones never reported since `taken`
+   * (it restarted or lost the report). Codex's run for long: queued ones fail
+   * after `codexQueued` only while no relay that runs Codex was `online`
+   * since — before that they may wait behind a running start, up to
+   * `codexHeld` — and taken ones after `codexTaken`.
    */
-  async expireJobs(queuedBefore: number, takenBefore: number, limit: number): Promise<RelayJob[]> {
+  async expireJobs(
+    cutoffs: {
+      queued: number;
+      taken: number;
+      codexQueued: number;
+      codexHeld: number;
+      codexTaken: number;
+      online: number;
+    },
+    limit: number,
+  ): Promise<RelayJob[]> {
     const { results } = await this.db
       .prepare(
         `UPDATE relay_jobs SET status = 'failed', error = CASE status
            WHEN 'queued' THEN 'the relay did not pick it up' ELSE 'the relay did not report back' END
-         WHERE id IN (SELECT id FROM relay_jobs
-                      WHERE (status = 'queued' AND created_at < ?1) OR (status = 'taken' AND taken_at < ?2)
-                      ORDER BY created_at LIMIT ?3)
+         WHERE id IN (SELECT j.id FROM relay_jobs j
+                      WHERE (j.runner = 'claude-continue'
+                             AND ((j.status = 'queued' AND j.created_at < ?1)
+                                  OR (j.status = 'taken' AND j.taken_at < ?2)))
+                         OR (j.runner != 'claude-continue'
+                             AND ((j.status = 'queued' AND (j.created_at < ?4
+                                    OR (j.created_at < ?3 AND NOT EXISTS (
+                                      SELECT 1 FROM relays r WHERE r.user_id = j.user_id
+                                        AND r.last_seen >= ?6
+                                        AND instr(',' || r.runners || ',', ',codex,') > 0))))
+                                  OR (j.status = 'taken' AND j.taken_at < ?5)))
+                      ORDER BY j.created_at LIMIT ?7)
          RETURNING *`,
       )
-      .bind(queuedBefore, takenBefore, limit)
+      .bind(
+        cutoffs.queued,
+        cutoffs.taken,
+        cutoffs.codexQueued,
+        cutoffs.codexHeld,
+        cutoffs.codexTaken,
+        cutoffs.online,
+        limit,
+      )
       .all<RelayJob>();
     return results;
   }

@@ -3,7 +3,8 @@
  * relay, when they run one, passes messages into them (src/relay.ts).
  */
 
-import { enqueue, relayState } from "../relay";
+import { enqueue, relayRuns, relayState } from "../relay";
+import type { RelayRow } from "../store";
 import { fire, firePayload, guestPayload, loadRoutine, scenePayload } from "../routine";
 import { sessionLink, type Provider, type StartRequest } from "./types";
 
@@ -21,6 +22,11 @@ export function payloadOf(request: StartRequest): string {
   }
 }
 
+/** Whether the relay passes messages into Claude's sessions: one that runs only Codex does not. */
+function reachOf(row: RelayRow | null) {
+  return row && !relayRuns(row).includes("claude") ? "none" : relayState(row);
+}
+
 export const claude: Provider = {
   kind: "claude",
   // Anthropic allows a routine about 30 starts an hour.
@@ -30,7 +36,7 @@ export const claude: Provider = {
     const routine = await loadRoutine(ctx.store, ctx.config.secretKey, holder);
     return {
       start: typeof routine === "string" ? routine : "set",
-      reach: relayState(await ctx.store.getRelay(holder)),
+      reach: reachOf(await ctx.store.getRelay(holder)),
     };
   },
 
@@ -41,7 +47,7 @@ export const claude: Provider = {
   },
 
   async deliver(ctx, holder, delivery) {
-    const reach = relayState(await ctx.store.getRelay(holder));
+    const reach = reachOf(await ctx.store.getRelay(holder));
     if (reach !== "online") return { ok: false, reach };
     const ask = await enqueue(
       ctx.store,

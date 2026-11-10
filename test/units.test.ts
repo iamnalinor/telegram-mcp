@@ -472,7 +472,7 @@ describe("schema upgrade", () => {
       ensureSchema(new SqliteD1Proxy(db).asD1()),
       ensureSchema(new SqliteD1Proxy(db).asD1()),
     ]);
-    expect(version(db)).toBe("22");
+    expect(version(db)).toBe("23");
     const stored = await new Store(db.asD1()).getMessage(
       { account_id: BOT_ACCOUNT, chat_id: -100 },
       7,
@@ -490,7 +490,7 @@ describe("schema upgrade", () => {
       DROP TABLE agent_configs; DROP TABLE agent_sessions;
       UPDATE meta SET value = '19' WHERE key = 'schema_version';`);
     await ensureSchema(new SqliteD1Proxy(db).asD1());
-    expect(version(db)).toBe("22");
+    expect(version(db)).toBe("23");
     db.raw.exec(`INSERT INTO users (user_id, created_at, active_provider) VALUES (1, 1, 'openai');
       INSERT INTO agent_configs (user_id, provider, config_enc, updated_at, hook) VALUES (1, 'openai', 'x', 1, 'h');
       INSERT INTO agent_sessions (id, user_id, provider, kind, created_at) VALUES ('oa_1', 1, 'openai', 'chat', 1);`);
@@ -507,7 +507,7 @@ describe("schema upgrade", () => {
       ALTER TABLE agent_sessions DROP COLUMN origin;
       UPDATE meta SET value = '21' WHERE key = 'schema_version';`);
     await ensureSchema(new SqliteD1Proxy(db).asD1());
-    expect(version(db)).toBe("22");
+    expect(version(db)).toBe("23");
     db.raw
       .exec(`INSERT INTO agent_sessions (id, user_id, provider, kind, created_at, signin, token_version, origin)
       VALUES ('oa_1', 1, 'openai', 'task', 1, 's', 0, 'other');`);
@@ -520,6 +520,27 @@ describe("schema upgrade", () => {
     ]);
   });
 
+  it("gives a v22 database the relay's runners and each job's", async () => {
+    const { SqliteD1 } = await import("./sqlite-d1");
+    const { ensureSchema } = await import("../src/schema");
+    const db = new SqliteD1();
+    await ensureSchema(db.asD1());
+    db.raw.exec(`ALTER TABLE relays DROP COLUMN runners;
+      ALTER TABLE relay_jobs DROP COLUMN runner; ALTER TABLE relay_jobs DROP COLUMN params;
+      INSERT INTO relay_jobs (id, user_id, target_session, body, origin, status, created_at)
+      VALUES ('ask_old', 1, 'session_x', 'b', 'user', 'queued', 1);
+      UPDATE meta SET value = '22' WHERE key = 'schema_version';`);
+    await ensureSchema(new SqliteD1Proxy(db).asD1());
+    expect(version(db)).toBe("23");
+    expect(db.raw.query("SELECT runner, params FROM relay_jobs").get()).toEqual({
+      runner: "claude-continue",
+      params: null,
+    });
+    db.raw.exec(
+      "INSERT INTO relays (user_id, token_hash, created_at, runners) VALUES (1, 'h', 1, 'codex')",
+    );
+  });
+
   it("gives a v18 database the scene library", async () => {
     const { SqliteD1 } = await import("./sqlite-d1");
     const { ensureSchema } = await import("../src/schema");
@@ -530,7 +551,7 @@ describe("schema upgrade", () => {
       DROP TABLE scene_templates; DROP TABLE scene_template_history;
       UPDATE meta SET value = '18' WHERE key = 'schema_version';`);
     await ensureSchema(new SqliteD1Proxy(db).asD1());
-    expect(version(db)).toBe("22");
+    expect(version(db)).toBe("23");
     db.raw
       .exec(`INSERT INTO scene_templates (owner, name, title, definition, created, updated, used)
       VALUES (1, 'a', 'A', '{}', 1, 1, 1);
@@ -550,7 +571,7 @@ describe("schema upgrade", () => {
     await ensureSchema(db.asD1());
     const columns = db.raw.query("PRAGMA table_info(users)").all() as { name: string }[];
     expect(columns.map((c) => c.name)).toContain("connected_at");
-    expect(version(db)).toBe("22");
+    expect(version(db)).toBe("23");
     expect(
       db.raw.query("SELECT name FROM sqlite_master WHERE name = 'refresh_sessions'").get(),
     ).not.toBeNull();
@@ -567,7 +588,7 @@ describe("schema upgrade", () => {
       ${V2_TABLES}`);
     // Two isolates racing on the upgrade: the table must be rebuilt once, not twice.
     await Promise.all([ensureSchema(db.asD1()), ensureSchema(new SqliteD1Proxy(db).asD1())]);
-    expect(version(db)).toBe("22");
+    expect(version(db)).toBe("23");
 
     const store = new Store(db.asD1());
     const ref = { account_id: BOT_ACCOUNT, chat_id: -100 };

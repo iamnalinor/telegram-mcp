@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 22;
+const SCHEMA_VERSION = 23;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -285,18 +285,23 @@ const SCHEMA: string[] = [
   `CREATE INDEX IF NOT EXISTS fires_by_user ON fires (user_id, at)`,
 
   // The user's relay: a machine signed in to Claude Code that passes messages
-  // into cloud sessions (`claude -p --cloud`). Only a hash of its token is kept.
+  // into cloud sessions (`claude -p --cloud`), and runs Codex if it has it.
+  // Only a hash of its token is kept. `runners`: what it said it can run, comma
+  // separated; null from a relay too old to say, which runs Claude only.
   `CREATE TABLE IF NOT EXISTS relays (
     user_id INTEGER PRIMARY KEY,
     token_hash TEXT NOT NULL UNIQUE,
     created_at INTEGER NOT NULL,
     last_seen INTEGER,
     login_failed_at INTEGER,
-    offline_noticed_at INTEGER
+    offline_noticed_at INTEGER,
+    runners TEXT
   )`,
 
   // Messages for the relay to pass on, and answers to them. `origin` is who
   // stands behind the message by the bot's own records, never by the sender's word.
+  // `runner`: what the relay does with it (src/store.ts `Runner`); `params`:
+  // that runner's settings as JSON (model, sandbox, working directory).
   `CREATE TABLE IF NOT EXISTS relay_jobs (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,
@@ -311,6 +316,8 @@ const SCHEMA: string[] = [
     error TEXT,
     wants_answer INTEGER NOT NULL DEFAULT 0,
     kind TEXT NOT NULL DEFAULT 'reply',
+    runner TEXT NOT NULL DEFAULT 'claude-continue',
+    params TEXT,
     answer TEXT,
     answered_at INTEGER,
     created_at INTEGER NOT NULL,
@@ -566,6 +573,14 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
       "ALTER TABLE agent_sessions ADD COLUMN signin TEXT",
       "ALTER TABLE agent_sessions ADD COLUMN token_version INTEGER",
       "ALTER TABLE agent_sessions ADD COLUMN origin TEXT",
+    ],
+  },
+  {
+    target: 23,
+    alter: [
+      "ALTER TABLE relays ADD COLUMN runners TEXT",
+      "ALTER TABLE relay_jobs ADD COLUMN runner TEXT NOT NULL DEFAULT 'claude-continue'",
+      "ALTER TABLE relay_jobs ADD COLUMN params TEXT",
     ],
   },
 ];

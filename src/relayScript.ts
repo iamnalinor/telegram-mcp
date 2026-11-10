@@ -23,30 +23,47 @@ API="$RELAY_ORIGIN/relay"
 AUTH=$(umask 077 && mktemp)
 trap 'rm -f "$AUTH"' EXIT
 printf 'Authorization: Bearer %s\n' "$RELAY_TOKEN" >"$AUTH"
+
+report() { # job id, JSON
+  printf '%s' "$2" | curl -fsS --max-time 30 -X POST -H @"$AUTH" -H 'Content-Type: application/json' --data-binary @- "$API/jobs/$1" >/dev/null || true
+}
+
+# A message into a Claude Code cloud session.
+claude_continue() { # job JSON
+  local job=$1 id session err out code result
+  id=$(printf '%s' "$job" | jq -r .id)
+  session=$(printf '%s' "$job" | jq -r .session)
+  err=$(mktemp)
+  out=$(printf '%s' "$job" | jq -r .text | timeout 300 claude -p --cloud "$session" --output-format json 2>"$err")
+  code=$?
+  if [ "$code" -eq 0 ] && [ "$(printf '%s' "$out" | jq -rs '.[0].ok // false' 2>/dev/null)" = "true" ]; then
+    result='{"ok":true}'
+  else
+    [ "$code" -eq 124 ] && echo "timed out after 300 s" >>"$err"
+    result=$(jq -cn --arg out "$out" --arg err "$(cat "$err")" --arg code "$code" \
+      '{ok:false, error:((($out|fromjson?).error) // (($err + " " + $out) | if test("^\\s*$") then "claude exited with " + $code else . end))}')
+  fi
+  rm -f "$err"
+  report "$id" "$result"
+  echo "$(date -u +%FT%TZ) $id -> $session: $result"
+}
+
+# What this machine can run: the Worker hands out only those jobs.
+RUNNERS=
+command -v claude >/dev/null 2>&1 && RUNNERS=claude
 START=1
 while true; do
   # The Worker holds the request until a job comes, up to 25 s: no busy polling, no delay.
   ASKED=$(date +%s)
-  JOBS=$(curl -fsS --max-time 40 -H @"$AUTH" "$API/jobs?wait=25&start=$START") || { sleep 20; continue; }
+  JOBS=$(curl -fsS --max-time 40 -H @"$AUTH" "$API/jobs?wait=25&start=$START&runners=$RUNNERS") || { sleep 20; continue; }
   START=0
   COUNT=$(printf '%s' "$JOBS" | jq 'length' 2>/dev/null || echo 0)
   for ((i = 0; i < COUNT; i++)); do
     JOB=$(printf '%s' "$JOBS" | jq -c ".[$i]")
-    ID=$(printf '%s' "$JOB" | jq -r .id)
-    SESSION=$(printf '%s' "$JOB" | jq -r .session)
-    ERR=$(mktemp)
-    OUT=$(printf '%s' "$JOB" | jq -r .text | timeout 300 claude -p --cloud "$SESSION" --output-format json 2>"$ERR")
-    CODE=$?
-    if [ "$CODE" -eq 0 ] && [ "$(printf '%s' "$OUT" | jq -rs '.[0].ok // false' 2>/dev/null)" = "true" ]; then
-      REPORT='{"ok":true}'
-    else
-      [ "$CODE" -eq 124 ] && echo "timed out after 300 s" >>"$ERR"
-      REPORT=$(jq -cn --arg out "$OUT" --arg err "$(cat "$ERR")" --arg code "$CODE" \
-        '{ok:false, error:((($out|fromjson?).error) // (($err + " " + $out) | if test("^\\s*$") then "claude exited with " + $code else . end))}')
-    fi
-    rm -f "$ERR"
-    printf '%s' "$REPORT" | curl -fsS --max-time 30 -X POST -H @"$AUTH" -H 'Content-Type: application/json' --data-binary @- "$API/jobs/$ID" >/dev/null || true
-    echo "$(date -u +%FT%TZ) $ID -> $SESSION: $REPORT"
+    case "$(printf '%s' "$JOB" | jq -r '.runner // "claude-continue"')" in
+      claude-continue) claude_continue "$JOB" ;;
+      *) report "$(printf '%s' "$JOB" | jq -r .id)" '{"ok":false,"error":"this relay cannot run that job; update it"}' ;;
+    esac
   done
   # An empty answer that came at once means the Worker did not wait (signed out, say): slow down.
   if ! [ "$COUNT" -gt 0 ] 2>/dev/null && [ $(($(date +%s) - ASKED)) -lt 5 ]; then sleep 10; fi

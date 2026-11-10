@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
 
 import worker from "../src/index";
 import { Harness } from "./harness";
@@ -451,5 +453,146 @@ describe("after review", () => {
     const t0 = Date.now();
     await h.fetch("/relay/jobs?wait=10", { headers: { authorization: `Bearer ${token}` } });
     expect(Date.now() - t0).toBeLessThan(1000);
+  });
+});
+
+describe("runners", () => {
+  const CX = "cx_0123456789abcdef01234567";
+  const pollWith = async (token: string, runners: string) =>
+    (
+      await h.fetch(`/relay/jobs?runners=${runners}`, {
+        headers: { authorization: `Bearer ${token}` },
+      })
+    ).json<Record<string, unknown>[]>();
+  const started = (token: string, id: string, body: unknown) =>
+    h.fetch(`/relay/jobs/${id}/started`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  /** A Codex session the bot started, its start queued, and a message queued behind it. */
+  function codexQueue() {
+    const now = Math.floor(Date.now() / 1000);
+    h.db.raw.exec(
+      `INSERT INTO agent_sessions (id, user_id, provider, kind, created_at, origin)
+       VALUES ('${CX}', ${ALICE.id}, 'codex', 'chat', ${now}, 'user');
+       INSERT INTO relay_jobs (id, user_id, target_session, body, origin, status, kind, runner, params, created_at)
+       VALUES ('ask_cxstart1', ${ALICE.id}, '${CX}', 'the prompt', 'user', 'queued', 'reply', 'codex-start',
+               '{"model":null,"sandbox":"danger-full-access","cwd":null}', ${now - 2}),
+              ('ask_cxresume', ${ALICE.id}, '${CX}', 'a reply', 'user', 'queued', 'reply', 'codex-resume',
+               '{"model":null,"sandbox":"read-only","cwd":null}', ${now - 1});`,
+    );
+  }
+  const status = (id: string) =>
+    (h.db.raw.query("SELECT status FROM relay_jobs WHERE id = ?").get(id) as { status: string })
+      .status;
+
+  it("an old relay that names none gets Claude's jobs, each saying its runner", async () => {
+    const token = await relayToken();
+    await poll(token);
+    await replyToSession();
+    const [job] = await jobs(token);
+    expect(job).toMatchObject({ runner: "claude-continue", session: `session_${SESSION}` });
+  });
+
+  it("a relay that runs only Codex gets no Claude job: a reply starts a session", async () => {
+    const token = await relayToken();
+    expect(await pollWith(token, "codex")).toEqual([]);
+    await replyToSession();
+    expect(h.fires).toHaveLength(1);
+    expect(await pollWith(token, "codex")).toEqual([]);
+  });
+
+  it("Codex jobs go only to a relay that runs Codex, and a message waits for its start", async () => {
+    const token = await relayToken();
+    codexQueue();
+    expect(await pollWith(token, "claude")).toEqual([]);
+    const [start] = await pollWith(token, "claude,codex");
+    expect(start).toMatchObject({
+      id: "ask_cxstart1",
+      runner: "codex-start",
+      session: CX,
+      text: "the prompt",
+      sandbox: "danger-full-access",
+    });
+    // No thread yet, and the start still runs: the message waits.
+    expect(await pollWith(token, "claude,codex")).toEqual([]);
+    expect((await started(token, "ask_cxstart1", { thread: "not ok!" })).status).toBe(404);
+    expect((await started(token, "ask_cxstart1", { thread: "0199a0b1-thread" })).status).toBe(204);
+    const row = h.db.raw.query("SELECT external_id FROM agent_sessions").get();
+    expect(row).toEqual({ external_id: "0199a0b1-thread" });
+    expect(await pollWith(token, "claude,codex")).toEqual([]);
+
+    expect((await report(token, "ask_cxstart1", { ok: true })).status).toBe(204);
+    const [resume] = await pollWith(token, "claude,codex");
+    expect(resume).toMatchObject({
+      id: "ask_cxresume",
+      runner: "codex-resume",
+      thread: "0199a0b1-thread",
+      sandbox: "read-only",
+    });
+  });
+
+  it("a start tells its thread only for a Codex start it holds", async () => {
+    const token = await relayToken();
+    await poll(token);
+    await replyToSession();
+    const [job] = await jobs(token);
+    expect((await started(token, job.id, { thread: "0199a0b1-thread" })).status).toBe(404);
+  });
+
+  it("a relay signed out of Claude still runs Codex", async () => {
+    const token = await relayToken();
+    await pollWith(token, "claude,codex");
+    h.db.raw.exec("UPDATE relays SET login_failed_at = 1");
+    codexQueue();
+    const [start] = await pollWith(token, "claude,codex");
+    expect(start.id).toBe("ask_cxstart1");
+  });
+
+  it("Codex jobs wait while the relay is there, and fail once it is gone or they ran too long", async () => {
+    const token = await relayToken();
+    await pollWith(token, "claude,codex");
+    codexQueue();
+    const sweep = () => worker.scheduled({ cron: "*/5 * * * *" } as ScheduledController, h.env);
+    h.db.raw.exec("UPDATE relay_jobs SET created_at = created_at - 600");
+    await sweep();
+    expect(status("ask_cxstart1")).toBe("queued");
+    // Gone quiet: Codex's jobs fail within minutes.
+    h.db.raw.exec("UPDATE relays SET last_seen = last_seen - 600");
+    await sweep();
+    expect(status("ask_cxstart1")).toBe("failed");
+    expect(String(h.telegram.called("sendMessage").at(-1)!.params.text)).toContain("gone quiet");
+  });
+
+  it("a Codex job taken runs up to an hour", async () => {
+    const token = await relayToken();
+    codexQueue();
+    await pollWith(token, "codex");
+    const sweep = () => worker.scheduled({ cron: "*/5 * * * *" } as ScheduledController, h.env);
+    h.db.raw.exec("UPDATE relay_jobs SET taken_at = taken_at - 1800 WHERE status = 'taken'");
+    await sweep();
+    expect(status("ask_cxstart1")).toBe("taken");
+    h.db.raw.exec("UPDATE relay_jobs SET taken_at = taken_at - 1900 WHERE status = 'taken'");
+    await sweep();
+    expect(status("ask_cxstart1")).toBe("failed");
+  });
+});
+
+describe("the installer", () => {
+  it("is valid bash, and so is the relay it writes", async () => {
+    const dir = await mkdtemp(`${tmpdir()}/relay-`);
+    const script = await (await h.fetch("/relay/install.sh")).text();
+    const loop = /<<'RELAY'\n([\s\S]*?)\nRELAY\n/.exec(script)![1];
+    for (const [name, text] of [
+      ["install.sh", script],
+      ["relay.sh", loop],
+    ]) {
+      await Bun.write(`${dir}/${name}`, text);
+      const check = Bun.spawnSync(["bash", "-n", `${dir}/${name}`]);
+      expect(check.stderr.toString()).toBe("");
+      expect(check.exitCode).toBe(0);
+    }
+    expect(loop).toContain("runners=$RUNNERS");
   });
 });

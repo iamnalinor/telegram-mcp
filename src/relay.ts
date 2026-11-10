@@ -2,12 +2,16 @@
  * The relay: a machine of the user's, signed in to Claude Code, that passes
  * messages into cloud sessions with `claude -p --cloud <session>`. The bot
  * cannot do that itself — only a full Claude sign-in may write to a session —
- * so it queues the message and the relay picks it up:
+ * so it queues the message and the relay picks it up. The same machine runs
+ * Codex for the user, if it has it: each job names its runner.
  *
- *   GET  /relay/install.sh   the installer, see src/relayScript.ts
- *   GET  /relay/jobs?wait=25 the relay asks for work (Bearer: its token); the
- *                            answer waits up to that long for a job to come
- *   POST /relay/jobs/<id>    …and reports how it went: {ok, error}
+ *   GET  /relay/install.sh           the installer, see src/relayScript.ts
+ *   GET  /relay/jobs?wait=25&runners=claude,codex
+ *                                    the relay asks for work it can run (Bearer:
+ *                                    its token; no runners: Claude only); the
+ *                                    answer waits up to that long for a job
+ *   POST /relay/jobs/<id>/started    a Codex start tells its thread's id: {thread}
+ *   POST /relay/jobs/<id>            …and the relay reports how it went: {ok, error}
  *
  * Without a relay none of this is used and everything works as before: a
  * reply to a session's message starts a new session that carries on.
@@ -22,7 +26,7 @@ import { texts } from "./bot/texts";
 import { nowSeconds, randomId, sha256Base64Url } from "./crypto";
 import type { UserRef } from "./prompts";
 import { installScript } from "./relayScript";
-import { type RelayJob, type RelayRow, type Store } from "./store";
+import { type RelayJob, type RelayRow, type Runner, type Store } from "./store";
 
 /** What becomes of a job the relay could not pass on. */
 export type FallBack = (
@@ -35,6 +39,15 @@ export type FallBack = (
 const ONLINE_SECONDS = 120;
 /** A job nobody took within this long fails, and a reply starts a session instead. */
 const JOB_EXPIRY_SECONDS = 330;
+/**
+ * Codex runs on the machine for long. A job of its fails when no relay that
+ * runs Codex called in for this long; one waiting behind a running start, when
+ * it waited this long all the same; one taken and never reported, after the
+ * relay's own 50 min timeout and then some.
+ */
+const CODEX_QUEUED_SECONDS = 180;
+const CODEX_HELD_SECONDS = 75 * 60;
+const CODEX_TAKEN_SECONDS = 60 * 60;
 /** One at a time: the relay calls in between jobs, so a slow one does not make it look gone. */
 const JOBS_PER_POLL = 1;
 /**
@@ -54,10 +67,35 @@ const ERROR_LIMIT = 500;
 
 export type RelayState = "none" | "online" | "offline" | "login";
 
+/** What a relay can run, as it says when it asks for work. */
+export type RunnerKind = "claude" | "codex";
+
+const RUNS: Record<RunnerKind, readonly Runner[]> = {
+  claude: ["claude-continue"],
+  codex: ["codex-start", "codex-resume"],
+};
+
+/** What the relay said it can run; one too old to say runs Claude only. */
+export function relayRuns(row: RelayRow | null): RunnerKind[] {
+  const said = (row?.runners ?? "claude").split(",");
+  return (Object.keys(RUNS) as RunnerKind[]).filter((kind) => said.includes(kind));
+}
+
+/** The relay's state for Claude's sessions: its sign-in counts. */
 export function relayState(row: RelayRow | null, now = nowSeconds()): RelayState {
   if (!row) return "none";
   if (row.login_failed_at) return "login";
   return row.last_seen !== null && row.last_seen >= now - ONLINE_SECONDS ? "online" : "offline";
+}
+
+/** The relay's state for Codex: Claude's sign-in does not matter, Codex being there does. */
+function codexRelayState(
+  row: RelayRow | null,
+  now = nowSeconds(),
+): "none" | "online" | "offline" | "nocodex" {
+  if (!row) return "none";
+  if (row.last_seen === null || row.last_seen < now - ONLINE_SECONDS) return "offline";
+  return relayRuns(row).includes("codex") ? "online" : "nocodex";
 }
 
 /** Why a message cannot go through now, for the model and whoever asked — or null. */
@@ -113,10 +151,19 @@ export async function handleRelay(
   if (pathname === "/relay/jobs" && request.method === "GET") {
     const params = new URL(request.url).searchParams;
     await store.touchRelay(relay.user_id, now);
+    // What it runs; a relay too old to say runs Claude only, and stays null.
+    const said = params.get("runners");
+    const runners = said === null ? null : said.split(",").filter((kind) => kind in RUNS);
+    const stored = runners === null ? null : runners.join(",");
+    if (stored !== relay.runners) await store.setRelayRunners(relay.user_id, stored);
     // A relay (re)started after a new sign-in: give it a chance before calling it broken again.
     const start = params.get("start") === "1";
     if (start && relay.login_failed_at) await store.setRelayLogin(relay.user_id, null);
-    if (relay.login_failed_at && !start) return Response.json([]);
+    // Signed out of Claude: its jobs wait, and Codex's still go.
+    const kinds = relayRuns({ ...relay, runners: stored }).filter(
+      (kind) => kind !== "claude" || !relay.login_failed_at || start,
+    );
+    if (!kinds.length) return Response.json([]);
     const wait = Math.min(
       MAX_WAIT_SECONDS,
       Math.max(0, Math.floor(Number(params.get("wait")) || 0)),
@@ -125,45 +172,83 @@ export async function handleRelay(
     for (;;) {
       // A relay that hung up (restarted, say) must not be handed a job it will never see.
       if (request.signal?.aborted) return new Response(null, { status: 499 });
-      const jobs = await store.takeJobs(relay.user_id, JOBS_PER_POLL);
+      const jobs = await store.takeJobs(
+        relay.user_id,
+        JOBS_PER_POLL,
+        kinds.flatMap((kind) => RUNS[kind]),
+      );
       if (jobs.length || Date.now() + WAIT_STEP_MS > deadline) {
         return Response.json(
-          jobs.map((job) => ({ id: job.id, session: job.target_session, text: job.body })),
+          jobs.map((job) => ({
+            id: job.id,
+            runner: job.runner,
+            session: job.target_session,
+            text: job.body,
+            ...(job.params ? (JSON.parse(job.params) as object) : {}),
+            ...(job.runner === "codex-resume" ? { thread: job.thread } : {}),
+          })),
         );
       }
       await sleep(WAIT_STEP_MS);
     }
   }
 
-  const id = /^\/relay\/jobs\/(ask_[\w-]{6,32})$/.exec(pathname)?.[1];
+  const path = /^\/relay\/jobs\/(ask_[\w-]{6,32})(\/started)?$/.exec(pathname);
+  const id = path?.[1];
   if (!id || request.method !== "POST") return new Response(null, { status: 404 });
-  let report: { ok?: unknown; error?: unknown };
+  let report: { ok?: unknown; error?: unknown; thread?: unknown };
   try {
-    report = await request.json<{ ok?: unknown; error?: unknown }>();
+    report = await request.json<{ ok?: unknown; error?: unknown; thread?: unknown }>();
   } catch {
     return new Response("expected JSON\n", { status: 400 });
   }
   // A report is a sign of life too: a long job must not make the relay look gone.
   await store.touchRelay(relay.user_id, now);
-  const ok = report.ok === true;
-  const error = ok
-    ? null
-    : (typeof report.error === "string" ? report.error : "unknown error").slice(0, ERROR_LIMIT);
-  const job = await store.finishJob(relay.user_id, id, { ok, error });
+  const thread =
+    typeof report.thread === "string" && THREAD.test(report.thread) ? report.thread : null;
+  if (path?.[2]) {
+    // A Codex start runs on; the thread it made can take messages once it is done.
+    const job = await store.getJob(relay.user_id, id);
+    if (job?.status !== "taken" || job.runner !== "codex-start" || !thread) {
+      return new Response(null, { status: 404 });
+    }
+    await store.setAgentThread(relay.user_id, job.target_session, thread);
+    return new Response(null, { status: 204 });
+  }
+  const job = await store.finishJob(relay.user_id, id, {
+    ok: report.ok === true,
+    error: report.ok === true ? null : errorOf(report.error),
+  });
   if (!job) return new Response(null, { status: 404 });
-  if (ok) {
-    if (relay.login_failed_at) await store.setRelayLogin(relay.user_id, null);
+  // The thread may come only with the report, if the relay could not tell it sooner.
+  if (job.runner === "codex-start" && thread) {
+    await store.setAgentThread(relay.user_id, job.target_session, thread);
+  }
+  if (job.status === "done") {
+    if (job.runner === "claude-continue" && relay.login_failed_at) {
+      await store.setRelayLogin(relay.user_id, null);
+    }
   } else {
-    const login = /session expired|\/login|not logged in|sign in again/i.test(error ?? "");
+    const login =
+      job.runner === "claude-continue" &&
+      /session expired|\/login|not logged in|sign in again/i.test(job.error ?? "");
     if (login && !relay.login_failed_at) {
       await store.setRelayLogin(relay.user_id, now);
       await tellUser(await botFor(), relay.user_id, "login");
     }
-    console.error(JSON.stringify({ event: "relay_job_failed", user: relay.user_id, error }));
+    console.error(
+      JSON.stringify({ event: "relay_job_failed", user: relay.user_id, error: job.error }),
+    );
     await fallBack(await botFor(), job, login ? "login" : "failed");
   }
   return new Response(null, { status: 204 });
 }
+
+/** A Codex thread's id, as the relay tells it. */
+const THREAD = /^[\w-]{8,64}$/;
+
+const errorOf = (error: unknown) =>
+  (typeof error === "string" ? error : "unknown error").slice(0, ERROR_LIMIT);
 
 /**
  * Stale jobs fail; a Telegram reply among them starts a session instead. A
@@ -177,8 +262,14 @@ export async function sweepRelays(
 ): Promise<void> {
   const now = nowSeconds();
   const expired = await store.expireJobs(
-    now - JOB_EXPIRY_SECONDS,
-    now - TAKEN_EXPIRY_SECONDS,
+    {
+      queued: now - JOB_EXPIRY_SECONDS,
+      taken: now - TAKEN_EXPIRY_SECONDS,
+      codexQueued: now - CODEX_QUEUED_SECONDS,
+      codexHeld: now - CODEX_HELD_SECONDS,
+      codexTaken: now - CODEX_TAKEN_SECONDS,
+      online: now - ONLINE_SECONDS,
+    },
     SWEEP_LIMIT,
   );
   if (!expired.length) return;
@@ -197,8 +288,12 @@ export async function sweepRelays(
       continue;
     }
     if (job.kind === "day") restarted.add(day);
-    const state = relayState(await store.getRelay(job.user_id), now);
-    if (!seen.has(job.user_id) && job.taken_at === null) {
+    const row = await store.getRelay(job.user_id);
+    // Claude's sign-in is no matter for Codex.
+    const claude = job.runner === "claude-continue";
+    const state = claude ? relayState(row, now) : codexRelayState(row, now);
+    // A Codex job that waited out a long start, with the relay there, is no sign it went quiet.
+    if (!seen.has(job.user_id) && job.taken_at === null && (claude || state !== "online")) {
       seen.add(job.user_id);
       if (state !== "login" && (await store.noteRelayOffline(job.user_id, now))) {
         await tellUser(ctx, job.user_id, "offline");
