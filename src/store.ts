@@ -2404,6 +2404,7 @@ export class Store {
   /**
    * Move a session from `generation` to the next, if that is still current
    * and it is not revoked. A session with no row yet is at generation 0.
+   * `clientName` fills in a name the session lacks, never replaces one.
    * False when another refresh got there first, or the token is stale.
    */
   async advanceRefresh(
@@ -2411,21 +2412,23 @@ export class Store {
     userId: number,
     generation: number,
     expiresAt: number,
+    clientName: string | null,
   ): Promise<boolean> {
     const row = await this.db
       .prepare(
-        `INSERT INTO refresh_sessions (id, user_id, generation, rotated_at, expires_at)
-         VALUES (?1, ?2, ?3 + 1, ?4, ?5)
+        `INSERT INTO refresh_sessions (id, user_id, generation, rotated_at, expires_at, client_name)
+         VALUES (?1, ?2, ?3 + 1, ?4, ?5, ?6)
          ON CONFLICT (id) DO UPDATE SET
            generation = excluded.generation,
            rotated_at = excluded.rotated_at,
-           expires_at = excluded.expires_at
+           expires_at = excluded.expires_at,
+           client_name = COALESCE(refresh_sessions.client_name, excluded.client_name)
          WHERE refresh_sessions.generation = ?3
            AND refresh_sessions.user_id = ?2
            AND refresh_sessions.revoked = 0
          RETURNING generation`,
       )
-      .bind(id, userId, generation, nowSeconds(), expiresAt)
+      .bind(id, userId, generation, nowSeconds(), expiresAt, clientName)
       .first<{ generation: number }>();
     return row !== null;
   }

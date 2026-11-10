@@ -106,6 +106,33 @@ describe("sign-ins", () => {
     expect(String(screen!.text)).toContain("Unknown client");
   });
 
+  it("names a sign-in recorded without a name from the client that refreshes it", async () => {
+    const claude = await h.connect(ALICE);
+    const local = await h.connect(ALICE, { redirect: "http://127.0.0.1:9/cb", name: "Codex" });
+    // As if issued before sign-ins were recorded: the first refresh creates the rows, unnamed.
+    h.db.raw.exec("DELETE FROM refresh_sessions");
+    expect((await h.refresh(claude.refresh_token, claude.client_id)).status).toBe(200);
+    expect((await h.refresh(local.refresh_token, local.client_id)).status).toBe(200);
+    const { screen } = await press("m:si");
+    const text = String(screen!.text);
+    expect(text).toContain("<b>Claude</b> —");
+    expect(text).toContain("Codex (on this computer)");
+    expect(text).not.toContain("Unknown client");
+  });
+
+  it("does not rename a named sign-in, nor name one from a client id it did not sign", async () => {
+    const claude = await h.connect(ALICE);
+    const local = await h.connect(ALICE, { redirect: "http://127.0.0.1:9/cb", name: "Codex" });
+    const first = await h.refresh(claude.refresh_token, local.client_id);
+    expect(first.status).toBe(200);
+    h.db.raw.exec("UPDATE refresh_sessions SET client_name = NULL WHERE client_name LIKE 'Codex%'");
+    expect((await h.refresh(local.refresh_token, "forged")).status).toBe(200);
+    const names = h.db.raw
+      .query("SELECT client_name FROM refresh_sessions ORDER BY client_name")
+      .all() as { client_name: string | null }[];
+    expect(names.map((r) => r.client_name)).toEqual([null, "Claude"]);
+  });
+
   it("signs out a sign-in from before rotation, whose id is a token hash", async () => {
     const tokens = await h.connect(ALICE);
     const long = "a".repeat(43);
