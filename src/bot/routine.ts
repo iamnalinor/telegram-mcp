@@ -56,14 +56,18 @@ async function testAllowed(
 }
 
 /** Start the routine once, as a check: the session answers "ok" in the private chat. */
-export async function testRoutine(ctx: BotContext, user: User, messageId: number): Promise<void> {
+export async function testRoutine(
+  ctx: BotContext,
+  user: User,
+  messageId: number,
+): Promise<boolean> {
   const t = texts(user.language_code);
   const routine = await loadRoutine(ctx.store, ctx.config.secretKey, user.id);
   if (typeof routine === "string") {
     await say(ctx, user.id, t.fireFailed(routine, undefined, "claude"));
-    return;
+    return false;
   }
-  if (!(await testAllowed(ctx, user, "claude"))) return;
+  if (!(await testAllowed(ctx, user, "claude"))) return false;
   const result = await fire(
     routine.triggerId,
     routine.token,
@@ -72,7 +76,7 @@ export async function testRoutine(ctx: BotContext, user: User, messageId: number
   if (result.ok) {
     await ctx.store.setRoutineTest(user.id, result.sessionId);
     await say(ctx, user.id, t.testStarted(result.sessionUrl));
-    return;
+    return true;
   }
   lastTest.delete(`claude:${user.id}`); // Nothing started: trying again at once is fine.
   console.error(
@@ -80,6 +84,7 @@ export async function testRoutine(ctx: BotContext, user: User, messageId: number
   );
   const minutes = result.retryAfter ? Math.ceil(result.retryAfter / 60) : undefined;
   await say(ctx, user.id, t.fireFailed(result.reason, minutes, "claude"));
+  return false;
 }
 
 /** Start an OpenAI session once, as a check, the same way. True when it started. */
@@ -206,11 +211,14 @@ export async function handleSecret(
     return null;
   }
   const active = (await ctx.store.getUser(user.id))?.active_provider ?? null;
-  if (first) await ctx.store.claimClaudeChat(user.id, user.id);
   await say(ctx, message.chat.id, t.routineSaved(routine!.triggerId, deleted) + after);
-  // Likewise a routine, which its test start then checks.
-  await adopt(ctx, user, "claude", active);
-  await testRoutine(ctx, user, message.message_id);
+  // Likewise a routine, once its test start went through.
+  if (await testRoutine(ctx, user, message.message_id)) {
+    if (first) await ctx.store.claimClaudeChat(user.id, user.id);
+    await adopt(ctx, user, "claude", active);
+  } else if (active !== "claude") {
+    await say(ctx, message.chat.id, t.routineNotActive(first));
+  }
   return null;
 }
 

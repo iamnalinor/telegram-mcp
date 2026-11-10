@@ -561,7 +561,14 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
       "ALTER TABLE scenes ADD COLUMN template_version INTEGER",
     ],
   },
-  { target: 20, alter: ["ALTER TABLE users ADD COLUMN active_provider TEXT"] },
+  {
+    target: 20,
+    alter: [
+      "ALTER TABLE users ADD COLUMN active_provider TEXT",
+      // Whoever had a routine had Claude answer: it still does.
+      "UPDATE users SET active_provider = 'claude' WHERE active_provider IS NULL AND user_id IN (SELECT user_id FROM routines)",
+    ],
+  },
   {
     target: 21,
     alter: [

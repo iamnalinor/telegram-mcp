@@ -394,7 +394,7 @@ describe("a run's own token", () => {
       on_behalf_of: "user",
     });
     expect(asked.isError).toBe(true);
-    expect(asked.text).toContain("other side of the sandbox");
+    expect(asked.text).toContain("different sandbox mode");
     expect(await poll()).toEqual([]);
   });
 
@@ -410,7 +410,7 @@ describe("a run's own token", () => {
       session: `cx_${"0".repeat(24)}`,
     });
     expect(asked.isError).toBe(true);
-    expect(asked.text).toContain("other side of the sandbox");
+    expect(asked.text).toContain("different sandbox mode");
 
     // With no sandbox at all it goes in, as a third party's.
     await press("m:cxs:none");

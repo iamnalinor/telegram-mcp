@@ -1,11 +1,12 @@
 /**
  * Codex: the Codex CLI on the user's own machine, run by their relay
- * (src/relay.ts) installed for Codex, signed in to ChatGPT there. The Worker gives each session its id (`cx_…`) and queues its start;
- * the relay tells the thread's id once Codex has one (`agent_sessions`
- * `external_id`), and messages for the session wait for it, then go in one at
- * a time. Each run reaches the bot's tools with a token of its own, bound to
- * its session and handed out with its job (src/relay.ts): what it says it is
- * counts only as that session.
+ * (src/relay.ts) installed for Codex, signed in to ChatGPT there. The Worker
+ * gives each session its id (`cx_…`) and queues its start; the relay tells
+ * the thread's id once Codex has one (`agent_sessions` `external_id`), and
+ * messages for the session wait for it, then go in one at a time. Each run
+ * reaches the bot's tools with a token of its own, bound to its session and
+ * handed out with its job (src/relay.ts): what it says it is counts only as
+ * that session.
  *
  * Settings, kept encrypted like OpenAI's though none is secret: the model
  * (null: Codex's own default), the sandbox policy and the working directory.

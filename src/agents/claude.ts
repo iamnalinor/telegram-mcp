@@ -3,7 +3,7 @@
  * relay, when they run one, passes messages into them (src/relay.ts).
  */
 
-import { enqueue, relayRuns, relayState } from "../relay";
+import { enqueue, relayState } from "../relay";
 import type { RelayRow } from "../store";
 import { fire, firePayload, guestPayload, loadRoutine, scenePayload } from "../routine";
 import { sessionLink, type Provider, type StartRequest } from "./types";
@@ -24,7 +24,8 @@ export function payloadOf(request: StartRequest): string {
 
 /** Whether the relay passes messages into Claude's sessions: one that runs only Codex does not. */
 function reachOf(row: RelayRow | null) {
-  return row && !relayRuns(row).includes("claude") ? "none" : relayState(row);
+  const state = relayState(row);
+  return state === "noclaude" ? "none" : state;
 }
 
 export const claude: Provider = {

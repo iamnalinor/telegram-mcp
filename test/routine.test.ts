@@ -87,11 +87,16 @@ describe("setting the routine", () => {
     ] as const) {
       h.fireAnswer = () => new Response(body, { status });
       await h.say(dm(ALICE), ALICE, `${TRIGGER} ${TOKEN}`);
-      expect(sentTexts().at(-1)).toContain(expected);
+      // Then that Claude does not answer yet: a routine is taken on once its test start went through.
+      expect(sentTexts().at(-2)).toContain(expected);
+      expect(sentTexts().at(-1)).toContain("Claude does not answer for you yet");
     }
+    expect(h.db.raw.query("SELECT active_provider FROM users").get()).toEqual({
+      active_provider: null,
+    });
     h.fireAnswer = () => new Response("{}", { status: 429, headers: { "retry-after": "600" } });
     await h.say(dm(ALICE), ALICE, `${TRIGGER} ${TOKEN}`);
-    expect(sentTexts().at(-1)).toContain("Try again in 10 min");
+    expect(sentTexts().at(-2)).toContain("Try again in 10 min");
   });
 });
 

@@ -206,9 +206,9 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
           }
           if (routed.via === "unreachable" && routed.reach === "sandbox") {
             throw new ToolError(
-              "Not sent: by the sandbox policy and who stands behind this message, it would run on the other " +
-                "side of the sandbox on the user's machine than that Codex session does, so its thread cannot " +
-                "take it. A message from someone other than the user never goes into an unsandboxed thread.",
+              "Not sent: that Codex session runs in a different sandbox mode than this message would need, " +
+                "by the user's sandbox policy and who stands behind it, so its thread cannot take it. It " +
+                "would take a new session instead.",
             );
           }
           if (!relayed) throw new ToolError("Not sent: that session cannot be reached any more.");

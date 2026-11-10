@@ -2484,6 +2484,7 @@ export class Store {
     userId: number,
     limit: number,
     runners: readonly Runner[],
+    sandboxes: boolean,
   ): Promise<(RelayJob & { thread: string | null })[]> {
     const { results } = await this.db
       .prepare(
@@ -2492,6 +2493,7 @@ export class Store {
                       LEFT JOIN agent_sessions s ON s.id = j.target_session
                       WHERE j.user_id = ?2 AND j.status = 'queued'
                         AND instr(?4, ',' || j.runner || ',') > 0
+                        AND (?5 OR json_extract(j.params, '$.sandbox') IS NOT 'read-only')
                         AND (j.runner != 'codex-resume' OR (s.external_id IS NOT NULL
                           AND NOT EXISTS (SELECT 1 FROM relay_jobs t
                                           WHERE t.user_id = ?2 AND t.status = 'taken'
@@ -2500,8 +2502,23 @@ export class Store {
          RETURNING *, (SELECT external_id FROM agent_sessions
                        WHERE id = relay_jobs.target_session) AS thread`,
       )
-      .bind(nowSeconds(), userId, limit, `,${runners.join(",")},`)
+      .bind(nowSeconds(), userId, limit, `,${runners.join(",")},`, sandboxes ? 1 : 0)
       .all<RelayJob & { thread: string | null }>();
+    return results.sort(
+      (a, b) => a.created_at - b.created_at || (a.message_id ?? 0) - (b.message_id ?? 0),
+    );
+  }
+
+  /** Sandboxed Codex jobs, queued for a relay that cannot sandbox: they fail now, not taken. */
+  async failUnboxedJobs(userId: number, error: string): Promise<RelayJob[]> {
+    const { results } = await this.db
+      .prepare(
+        `UPDATE relay_jobs SET status = 'failed', error = ?
+         WHERE user_id = ? AND status = 'queued' AND runner IN ('codex-start', 'codex-resume')
+           AND json_extract(params, '$.sandbox') = 'read-only' RETURNING *`,
+      )
+      .bind(error, userId)
+      .all<RelayJob>();
     return results.sort(
       (a, b) => a.created_at - b.created_at || (a.message_id ?? 0) - (b.message_id ?? 0),
     );

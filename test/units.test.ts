@@ -488,9 +488,18 @@ describe("schema upgrade", () => {
     await ensureSchema(db.asD1());
     db.raw.exec(`ALTER TABLE users DROP COLUMN active_provider;
       DROP TABLE agent_configs; DROP TABLE agent_sessions;
+      INSERT INTO users (user_id, created_at) VALUES (2, 1), (3, 1);
+      INSERT INTO routines (user_id, trigger_id, token_enc, updated_at) VALUES (2, 'trig_x', 'x', 1);
       UPDATE meta SET value = '19' WHERE key = 'schema_version';`);
     await ensureSchema(new SqliteD1Proxy(db).asD1());
     expect(version(db)).toBe("24");
+    // Whoever had a routine keeps Claude answering; the others choose.
+    expect(
+      db.raw.query("SELECT user_id, active_provider FROM users ORDER BY user_id").all(),
+    ).toEqual([
+      { user_id: 2, active_provider: "claude" },
+      { user_id: 3, active_provider: null },
+    ]);
     db.raw.exec(`INSERT INTO users (user_id, created_at, active_provider) VALUES (1, 1, 'openai');
       INSERT INTO agent_configs (user_id, provider, config_enc, updated_at, hook) VALUES (1, 'openai', 'x', 1, 'h');
       INSERT INTO agent_sessions (id, user_id, provider, kind, created_at) VALUES ('oa_1', 1, 'openai', 'chat', 1);`);

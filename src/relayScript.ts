@@ -27,12 +27,81 @@
  * without it (where it must, it is spelled ${"$"}{…}).
  */
 
+/**
+ * The user's Codex login, into a box and out of it (see the relay below);
+ * apart, so a test can run it. Wants $DIR and $CODEX_AUTH.
+ */
+export const BOX_LOGIN = String.raw`# The user's Codex login, into a box for one run, and out after it. A run that refreshed it spent the
+# refresh token the user's file holds, so the new tokens go back: those alone, merged into that file,
+# and only when they are newer than its own and name the ChatGPT account and email it does. All else
+# there stays the user's — their API key, their auth mode. In the box the relay follows no link: one
+# the run left is replaced, never written through, and never read.
+# What this cannot tell: the tokens' signatures go unchecked here, and the refresh token is opaque, so
+# a run that forged matching claims could still hand the user tokens of another account. And runs at
+# once share one login: each takes a copy, and the first to refresh spends the token the others hold.
+# A lock keeps each copy and merge whole and an older refresh never replaces a newer one, but a run
+# whose own refresh then fails, or the user's Codex refreshing at the same time, is beyond it.
+login_locked() { # command…: runs it holding the relay's lock on the user's Codex login
+  (flock -w 60 8 && "$@") 8>"$DIR/codex-login.lock"
+}
+box_login() { # box directory
+  [ -f "$CODEX_AUTH" ] && [ -d "$1/codex" ] && ! [ -L "$1/codex" ] || return 1
+  login_locked box_login_in "$1/codex/auth.json"
+}
+box_login_in() { # where in the box
+  local tmp
+  # Whatever the last run left by that name goes; a fresh file, the relay's own, is renamed over it.
+  if [ -d "$1" ] && ! [ -L "$1" ]; then rm -rf -- "$1"; fi
+  tmp=$(umask 077 && mktemp "$(dirname "$1")/.auth.XXXXXX") || return 1
+  if ! { cp -- "$CODEX_AUTH" "$tmp" && mv -fT -- "$tmp" "$1"; }; then
+    rm -f -- "$tmp"
+    return 1
+  fi
+}
+box_logout() { # box directory
+  local new="$1/codex/auth.json"
+  if [ -f "$new" ] && ! [ -L "$new" ] && [ -f "$CODEX_AUTH" ]; then
+    login_locked box_login_out "$new"
+  fi
+  rm -rf -- "$new"
+}
+box_login_out() { # the box's login
+  local merged tmp
+  merged=$(head -c 65536 -- "$1" | jq -ce --argjson now "$(date +%s)" --slurpfile user "$CODEX_AUTH" '
+    def claims: try (split(".")[1] | gsub("-"; "+") | gsub("_"; "/") | . + "==="[:(4 - length % 4) % 4]
+      | @base64d | fromjson) catch null;
+    def account: claims | .["https://api.openai.com/auth"].chatgpt_account_id? // null;
+    def email: claims | (.email? // .["https://api.openai.com/profile"].email?) // null;
+    def when: try (sub("\\.[0-9]+"; "") | fromdateiso8601) catch null;
+    $user[0] as $u | .tokens as $t | .last_refresh as $at
+    | select([$t.id_token, $t.access_token, $t.refresh_token] | all(type == "string" and length > 0))
+    | select(($u.tokens.id_token | account) as $a | $a != null and ($t.id_token | account) == $a)
+    | select(($u.tokens.id_token | email) as $e | $e != null and ($t.id_token | email) == $e)
+    | select(($u.tokens.access_token | account) == ($t.access_token | account))
+    | select(($at | when) as $n | $n != null and $n <= $now + 300 and $n > (($u.last_refresh | when) // 0))
+    | $u | .tokens.id_token = $t.id_token | .tokens.access_token = $t.access_token
+    | .tokens.refresh_token = $t.refresh_token | .last_refresh = $at' 2>/dev/null) || return 0
+  tmp=$(umask 077 && mktemp "$CODEX_AUTH.XXXXXX") || return 0
+  if ! { printf '%s\n' "$merged" >"$tmp" && chmod 600 "$tmp" && mv -f -- "$tmp" "$CODEX_AUTH"; }; then
+    rm -f -- "$tmp"
+  fi
+}
+`;
+
 const RELAY_LOOP = String.raw`#!/usr/bin/env bash
 # Passes messages from the Telegram bot into Claude Code cloud sessions, or runs Codex here: the one
 # assistant it was installed for (RELAY_AGENT).
 set -uo pipefail
 API="$RELAY_ORIGIN/relay"
 DIR="$HOME/.tg-relay"
+# The one assistant it serves, from the install: without it, it does not guess.
+case "${"$"}{RELAY_AGENT:-}" in
+  claude | codex) ;;
+  *)
+    echo "RELAY_AGENT is not claude or codex in $DIR/env: run the installer again with RELAY_AGENT=claude or RELAY_AGENT=codex" >&2
+    exit 1
+    ;;
+esac
 # The token goes to curl from a file, never on its command line, where ps would show it.
 AUTH=$(umask 077 && mktemp)
 trap 'rm -f "$AUTH"' EXIT
@@ -70,27 +139,42 @@ claude_continue() { # job JSON
 # sees the system's programs and libraries, TLS roots, DNS, Node and Codex — read-only — and its box;
 # not this user's home, files or keys, the relay's token among them. It keeps the network: Codex
 # needs the model and the bot. It does see the Codex login, which it must use: copied in for the run
-# and taken out after it (a refreshed one goes back, if it is still the same account). Codex keeps
-# its own sandbox inside as a second layer when it works there, read-only; where it does not (no
-# nested user namespaces), bubblewrap is the boundary and Codex runs with full access inside it.
-# A machine where bubblewrap does not work cannot sandbox: the relay says so, and the bot does not
-# hand it sandboxed runs. Nothing falls back to running unsandboxed.
+# and taken out after it (BOX_LOGIN, below). Codex keeps its own sandbox inside as a second layer
+# when it works there, read-only; where it does not (no nested user namespaces), bubblewrap is the
+# boundary and Codex runs with full access inside it. A machine where bubblewrap does not work
+# cannot sandbox: the relay says so, and the bot does not hand it sandboxed runs. Nothing falls back
+# to running unsandboxed. The relay follows no link in a box: the run may have left one there.
 BWRAP=$(command -v bwrap 2>/dev/null || true)
 CODEX_AUTH="${"$"}{CODEX_HOME:-$HOME/.codex}/auth.json"
 # Where Codex and the Node that runs it live, resolved: those are bound in, and nothing else of home.
 CODEX_REAL=$(readlink -f "$(command -v codex 2>/dev/null)" 2>/dev/null || true)
 BOX_BINDS=()
 BOX_PATH=/usr/local/bin:/usr/bin:/bin
+box_bind() { # paths, widest first: binds the first that holds neither this user's home nor $DIR
+  local path
+  for path in "$@"; do
+    [ -n "$path" ] && [ "$path" != / ] || continue
+    case "$HOME/" in "$path"/*) continue ;; esac
+    case "$DIR/" in "$path"/*) continue ;; esac
+    BOX_BINDS+=(--ro-bind "$path" "$path")
+    return
+  done
+}
 case "$CODEX_REAL" in
   *.js)
-    BOX_BINDS+=(--ro-bind "$(dirname "$(dirname "$CODEX_REAL")")" "$(dirname "$(dirname "$CODEX_REAL")")")
+    # Its npm package, which holds the native binary it runs.
+    box_bind "$(dirname "$(dirname "$CODEX_REAL")")" "$(dirname "$CODEX_REAL")" "$CODEX_REAL"
     NODE_REAL=$(readlink -f "$(command -v node 2>/dev/null)" 2>/dev/null || true)
     if [ -n "$NODE_REAL" ]; then
-      BOX_BINDS+=(--ro-bind "$(dirname "$(dirname "$NODE_REAL")")" "$(dirname "$(dirname "$NODE_REAL")")")
+      # Its whole install where that is outside home; in home (~/.local, nvm), the binary alone.
+      case "$NODE_REAL" in
+        "$HOME"/*) box_bind "$NODE_REAL" ;;
+        *) box_bind "$(dirname "$(dirname "$NODE_REAL")")" "$NODE_REAL" ;;
+      esac
       BOX_PATH="$(dirname "$NODE_REAL"):$BOX_PATH"
     fi
     ;;
-  ?*) BOX_BINDS+=(--ro-bind "$CODEX_REAL" "$CODEX_REAL") ;;
+  ?*) box_bind "$CODEX_REAL" ;;
 esac
 # The sandbox_mode Codex keeps inside the box; empty: this machine cannot sandbox (set at the start).
 BOX_INNER=
@@ -113,6 +197,11 @@ boxed() { # box directory, seconds, command…: runs it in the box; the run's to
     /bin/sh -c 'TG_MCP_TOKEN=$(cat /run/tg-relay/token) && export TG_MCP_TOKEN && exec "$@"' sh "$@"
 }
 
+# A box the relay makes: its two directories, and no link where either should be.
+box_make() { # box directory
+  mkdir -p "$1/codex" "$1/work" && ! [ -L "$1" ] && ! [ -L "$1/codex" ] && ! [ -L "$1/work" ]
+}
+
 # Whether this machine can sandbox Codex, and how: a run of Codex in a box, then its own sandbox in it.
 box_check() {
   local box="$DIR/sandbox/check"
@@ -120,9 +209,14 @@ box_check() {
   [ -n "$BWRAP" ] && [ -n "$CODEX_REAL" ] || return 0
   printf 'root:x:0:0::/root:/bin/sh\n%s:x:%s:%s::%s:/bin/sh\n' "$(id -un)" "$(id -u)" "$(id -g)" "$HOME" >"$DIR/sandbox/passwd"
   printf 'root:x:0:\n%s:x:%s:\n' "$(id -gn)" "$(id -g)" >"$DIR/sandbox/group"
-  mkdir -p "$box/codex" "$box/work"
+  box_make "$box" || return 0
   if ! boxed "$box" 60 "$CODEX_REAL" --version </dev/null >/dev/null 2>&1 3</dev/null; then
     echo "bubblewrap does not work here: sandboxed Codex runs are refused (run the installer again to see why)" >&2
+    return 0
+  fi
+  # What it must not see, seen from inside: the relay's token and this user's keys.
+  if ! boxed "$box" 60 /bin/sh -c '! [ -e "$1" ] && ! [ -e "$2" ]' sh "$DIR/env" "$HOME/.ssh" </dev/null >/dev/null 2>&1 3</dev/null; then
+    echo "a box here would show this user's files: sandboxed Codex runs are refused" >&2
     return 0
   fi
   if boxed "$box" 60 "$CODEX_REAL" sandbox -c 'sandbox_mode="read-only"' -- /bin/true </dev/null >/dev/null 2>&1 3</dev/null; then
@@ -132,25 +226,19 @@ box_check() {
   fi
 }
 
-# The user's Codex login, into a box for one run, and out after it. A login the run refreshed goes
-# back to the user, unless theirs changed meanwhile or it is another account: refreshing spends the
-# old one.
-box_login() { # box directory
-  [ -f "$CODEX_AUTH" ] || return 1
-  (umask 077 && cp "$CODEX_AUTH" "$1/codex/auth.json" && cp "$CODEX_AUTH" "$1/login.was")
-}
-box_logout() { # box directory
-  local box=$1 was now
-  if [ -f "$box/codex/auth.json" ] && ! cmp -s "$box/codex/auth.json" "$box/login.was" && cmp -s "$CODEX_AUTH" "$box/login.was"; then
-    was=$(jq -r '.tokens.account_id // empty' "$box/login.was" 2>/dev/null)
-    now=$(jq -r '.tokens.account_id // empty' "$box/codex/auth.json" 2>/dev/null)
-    if [ -n "$was" ] && [ "$was" = "$now" ]; then
-      (umask 077 && cp "$box/codex/auth.json" "$CODEX_AUTH.tg-relay" && mv -f "$CODEX_AUTH.tg-relay" "$CODEX_AUTH")
-    fi
-  fi
-  rm -f "$box/codex/auth.json" "$box/login.was"
+# Boxes no run touched for as long as the bot keeps messages: nothing can carry their threads on.
+BOX_DAYS=14
+box_sweep() {
+  local box
+  find "$DIR/sandbox" -mindepth 1 -maxdepth 1 -type d -name 'cx_*' -mtime +"$BOX_DAYS" -print0 2>/dev/null |
+    while IFS= read -r -d '' box; do
+      # Not while a run of its session holds the lock. What Codex left read-only goes too; neither
+      # chmod nor rm follows a link.
+      (flock -n 9 && { chmod -R u+w -- "$box" 2>/dev/null; rm -rf -- "$box" && rm -f -- "$DIR/locks/${"$"}{box##*/}"; }) 9>"$DIR/locks/${"$"}{box##*/}"
+    done
 }
 
+${BOX_LOGIN}
 # A Codex thread started or carried on here; run in the background, one at a time per session.
 # Sandboxed: in its box, above. Otherwise it has the machine, from the job's directory.
 CODEX_MAX=3
@@ -184,7 +272,6 @@ codex_run() { # job JSON
     box="$DIR/sandbox/$session"
     sandbox=$BOX_INNER
     cwd="$HOME/work"
-    mkdir -p "$box/codex" "$box/work"
   fi
   # The bot hands out one job of a session at a time; the lock is the second guard. Codex does not
   # get its descriptor (9>&-): whatever it leaves running must not hold the session's lock.
@@ -193,6 +280,13 @@ codex_run() { # job JSON
   if ! flock -w 60 9; then
     exec 9>&-
     report "$id" '{"ok":false,"error":"another run of this session still holds its lock on the relay"}'
+    return
+  fi
+  # Touched by each run: box_sweep leaves it for as long as the bot keeps the session's messages.
+  if [ -n "$box" ] && ! { box_make "$box" && touch -- "$box"; }; then
+    rm -f "$lock"
+    exec 9>&-
+    report "$id" '{"ok":false,"error":"the session'"'"'s box on the relay is not a directory of its own"}'
     return
   fi
   if [ -n "$box" ] && ! box_login "$box"; then
@@ -255,14 +349,19 @@ codex_run() { # job JSON
 
 # What this relay runs, its one assistant's jobs: the Worker hands out only those.
 mkdir -p "$DIR/sandbox" "$DIR/locks"
-# An env file from before the choice has none, and served Claude.
-RUNNERS=${"$"}{RELAY_AGENT:-claude}
+RUNNERS=$RELAY_AGENT
 if [ "$RUNNERS" = codex ]; then
   box_check
   [ -n "$BOX_INNER" ] && RUNNERS="$RUNNERS,codex-sandbox"
 fi
 START=1
+SWEPT=0
 while true; do
+  # Old boxes go at the start, and then once a day.
+  if [ "$RELAY_AGENT" = codex ] && [ $(($(date +%s) - SWEPT)) -ge 86400 ]; then
+    box_sweep
+    SWEPT=$(date +%s)
+  fi
   # With as many Codex runs as it takes going, it asks for no more until one ends.
   BUSY=
   [ "$(jobs -rp | wc -l)" -ge "$CODEX_MAX" ] && BUSY=codex

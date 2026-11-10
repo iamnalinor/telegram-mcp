@@ -71,10 +71,10 @@ const TAKEN_EXPIRY_SECONDS = 420;
 const SWEEP_LIMIT = 3;
 const ERROR_LIMIT = 500;
 
-export type RelayState = "none" | "online" | "offline" | "login";
+export type RelayState = "none" | "online" | "offline" | "login" | "noclaude";
 
 /** What a relay can run, as it says when it asks for work. */
-export type RunnerKind = "claude" | "codex";
+type RunnerKind = "claude" | "codex";
 
 const RUNS: Record<RunnerKind, readonly Runner[]> = {
   claude: ["claude-continue"],
@@ -84,22 +84,28 @@ const RUNS: Record<RunnerKind, readonly Runner[]> = {
 /** Said along with the runners by a relay where bubblewrap works: it can run Codex sandboxed. */
 const SANDBOX = "codex-sandbox";
 
+/** Why a sandboxed run fails on a relay that cannot sandbox. */
+const UNBOXED =
+  "this machine cannot sandbox Codex: bubblewrap does not work there (run the installer again to see why)";
+
 /** Whether the relay can run Codex in its sandbox; without it, no sandboxed run starts there. */
 export function relaySandboxes(row: RelayRow | null): boolean {
   return (row?.runners ?? "").split(",").includes(SANDBOX);
 }
 
 /** What the relay said it can run; one too old to say runs Claude only. */
-export function relayRuns(row: RelayRow | null): RunnerKind[] {
+function relayRuns(row: RelayRow | null): RunnerKind[] {
   const said = (row?.runners ?? "claude").split(",");
   return (Object.keys(RUNS) as RunnerKind[]).filter((kind) => said.includes(kind));
 }
 
-/** The relay's state for Claude's sessions: its sign-in counts. */
+/** The relay's state for Claude's sessions: its sign-in counts, and Claude being what it runs. */
 export function relayState(row: RelayRow | null, now = nowSeconds()): RelayState {
   if (!row) return "none";
+  const seen = row.last_seen !== null && row.last_seen >= now - ONLINE_SECONDS;
+  if (!relayRuns(row).includes("claude")) return seen ? "noclaude" : "offline";
   if (row.login_failed_at) return "login";
-  return row.last_seen !== null && row.last_seen >= now - ONLINE_SECONDS ? "online" : "offline";
+  return seen ? "online" : "offline";
 }
 
 export type CodexRelayState = "none" | "online" | "offline" | "nocodex";
@@ -117,6 +123,9 @@ export function relayProblem(state: RelayState, user: UserRef): string | null {
   if (state === "online") return null;
   if (state === "none") {
     return `Messages to other sessions need the relay, and ${name} has not set one up (bot menu → 🤖 Assistant → ⚙️ Claude → 🛰 Relay).`;
+  }
+  if (state === "noclaude") {
+    return `The relay serves Codex, not Claude, so messages cannot reach Claude Code sessions. ${name} has to install it for Claude to change that (bot menu → 🤖 Assistant → ⚙️ Claude → 🛰 Relay) — tell them.`;
   }
   if (state === "login") {
     return `The relay cannot pass messages on: its Claude sign-in expired. ${name} has to sign in again there (\`claude\`, then /login) — tell them.`;
@@ -181,6 +190,15 @@ export async function handleRelay(
       (kind) => (kind !== "claude" || !relay.login_failed_at || start) && !busy.includes(kind),
     );
     if (!kinds.length) return Response.json([]);
+    // Sandboxed Codex runs it cannot box fail here, before it is handed one: the user hears why.
+    const sandboxes = relaySandboxes({ ...relay, runners: stored });
+    if (kinds.includes("codex") && !sandboxes) {
+      const unboxed = await store.failUnboxedJobs(relay.user_id, UNBOXED);
+      if (unboxed.length) {
+        const ctx = await botFor();
+        for (const job of unboxed) await fallBack(ctx, job, "failed");
+      }
+    }
     const wait = Math.min(
       MAX_WAIT_SECONDS,
       Math.max(0, Math.floor(Number(params.get("wait")) || 0)),
@@ -193,6 +211,7 @@ export async function handleRelay(
         relay.user_id,
         JOBS_PER_POLL,
         kinds.flatMap((kind) => RUNS[kind]),
+        sandboxes,
       );
       if (jobs.length || Date.now() + WAIT_STEP_MS > deadline) {
         const ctx = jobs.some((job) => job.runner !== "claude-continue") ? await botFor() : null;
@@ -339,7 +358,11 @@ export async function sweepRelays(
     // A Codex job that waited out a long start, with the relay there, is no sign it went quiet.
     if (!seen.has(job.user_id) && job.taken_at === null && (claude || state !== "online")) {
       seen.add(job.user_id);
-      if (state !== "login" && (await store.noteRelayOffline(job.user_id, now))) {
+      if (
+        state !== "login" &&
+        state !== "noclaude" &&
+        (await store.noteRelayOffline(job.user_id, now))
+      ) {
         await tellUser(ctx, job.user_id, "offline");
       }
     }

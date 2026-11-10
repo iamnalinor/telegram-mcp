@@ -370,6 +370,10 @@ const en = {
     `✅ Saved routine <code>${escapeHtml(trigger)}</code>. The token is kept only encrypted` +
     (deleted ? ", and I deleted your message." : "."),
   routineNotSaved: "⚠️ Could not save the routine. Send it again in a minute.",
+  routineNotActive: (first: boolean) =>
+    "The routine is saved, but its test start did not go through, so Claude does not answer for you yet. " +
+    "Once a test in 🤖 Assistant → Claude works, choose Claude there" +
+    (first ? " and turn answering in this chat on." : "."),
   deleteYourself:
     "⚠️ I could not delete your message: delete it yourself, and if others can see this chat, generate a new token.",
   testTooSoon:
@@ -465,7 +469,7 @@ const en = {
   startsSession: "session",
   startsLimited: (n: number) => `😴 ${n} more held back by the limit in the last 24 hours.`,
   buttonRelay: (state: RelayState) =>
-    `🛰 Relay: ${{ none: "off", online: "online ✅", offline: "offline ⚠️", login: "sign-in needed ⚠️" }[state]}`,
+    `🛰 Relay: ${{ none: "off", online: "online ✅", offline: "offline ⚠️", login: "sign-in needed ⚠️", noclaude: "serves Codex ⚠️" }[state]}`,
   relayScreen: (p: { state: RelayState; seen: string | null }) =>
     "🛰 <b>Relay</b>\n\nClaude Code sessions cannot be written to from outside. A relay can: a machine of yours " +
     "signed in to Claude Code that I hand messages to. With it, a reply to a session's message goes to that " +
@@ -477,6 +481,8 @@ const en = {
       offline: `⚠️ Offline${p.seen ? ` since ${p.seen}` : " — it has not called in yet"}. Check the machine: <code>systemctl status tg-relay</code>.`,
       login:
         "⚠️ Its Claude sign-in expired. On the machine: <code>claude</code>, then /login, then <code>sudo systemctl restart tg-relay</code>.",
+      noclaude:
+        "⚠️ Online, but it serves Codex. A relay serves one assistant: run the install command from this screen to have it serve Claude.",
     }[p.state],
   buttonRelayInstall: "📋 Install command",
   buttonRelayOff: "Turn off",
@@ -891,6 +897,10 @@ const ru: Texts = {
     `✅ Рутина <code>${escapeHtml(trigger)}</code> сохранена. Токен хранится только зашифрованным` +
     (deleted ? ", а твоё сообщение я удалил." : "."),
   routineNotSaved: "⚠️ Не получилось сохранить рутину. Пришли её ещё раз через минуту.",
+  routineNotActive: (first) =>
+    "Рутина сохранена, но тестовый запуск не прошёл, так что Claude тебе пока не отвечает. " +
+    "Когда тест в 🤖 Ассистент → Claude заработает, выбери там Claude" +
+    (first ? " и включи ответы в этом чате." : "."),
   deleteYourself:
     "⚠️ Не получилось удалить твоё сообщение: удали его сам, а если этот чат видят другие — сгенерируй новый токен.",
   testTooSoon:
@@ -981,7 +991,7 @@ const ru: Texts = {
   startsSession: "сессия",
   startsLimited: (n) => `😴 Ещё ${n} — придержаны лимитом за последние 24 часа.`,
   buttonRelay: (state) =>
-    `🛰 Ретранслятор: ${{ none: "выкл", online: "онлайн ✅", offline: "офлайн ⚠️", login: "нужен вход ⚠️" }[state]}`,
+    `🛰 Ретранслятор: ${{ none: "выкл", online: "онлайн ✅", offline: "офлайн ⚠️", login: "нужен вход ⚠️", noclaude: "служит Codex ⚠️" }[state]}`,
   relayScreen: (p) =>
     "🛰 <b>Ретранслятор</b>\n\nВ сессии Claude Code нельзя писать снаружи. Ретранслятор может: это твоя машина " +
     "с залогиненным Claude Code, которой я передаю сообщения. С ним реплай на сообщение сессии уходит в эту " +
@@ -993,6 +1003,8 @@ const ru: Texts = {
       offline: `⚠️ Офлайн${p.seen ? ` с ${p.seen}` : " — ещё ни разу не выходил на связь"}. Проверь машину: <code>systemctl status tg-relay</code>.`,
       login:
         "⚠️ Слетел вход в Claude. На машине: <code>claude</code>, затем /login, затем <code>sudo systemctl restart tg-relay</code>.",
+      noclaude:
+        "⚠️ Онлайн, но служит Codex. Ретранслятор служит одному ассистенту: выполни команду установки с этого экрана, чтобы он служил Claude.",
     }[p.state],
   buttonRelayInstall: "📋 Команда установки",
   buttonRelayOff: "Отключить",
