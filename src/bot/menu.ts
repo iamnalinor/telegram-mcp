@@ -31,7 +31,7 @@
  *                 picks a model and m:cxn:<n|d> sets it, m:cxtest starts a test
  *                 session, m:cxdm toggles the private chat, m:cxdel removes the
  *                 settings (asks first; m:cxdely does it)
- *   m:cl          Claude on tag: the routine, if set
+ *   m:cl          Claude: the routine, if set
  *   m:clh         how to set the routine up; m:clp sends its prompt
  *   m:clset       asks for the trigger and token
  *   m:cltest      starts the routine once, as a check
@@ -274,15 +274,15 @@ async function routineState(ctx: BotContext, userId: number) {
   return { row, state };
 }
 
-const PROVIDER_NAMES = { claude: "Claude", openai: "OpenAI", codex: "Codex" } as const;
+const PROVIDER_NAMES = { claude: "Claude", codex: "Codex", openai: "OpenAI" } as const;
 type Kind = keyof typeof PROVIDER_NAMES;
-const SCREENS: Record<Kind, string> = { claude: "cl", openai: "oa", codex: "cx" };
+const SCREENS: Record<Kind, string> = { claude: "cl", codex: "cx", openai: "oa" };
 
-/** Which provider answers, and a way into each one's own screen. */
+/** Which provider answers, if one was chosen, and a way into each one's own screen; peers, by name. */
 async function assistantScreen(ctx: BotContext, user: User): Promise<Screen> {
   const t = texts(user.language_code);
   const chosen = (await ctx.store.getUser(user.id))?.active_provider;
-  const active: Kind = chosen === "openai" || chosen === "codex" ? chosen : "claude";
+  const active = chosen && Object.hasOwn(PROVIDER_NAMES, chosen) ? (chosen as Kind) : null;
   const openai = await loadOpenAI(ctx.store, ctx.config.secretKey, user.id);
   const codex = await loadCodex(ctx.store, ctx.config.secretKey, user.id);
   const row = (kind: Kind) => [
@@ -297,7 +297,10 @@ async function assistantScreen(ctx: BotContext, user: User): Promise<Screen> {
       codex: typeof codex === "string" ? codex : "set",
     }),
     reply_markup: {
-      inline_keyboard: [row("claude"), row("openai"), row("codex"), [button(t.buttonBack, "main")]],
+      inline_keyboard: [
+        ...(Object.keys(PROVIDER_NAMES) as Kind[]).map(row),
+        [button(t.buttonBack, "main")],
+      ],
     },
   };
 }
@@ -849,7 +852,7 @@ async function render(
     // Answering in the private chat comes on with the first assistant, as when a key is sent.
     if (first && kind === "codex") await ctx.store.claimClaudeChat(user.id, user.id);
     // The others' settings stay: switching back needs nothing sent again.
-    await ctx.store.setActiveProvider(user.id, kind === "claude" ? null : kind);
+    await ctx.store.setActiveProvider(user.id, kind);
     return {
       ...(await assistantScreen(ctx, user)),
       note: t.providerChosen(PROVIDER_NAMES[kind]),
@@ -908,8 +911,10 @@ async function render(
   }
   if (name === "oadely") {
     await ctx.store.deleteAgentConfig(user.id, "openai");
-    // Claude answers again, if it is set up; if nothing is, the chats held go.
-    await ctx.store.setActiveProvider(user.id, null);
+    // Nothing answers until the user chooses another; if none is set up, the chats held go.
+    if ((await ctx.store.getUser(user.id))?.active_provider === "openai") {
+      await ctx.store.setActiveProvider(user.id, null);
+    }
     await dropIfNoAssistant(ctx, user.id);
     return { ...(await openaiScreen(ctx, user)), note: t.routineDeleted };
   }
@@ -922,8 +927,8 @@ async function render(
       chat_id: user.id,
       text:
         name === "rlnew"
-          ? t.relayInstall(`${command} bash`)
-          : t.codexInstall(`${command} RELAY_CODEX=1 bash`),
+          ? t.relayInstall(`${command} RELAY_AGENT=claude bash`)
+          : t.codexInstall(`${command} RELAY_AGENT=codex bash`),
       parse_mode: "HTML",
     });
     return name === "rlnew" ? relayScreen(ctx, user) : codexScreen(ctx, user);
@@ -1018,13 +1023,11 @@ async function render(
   }
   if (name === "cldely") {
     await ctx.store.deleteRoutine(user.id);
-    // With OpenAI or Codex set up, that one answers from now on.
-    if (typeof (await loadOpenAI(ctx.store, ctx.config.secretKey, user.id)) !== "string") {
-      await ctx.store.setActiveProvider(user.id, "openai");
-    } else if (typeof (await loadCodex(ctx.store, ctx.config.secretKey, user.id)) !== "string") {
-      await ctx.store.setActiveProvider(user.id, "codex");
+    // Nothing answers until the user chooses another: switching is theirs to do.
+    if ((await ctx.store.getUser(user.id))?.active_provider === "claude") {
+      await ctx.store.setActiveProvider(user.id, null);
     }
-    // Otherwise nothing would start in them any more, and others could not turn Claude on there.
+    // With none set up, nothing would start in the chats held, and others could not take them.
     await dropIfNoAssistant(ctx, user.id);
     return { ...(await routineScreen(ctx, user)), note: t.routineDeleted };
   }

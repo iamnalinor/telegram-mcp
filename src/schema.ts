@@ -77,7 +77,7 @@ const SCHEMA: string[] = [
     created_at INTEGER NOT NULL,
     -- When the user first signed an assistant in. Only such users may link groups.
     connected_at INTEGER,
-    -- Whose sessions new starts go to (src/agents/route.ts); null: Claude's routine.
+    -- Whose sessions new starts go to (src/agents/route.ts); null: none chosen, nothing starts.
     active_provider TEXT
   )`,
 

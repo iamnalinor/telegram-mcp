@@ -295,7 +295,7 @@ describe("in a group", () => {
     h.fires.length = 0;
 
     const held = await press(BOB, `m:g:${TEAM.id}`);
-    expect(String(held!.text)).toContain("Claude answers here for @alice");
+    expect(String(held!.text)).toContain("The assistant answers here for @alice");
     await press(BOB, `m:gc:${TEAM.id}`);
     const claim = () =>
       (

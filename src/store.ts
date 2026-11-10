@@ -314,7 +314,7 @@ export interface UserRow {
   token_version: number;
   created_at: number;
   connected_at: number | null;
-  /** Whose sessions new starts go to; null: Claude's routine. */
+  /** Whose sessions new starts go to; null: none chosen, and nothing starts. */
   active_provider: string | null;
 }
 
@@ -1901,7 +1901,7 @@ export class Store {
     return results.map((row) => row.user_id);
   }
 
-  /** Null: Claude's routine. */
+  /** Null: none chosen. */
   async setActiveProvider(userId: number, provider: string | null): Promise<void> {
     await this.db
       .prepare("UPDATE users SET active_provider = ? WHERE user_id = ?")

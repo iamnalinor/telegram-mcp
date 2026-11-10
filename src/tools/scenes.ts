@@ -114,9 +114,9 @@ async function accessReport(
   if (chat.kind === "dm") return onlyUser("it is the user's private chat with the bot");
   const claim = await ctx.store.getClaudeChat(chat.chat_id);
   const refused = `other members get "This button is only for ${name}"`;
-  if (!claim) return onlyUser(`Claude on tag is off here, so ${refused}`);
+  if (!claim) return onlyUser(`The user's assistant does not answer here, so ${refused}`);
   if (claim.user_id !== ctx.userId) {
-    return onlyUser(`Claude on tag here belongs to someone else, so ${refused}`);
+    return onlyUser(`The assistant here answers for someone else, so ${refused}`);
   }
   if (!claim.others) return onlyUser(`"Others too" is off here, so ${refused}`);
   const conditional = members.some((rule) => rule.who === "expr")

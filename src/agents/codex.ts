@@ -1,7 +1,6 @@
 /**
  * Codex: the Codex CLI on the user's own machine, run by their relay
- * (src/relay.ts) — the same one that serves Claude, signed in to ChatGPT
- * there. The Worker gives each session its id (`cx_…`) and queues its start;
+ * (src/relay.ts) installed for Codex, signed in to ChatGPT there. The Worker gives each session its id (`cx_…`) and queues its start;
  * the relay tells the thread's id once Codex has one (`agent_sessions`
  * `external_id`), and messages for the session wait for it, then go in one at
  * a time. Each run reaches the bot's tools with a token of its own, bound to

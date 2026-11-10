@@ -25,13 +25,24 @@ import {
 
 const PROVIDERS: Record<ProviderKind, Provider> = { claude, codex, openai };
 
-/** The provider the holder's new sessions start with: the one they chose, Claude by default. */
+/** The provider the holder's new sessions start with: the one they chose; none until they choose. */
 export async function activeProvider(
   ctx: Pick<AgentContext, "store">,
   holder: number,
-): Promise<Provider> {
+): Promise<Provider | null> {
   const chosen = (await ctx.store.getUser(holder))?.active_provider;
-  return (chosen && PROVIDERS[chosen as ProviderKind]) || claude;
+  return chosen && Object.hasOwn(PROVIDERS, chosen) ? PROVIDERS[chosen as ProviderKind] : null;
+}
+
+/**
+ * The holder's starts per hour: their provider's. With none chosen nothing
+ * starts, and messages into sessions they have count against the lowest.
+ */
+export function startsPerHour(active: Provider | null): number {
+  return (
+    active?.limits.startsPerHour ??
+    Math.min(...Object.values(PROVIDERS).map((provider) => provider.limits.startsPerHour))
+  );
 }
 
 export interface Intent {
@@ -45,12 +56,13 @@ export interface Intent {
 export type Routed =
   | { via: "delivered"; session: string; ask: string }
   | { via: "started"; session: string; url: string | null }
+  /** Nothing started; `provider` null: none is chosen. */
   | {
       via: "failed";
       reason: StartFailure;
       retryAfter?: number;
       detail: string;
-      provider: ProviderKind;
+      provider: ProviderKind | null;
     }
   /** The session is there, but its provider did not take the message now; nothing started. */
   | {
@@ -96,6 +108,8 @@ export async function route(ctx: AgentContext, intent: Intent): Promise<Routed> 
     request = { ...request, relay: reach };
   }
   const provider = await activeProvider(ctx, intent.holder);
+  if (!provider)
+    return { via: "failed", reason: "none", detail: "no provider chosen", provider: null };
   const result = await provider.start(ctx, intent.holder, request);
   return result.ok
     ? { via: "started", session: result.sessionId, url: result.sessionUrl }
@@ -118,11 +132,12 @@ export async function reachable(
   session: string | null,
 ): Promise<true | "none" | "broken"> {
   const active = await activeProvider(ctx, holder);
-  const status = await active.status(ctx, holder);
+  const status = active ? await active.status(ctx, holder) : null;
   const own = session ? PROVIDERS[providerOf(session)] : undefined;
   if (own) {
-    const reach = own === active ? status.reach : (await own.status(ctx, holder)).reach;
+    const reach = own === active && status ? status.reach : (await own.status(ctx, holder)).reach;
     if (reach === "online") return true;
   }
+  if (!status) return "none";
   return status.start === "set" ? true : status.start;
 }

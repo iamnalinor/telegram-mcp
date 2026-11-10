@@ -78,7 +78,7 @@ beforeEach(async () => {
   alice = (await h.connect(ALICE)).access_token;
   await press("m:cxnew");
   const command = sentTexts().at(-1)!;
-  expect(command).toContain("RELAY_CODEX=1 bash");
+  expect(command).toContain("RELAY_AGENT=codex bash");
   relay = /RELAY_TOKEN=(relay_[\w-]+)/.exec(command)![1];
   await poll();
   const { response } = await press("m:ap:codex");
@@ -522,13 +522,17 @@ describe("switching providers", () => {
   });
 
   it("needs a relay that runs Codex before Codex can answer", async () => {
+    // A routine set up meanwhile does not take over: switching is the user's.
     await h.say(dm(ALICE), ALICE, `${TRIGGER} ${TOKEN}`);
+    expect(sentTexts()).toContain(
+      "Claude is set up; Codex still answers for you. Switch in 🤖 Assistant.",
+    );
     h.db.raw.exec("UPDATE relays SET runners = 'claude'");
     const { response, screen } = await press("m:ap:codex");
     expect((await response.json<{ text?: string }>()).text).toBe("Set Codex up first.");
-    expect(String(screen!.text)).toContain("✓ Claude");
+    expect(String(screen!.text)).toContain("✓ Codex");
     const codex = await press("m:cx");
-    expect(String(codex.screen!.text)).toContain("without Codex");
+    expect(String(codex.screen!.text)).toContain("it serves Claude");
   });
 
   it("removing Codex leaves the OpenAI sign-in alone and fails what was queued", async () => {

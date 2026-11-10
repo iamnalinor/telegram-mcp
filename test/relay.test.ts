@@ -86,6 +86,7 @@ describe("setting the relay up", () => {
     expect(command).toContain(
       "https://tg.example.workers.dev/relay/install.sh | RELAY_TOKEN=relay_",
     );
+    expect(command).toContain(" RELAY_AGENT=claude bash");
 
     const script = await (await h.fetch("/relay/install.sh")).text();
     expect(script).toStartWith("#!/usr/bin/env bash");
@@ -603,5 +604,29 @@ describe("the installer", () => {
     expect(script).toContain("packages bubblewrap");
     expect(script).toContain("apparmor_parser -r /etc/apparmor.d/bwrap");
     expect(script).not.toMatch(/^\s*codex mcp (?:remove|logout)/m);
+  });
+
+  it("serves the one assistant it is told, and assumes none", async () => {
+    const home = await mkdtemp(`${tmpdir()}/relay-home-`);
+    const script = await (await h.fetch("/relay/install.sh")).text();
+    await Bun.write(`${home}/install.sh`, script);
+    const run = (agent?: string) =>
+      Bun.spawnSync(["bash", `${home}/install.sh`], {
+        env: {
+          PATH: Bun.env.PATH,
+          HOME: home,
+          RELAY_TOKEN: "relay_0123456789abcdefghij",
+          ...(agent ? { RELAY_AGENT: agent } : {}),
+        },
+      });
+    for (const agent of [undefined, "claude,codex", "gpt"]) {
+      const refused = run(agent);
+      expect(refused.exitCode).toBe(1);
+      expect(refused.stderr.toString()).toContain("RELAY_AGENT=claude");
+      expect(refused.stderr.toString()).toContain("RELAY_AGENT=codex");
+    }
+    const loop = /<<'RELAY'\n([\s\S]*?)\nRELAY\n/.exec(script)![1];
+    expect(loop).toContain("RUNNERS=${RELAY_AGENT:-claude}");
+    expect(script).toContain("RELAY_AGENT=%s");
   });
 });

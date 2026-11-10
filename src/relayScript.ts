@@ -2,31 +2,34 @@
  * The relay's installer, served at /relay/install.sh. One command on any
  * always-on Linux machine (an Oracle free VM will do):
  *
- *   curl -fsSL https://<worker>/relay/install.sh | RELAY_TOKEN=relay_… bash
+ *   curl -fsSL https://<worker>/relay/install.sh | RELAY_TOKEN=relay_… RELAY_AGENT=claude bash
  *
- * Run again without RELAY_TOKEN, it updates the relay and keeps its token.
- * It installs curl, jq and Claude Code if missing — with RELAY_CODEX=1, the
- * Codex CLI instead (from npm), and bubblewrap for sandboxed runs — writes
+ * A relay serves one assistant, named on the first install — RELAY_AGENT=claude
+ * passes messages into Claude Code cloud sessions, RELAY_AGENT=codex runs the
+ * Codex CLI there — and without one it says so and stops: nothing is assumed.
+ * Run again without RELAY_TOKEN or RELAY_AGENT, it updates the relay and keeps
+ * the ones it has. It installs curl, jq and that assistant if missing — Claude
+ * Code, or Codex (from npm) with bubblewrap for sandboxed runs — writes
  * ~/.tg-relay/relay.sh and a systemd service running it as the current user,
  * and starts it. The relay only asks the Worker for work, so it needs no open
- * port, domain or public address. Claude Code must be signed in once on that
- * machine (`claude`, then /login) — the relay writes to sessions as that
- * account; Codex likewise (`codex login`). Codex needs no sign-in to the bot:
- * each run is handed a token of its own with its job, bound to its session
- * (src/relay.ts), and gets it in an environment variable — never on a command
- * line, never in the log.
+ * port, domain or public address. The assistant must be signed in once on that
+ * machine (`claude`, then /login; or `codex login`): the relay works as that
+ * account. Codex needs no sign-in to the bot: each run is handed a token of its
+ * own with its job, bound to its session (src/relay.ts), and gets it in an
+ * environment variable — never on a command line, never in the log.
  *
- * The relay says which of the two it has — and `codex-sandbox` when
- * bubblewrap works there — and runs each job by its runner: Claude's in turn,
- * Codex's in the background — a few at a time, one per session — while it
- * keeps asking for work, which keeps it online.
+ * The relay says what it runs — and `codex-sandbox` when bubblewrap works
+ * there — and runs each job by its runner: Claude's in turn, Codex's in the
+ * background — a few at a time, one per session — while it keeps asking for
+ * work, which keeps it online.
  *
  * The shell's own `${…}` would clash with the template, so the scripts do
  * without it (where it must, it is spelled ${"$"}{…}).
  */
 
 const RELAY_LOOP = String.raw`#!/usr/bin/env bash
-# Passes messages from the Telegram bot into Claude Code cloud sessions, and runs Codex here.
+# Passes messages from the Telegram bot into Claude Code cloud sessions, or runs Codex here: the one
+# assistant it was installed for (RELAY_AGENT).
 set -uo pipefail
 API="$RELAY_ORIGIN/relay"
 DIR="$HOME/.tg-relay"
@@ -250,12 +253,11 @@ codex_run() { # job JSON
   echo "$(date -u +%FT%TZ) $id -> $session: $result"
 }
 
-# What this machine can run: the Worker hands out only those jobs.
-RUNNERS=
-command -v claude >/dev/null 2>&1 && RUNNERS=claude
+# What this relay runs, its one assistant's jobs: the Worker hands out only those.
 mkdir -p "$DIR/sandbox" "$DIR/locks"
-if [ -n "$CODEX_REAL" ]; then
-  RUNNERS="$RUNNERS,codex"
+# An env file from before the choice has none, and served Claude.
+RUNNERS=${"$"}{RELAY_AGENT:-claude}
+if [ "$RUNNERS" = codex ]; then
   box_check
   [ -n "$BOX_INNER" ] && RUNNERS="$RUNNERS,codex-sandbox"
 fi
@@ -284,21 +286,37 @@ done
 
 export function installScript(origin: string): string {
   return String.raw`#!/usr/bin/env bash
-# Installs the Telegram bot's relay, which passes messages into Claude Code cloud sessions and runs Codex.
+# Installs the Telegram bot's relay, for one assistant: it passes messages into Claude Code cloud
+# sessions (RELAY_AGENT=claude), or runs Codex here (RELAY_AGENT=codex).
 # Everything is inside main, run on the last line: a download cut short runs nothing.
 set -euo pipefail
 main() {
 ORIGIN='${origin.replaceAll("'", "")}'
-# Run again without a token, it updates the relay and keeps the one it has, and whether it runs Codex.
+# Run again without a token or an agent, it updates the relay and keeps the ones it has. An env file
+# from before there was a choice served Claude, or Codex where it says RELAY_CODEX=1.
 if [ -f "$HOME/.tg-relay/env" ]; then
   [ -z "${"$"}{RELAY_TOKEN:-}" ] && RELAY_TOKEN=$(sed -n 's/^RELAY_TOKEN=//p' "$HOME/.tg-relay/env")
-  [ -z "${"$"}{RELAY_CODEX:-}" ] && RELAY_CODEX=$(sed -n 's/^RELAY_CODEX=//p' "$HOME/.tg-relay/env")
+  if [ -z "${"$"}{RELAY_AGENT:-}" ]; then
+    RELAY_AGENT=$(sed -n 's/^RELAY_AGENT=//p' "$HOME/.tg-relay/env")
+    if [ -z "$RELAY_AGENT" ]; then
+      if grep -qx 'RELAY_CODEX=1' "$HOME/.tg-relay/env"; then RELAY_AGENT=codex; else RELAY_AGENT=claude; fi
+    fi
+  fi
 fi
 if [ -z "${"$"}{RELAY_TOKEN:-}" ]; then
-  echo "Run it as: curl -fsSL $ORIGIN/relay/install.sh | RELAY_TOKEN=relay_... bash" >&2
+  echo "Run it as: curl -fsSL $ORIGIN/relay/install.sh | RELAY_TOKEN=relay_... RELAY_AGENT=claude bash" >&2
+  echo "(the bot's menu gives you the command with your token)" >&2
   exit 1
 fi
-CODEX="${"$"}{RELAY_CODEX:-0}"
+# The relay serves one assistant, the one named: nothing is assumed.
+AGENT="${"$"}{RELAY_AGENT:-}"
+if [ "$AGENT" != claude ] && [ "$AGENT" != codex ]; then
+  echo "Say which assistant this relay serves, one of:" >&2
+  echo "  RELAY_AGENT=claude   passes messages into your Claude Code cloud sessions (installs Claude Code)" >&2
+  echo "  RELAY_AGENT=codex    runs the Codex CLI on this machine (installs Codex and bubblewrap)" >&2
+  echo "The install command in the bot's menu has it: copy it from the screen of the one you want." >&2
+  exit 1
+fi
 BOX=
 have() { command -v "$1" >/dev/null 2>&1; }
 packages() { # names…: installs them with the system's package manager, if it knows one
@@ -311,7 +329,7 @@ if ! have curl || ! have jq; then
   packages curl jq || { echo "Install curl and jq, then run this again." >&2; exit 1; }
 fi
 export PATH="$HOME/.local/bin:$PATH"
-if [ "$CODEX" = 1 ]; then
+if [ "$AGENT" = codex ]; then
   if ! have codex; then
     if ! have npm; then
       echo "Codex comes from npm: install Node.js 18 or newer with npm (https://nodejs.org), then run this again." >&2
@@ -337,15 +355,15 @@ elif ! have claude; then
   bash "$CLAUDE_SETUP" </dev/null
   rm -f "$CLAUDE_SETUP"
 fi
-# The service sees only these: where claude, codex and node are, and the usual.
+# The service sees only these: where its assistant and node are, and the usual.
 RUN_PATH=/usr/local/bin:/usr/bin:/bin
-for tool in node codex claude; do
+for tool in node "$AGENT"; do
   if have "$tool"; then RUN_PATH="$(dirname "$(command -v "$tool")"):$RUN_PATH"; fi
 done
 
 DIR="$HOME/.tg-relay"
 mkdir -p "$DIR" && chmod 700 "$DIR"
-printf 'RELAY_TOKEN=%s\nRELAY_ORIGIN=%s\nRELAY_CODEX=%s\n' "$RELAY_TOKEN" "$ORIGIN" "$CODEX" >"$DIR/env"
+printf 'RELAY_TOKEN=%s\nRELAY_ORIGIN=%s\nRELAY_AGENT=%s\n' "$RELAY_TOKEN" "$ORIGIN" "$AGENT" >"$DIR/env"
 chmod 600 "$DIR/env"
 cat >"$DIR/relay.sh" <<'RELAY'
 ${RELAY_LOOP}RELAY
@@ -375,14 +393,14 @@ sudo systemctl restart tg-relay
 
 echo
 echo "The relay is running (logs: journalctl -u tg-relay -f)."
-if have claude; then
+if [ "$AGENT" = claude ]; then
   if ! claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then
     echo "Now sign Claude Code in once: run claude, then /login. Then: sudo systemctl restart tg-relay"
   else
     echo "Claude Code is signed in. After any new /login, run: sudo systemctl restart tg-relay"
   fi
 fi
-if have codex; then
+if [ "$AGENT" = codex ]; then
   # Each run gets a sign-in of its own from the bot, under a name of the relay's: the user's own
   # Codex config is left as it is, a "telegram" server in it included.
   if codex mcp get telegram >/dev/null 2>&1; then

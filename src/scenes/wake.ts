@@ -20,7 +20,7 @@
 
 import type { BotContext } from "../bot/context";
 import { sceneEnvelope } from "../agents/envelopes";
-import { activeProvider, reachable, route } from "../agents/route";
+import { activeProvider, reachable, route, startsPerHour } from "../agents/route";
 import type { Delivery } from "../agents/types";
 import { excerptOf, holderVoice } from "../bot/triggers";
 import { nowSeconds } from "../crypto";
@@ -90,7 +90,7 @@ export async function gateWake(
   };
   // The scene's limit is counted in the same statement that claims the start: wakes at once cannot all pass.
   const claimed = await ctx.store.beginFire(entry, {
-    user: (await activeProvider(ctx, scene.owner)).limits.startsPerHour,
+    user: startsPerHour(await activeProvider(ctx, scene.owner)),
     others: claim?.others_limit ?? 0,
     scene: scene.wake_limit,
   });

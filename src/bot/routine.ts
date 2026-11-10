@@ -60,7 +60,7 @@ export async function testRoutine(ctx: BotContext, user: User, messageId: number
   const t = texts(user.language_code);
   const routine = await loadRoutine(ctx.store, ctx.config.secretKey, user.id);
   if (typeof routine === "string") {
-    await say(ctx, user.id, t.fireFailed(routine));
+    await say(ctx, user.id, t.fireFailed(routine, undefined, "claude"));
     return;
   }
   if (!(await testAllowed(ctx, user, "claude"))) return;
@@ -79,7 +79,7 @@ export async function testRoutine(ctx: BotContext, user: User, messageId: number
     JSON.stringify({ event: "routine_fire_failed", user: user.id, detail: result.detail }),
   );
   const minutes = result.retryAfter ? Math.ceil(result.retryAfter / 60) : undefined;
-  await say(ctx, user.id, t.fireFailed(result.reason, minutes));
+  await say(ctx, user.id, t.fireFailed(result.reason, minutes, "claude"));
 }
 
 /** Start an OpenAI session once, as a check, the same way. True when it started. */
@@ -184,15 +184,14 @@ export async function handleSecret(
       await say(ctx, message.chat.id, t.openaiNotSaved + after);
       return null;
     }
-    const active = (await ctx.store.getUser(user.id))?.active_provider === "openai";
+    const active = (await ctx.store.getUser(user.id))?.active_provider ?? null;
     await say(ctx, message.chat.id, t.openaiSaved(deleted) + after);
-    // Sent to be used: OpenAI answers from now on, until the user switches back — once the key
-    // has started a session. A key that does not must not take over from an assistant that works.
+    // OpenAI answers from now on if nothing else does — once the key has started a session. Another
+    // that answers already stays: switching is the user's, in the menu.
     if (await testOpenAI(ctx, user, message.message_id)) {
-      if (!active) await ctx.store.setActiveProvider(user.id, "openai");
       if (first) await ctx.store.claimClaudeChat(user.id, user.id);
-      if (!active) await say(ctx, message.chat.id, t.openaiActive);
-    } else if (!active) {
+      await adopt(ctx, user, "openai", active);
+    } else if (active !== "openai") {
       await say(ctx, message.chat.id, t.openaiNotActive(first));
     }
     return null;
@@ -206,12 +205,34 @@ export async function handleSecret(
     await say(ctx, message.chat.id, t.routineNotSaved + after);
     return null;
   }
-  // Likewise a routine: Claude answers again.
-  if ((await ctx.store.getUser(user.id))?.active_provider) {
-    await ctx.store.setActiveProvider(user.id, null);
-  }
+  const active = (await ctx.store.getUser(user.id))?.active_provider ?? null;
   if (first) await ctx.store.claimClaudeChat(user.id, user.id);
   await say(ctx, message.chat.id, t.routineSaved(routine!.triggerId, deleted) + after);
+  // Likewise a routine, which its test start then checks.
+  await adopt(ctx, user, "claude", active);
   await testRoutine(ctx, user, message.message_id);
   return null;
+}
+
+const NAMES = { claude: "Claude", codex: "Codex", openai: "OpenAI" } as const;
+
+/**
+ * A provider just set up answers if none does yet, and the user hears which
+ * answers now. One answers already: it stays — switching is only ever the
+ * user's, in the menu.
+ */
+async function adopt(
+  ctx: BotContext,
+  user: User,
+  kind: keyof typeof NAMES,
+  active: string | null,
+): Promise<void> {
+  if (active === kind) return;
+  const t = texts(user.language_code);
+  if (active && Object.hasOwn(NAMES, active)) {
+    await say(ctx, user.id, t.providerReady(NAMES[kind], NAMES[active as keyof typeof NAMES]));
+    return;
+  }
+  await ctx.store.setActiveProvider(user.id, kind);
+  await say(ctx, user.id, t.providerActive(NAMES[kind]));
 }

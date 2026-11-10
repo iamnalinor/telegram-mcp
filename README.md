@@ -1,7 +1,7 @@
 # telegram-mcp
 
-A remote MCP server that connects Claude (and ChatGPT, Codex) to you through a Telegram bot. Claude
-can:
+A remote MCP server that connects your AI assistant — Claude, ChatGPT, Codex or any MCP client — to
+you through a Telegram bot. The assistant can:
 
 - **message you** when it finishes or gets stuck ("ping me in Telegram when the build is done"),
 - **send files** it built (reports, archives, screenshots, up to 50 MB) without base64 through the
@@ -10,8 +10,8 @@ can:
 - **read what you send the bot** ("I sent you a file in Telegram, take a look"),
 - **read groups you connect**: search by keywords, find every message where someone tagged the
   bot, follow replies and walk the messages around them for context, work inside forum topics,
-- **answer where the bot is not a member**: tag it in any chat (Telegram's guest mode) and Claude
-  answers there,
+- **answer where the bot is not a member**: tag it in any chat (Telegram's guest mode) and your
+  assistant answers there,
 - **show more than text**: rich messages with tables and collapsible blocks, coloured buttons,
   quizzes, live previews of a long answer, interactive widgets,
 - **read your personal chats**, if you connect the bot to your account ("what did Anna write
@@ -67,8 +67,8 @@ bot's webhook and shows what is left to do:
 
 - `/setdomain` → your bot → `telegram-mcp.<your-subdomain>.workers.dev`. Telegram Login only works on
   this domain.
-- Bot Settings (in BotFather's Mini App) → **Guest Mode** → on, if you want to call Claude from chats
-  the bot is not in (see [Claude on tag](#claude-on-tag)).
+- Bot Settings (in BotFather's Mini App) → **Guest Mode** → on, if you want to call your assistant from
+  chats the bot is not in (see [Answering from Telegram](#answering-from-telegram)).
 - `/setprivacy` → your bot → **Disable**, if the bot should see every message in groups. With
   privacy on it only sees commands, @mentions and replies to it (an admin bot sees everything
   either way). Telegram applies the change only to groups the bot joins afterwards, so re-add it to
@@ -136,9 +136,9 @@ is.
   an admin, otherwise unless the group hides join and leave messages), and re-checks membership at
   least hourly before reading a group anyway.
 - **Forum topics** are kept apart: messages carry their topic, `list_chats` names the topics, and
-  Claude can read or post within one.
+  the assistant can read or post within one.
 - **Replies**: when someone replies to a message, the bot keeps the original too (even one older than
-  the bot), so "@bot what about this?" under a message shows Claude both.
+  the bot), so "@bot what about this?" under a message shows the assistant both.
 
 Bot commands: `/start` opens the menu (groups, connecting a group, personal chats, how it works,
 your Telegram ID). `/connect` in a group, `/groups` and `/disconnect` (signs out every assistant
@@ -147,17 +147,17 @@ connected with your account) work too; only `/start` is listed in Telegram's com
 ## Personal chats
 
 Telegram lets a user connect a bot to their own account (Telegram Business → Chatbots). The bot then
-receives the user's private chats with other people, and Claude can read and search them like any
-other chat.
+receives the user's private chats with other people, and your assistant can read and search them like
+any other chat.
 
 1. In [@BotFather](https://t.me/BotFather): your bot → Bot Settings → **Secretary Mode** → on
    (called Business Mode before). Once per bot.
 2. Each user who wants it, in Telegram: Settings → Telegram Business → **Chatbots** → add the bot.
    There they choose which chats it gets (all except some, or only some) and what it may do.
 
-**What Claude may do is exactly what you allowed there**, checked on every call:
+**What your assistant may do is exactly what you allowed there**, checked on every call:
 
-| Permission in Telegram | What it lets Claude do                                                 |
+| Permission in Telegram | What it lets the assistant do                                          |
 | ---------------------- | ---------------------------------------------------------------------- |
 | (connected at all)     | read and search the chats you gave it                                  |
 | Reply to messages      | `send_as_user` (text and files), `edit_as_user`                        |
@@ -165,13 +165,13 @@ other chat.
 | Delete sent messages   | `delete_as_user`: messages it sent (never yours or the other person's) |
 
 Without a permission the tool refuses before anything reaches Telegram. Change it in Telegram and
-the next call follows; the bot tells you in its chat what Claude can do whenever it changes.
+the next call follows; the bot tells you in its chat what your assistant can do whenever it changes.
 Telegram also allows writing only within 24 hours of the other person's last message. Buttons,
-`ask_user`, reactions, pins, forwards, albums, locations and polls are not used in personal chats. Claude is told that
+`ask_user`, reactions, pins, forwards, albums, locations and polls are not used in personal chats. The assistant is told that
 anything it sends there goes out as you, and to send only when you ask it to in the conversation.
 
 Acting as you has its own tools, marked destructive, and the bot's tools (`send_message`,
-`edit_message`, …) refuse personal chats. So your client can let Claude message you and your groups
+`edit_message`, …) refuse personal chats. So your client can let the assistant message you and your groups
 freely and still ask you before anything goes out in your name: in Claude Code, allow
 `mcp__Telegram` and add `mcp__Telegram__send_as_user`, `…__edit_as_user`, `…__delete_as_user` and
 `…__mark_read` to `permissions.ask`.
@@ -247,13 +247,13 @@ allowlist.
 | `create_scene`        | A message the bot runs by itself: state, screens, rules; or a dry run      |
 | `get_scene`           | A scene's state, its creator's note and its latest events                  |
 | `update_scene`        | Change a scene's state, fire one of its `act:` rules, or finish it         |
-| `wait_for_scene`      | Wait for the next event a scene logs or wakes Claude with                  |
+| `wait_for_scene`      | Wait for the next event a scene logs or wakes the assistant with           |
 | `list_saved_scenes`   | Your saved scenes: every scene created is saved, to reuse or adapt         |
 | `get_saved_scene`     | A saved scene's definition, or one of its earlier versions                 |
 | `save_scene`          | Save a definition under a name, change a saved one (versioned), rename it  |
 | `delete_saved_scene`  | Delete a saved scene and its earlier versions                              |
 
-Every send returns a `t.me` link Claude can hand you. Buttons are recorded when pressed;
+Every send returns a `t.me` link the assistant can hand you. Buttons are recorded when pressed;
 reactions on the bot's messages are recorded too (in groups, that needs the bot to be an admin).
 
 What Telegram added in Bot API 10 is used where it helps:
@@ -267,21 +267,21 @@ What Telegram added in Bot API 10 is used where it helps:
 - **Widgets**: `send_widget` sends one self-contained HTML document drawn inside the message.
   Telegram shows them only in the private chat with the bot for now. A widget's taps reach the bot
   as queries that must be answered within 15 seconds, so the Worker answers them itself and records
-  each like a button press; Claude reads them (`wait_for_reply` with `after_press`) and changes
+  each like a button press; the assistant reads them (`wait_for_reply` with `after_press`) and changes
   what the widget shows with `set_widget_state`.
 - **Polls**: quizzes with several right answers, a description, revoting, options added by
   members, hidden results, a closing time.
 
 ## Scenes
 
-A scene is a message the bot runs by itself. Claude describes it once — its state, how the
+A scene is a message the bot runs by itself. The assistant describes it once — its state, how the
 message looks, and rules for each press, vote, reply or reaction — and goes. From then on the
 Worker takes every event, changes the state, redraws the message and answers whoever pressed,
-without a session. Claude is woken only where its own rules call `wake()`.
+without a session. The assistant is woken only where its own rules call `wake()`.
 
 On it: a who's-coming list, a checklist, a board for a long task with Pause and Stop, a triage of
-findings that wakes Claude when you press Done, a pinned control panel, tic-tac-toe, a quiz, mafia
-with Claude as host. `scene_guide` hands out these as presets to adapt.
+findings that wakes the assistant when you press Done, a pinned control panel, tic-tac-toe, a quiz, mafia
+with the assistant as host. `scene_guide` hands out these as presets to adapt.
 
 ```json
 {
@@ -305,26 +305,26 @@ with Claude as host. `scene_guide` hands out these as presets to adapt.
 
 The rules are written in a small language of its own (paths, arithmetic, `?:`, a few dozen pure
 functions), parsed once when the scene is created and run with a step budget — never `eval`. Names
-and replies from the chat are shown as text, never as markup, and reach Claude fenced as data.
+and replies from the chat are shown as text, never as markup, and reach the assistant fenced as data.
 
 **Who can press what.** Anyone in the chat can press a button whose rule says `anyone`; `owner`
 rules answer only you. Every press gets an answer: the rule's own, or why not ("not now", "only for
 @you", "out of date" for an old keyboard or forged button data, "not so fast" past 10 events in 10
 seconds per person).
 
-**Waking Claude.** A rule with `wake()` runs only if the wake may happen: it is your press, or the
-chat is a group where you hold Claude on tag with «Others too» on; your routine is set up (or the
-relay is up and knows the session to wake); and the limits allow it — the scene's own wakes an hour
+**Waking the assistant.** A rule with `wake()` runs only if the wake may happen: it is your press,
+or the chat is a group where your assistant answers with «Others too» on; your assistant is set up
+and chosen (or the session to wake can take messages); and the limits allow it — the scene's own wakes an hour
 (10 by default; change it in the menu: chat → 🎬 Scenes) and the starts every tag shares. Otherwise
 the press is refused and nothing changes. The scene's own limit starts afresh if a scene is finished
 and created again; the shared limits do not.
 
 Like a group's sessions of the day, a scene keeps two audiences apart. Your wakes go into the
-session that made the scene, through the relay, or start your routine. Other members' wakes never go
-into that session: the first starts a session of its own for them, and later ones go there through
-the relay (or start the routine again without it). A session that drives its scene with
+session that made the scene, where it can take messages, or start a new one. Other members' wakes never go
+into that session: the first starts a session of its own for them, and later ones go there where it
+can take them (or start another). A session that drives its scene with
 `update_scene` `act` may wake only itself, and is never taken for you. Each wake is a start in the
-chat's log (📜 Starts, in a group where you hold Claude on tag).
+chat's log (📜 Starts, in a group where your assistant answers).
 
 **Cost.** A press that changes something is one Worker request; it reads the scene's row and, for
 each of its live messages, the stored copy, and writes two rows: the scene and the redrawn message's
@@ -337,7 +337,7 @@ long as it is. Scenes end, and their messages lose their buttons, when you lose 
 or `/disconnect`. A vote the scene could not take (too fast, a full state) shows as an error in
 `get_scene`, since nobody sees the answer to a vote.
 
-**Saved scenes.** Every scene Claude creates is saved in your library, as written, under a name
+**Saved scenes.** Every scene an assistant creates is saved in your library, as written, under a name
 from its title (`counter`, `кто-идёт`, `हिंदी-क्विज़`, `counter-2` when the name is taken; `save_as`
 picks one). A definition already saved is not saved twice, nor is one that differs from a saved one
 only in its title or starting state: that is the same scene, started with other values. A later
@@ -363,7 +363,7 @@ Worker's page, or the daily cron.
 Your assistants keep notes about each chat in one Markdown document per chat: `me` for your private
 chat with the bot and things that apply everywhere, and one per group — who is responsible for what,
 the project's repository, the tone, and under `## Trust` who may ask for what. Every assistant you
-connect reads the same memory, so what Claude learns ChatGPT knows too. The `memory` tool works like
+connect reads the same memory, so what one learns the others know too. The `memory` tool works like
 Claude's own memory tool (`view`, `create`, `str_replace`, `insert`, `delete`), with a chat in place
 of a file path.
 
@@ -374,40 +374,51 @@ of a file path.
 - Memory is kept until deleted (not limited to `RETENTION_DAYS`). It goes with your access to a
   group, and when your ID leaves `ALLOWED_USER_IDS`.
 
-## Claude on tag
+## Answering from Telegram
 
-Tag the bot in Telegram and a Claude Code cloud session does the work and answers there. The session
-runs as your [routine](https://claude.ai/code/routines) on your Anthropic account, with the
-connectors and repositories you give that routine; this bot only starts it.
+Write to the bot or tag it, and your assistant does the work and answers in Telegram. Three can
+answer, one at a time; choose it in the bot's menu, **🤖 Assistant**. Nothing answers until you
+have chosen one.
 
-Set it up from the bot's menu, **🤖 Claude on tag**: it walks you through creating the routine,
-sends you the prompt to paste into it, and asks for the routine's API trigger id and token. Send both
-in one message: the bot deletes it, keeps the token encrypted (with a key derived from the bot
-token), and starts a test session that answers "ok". No message containing an Anthropic key is ever
-stored, in any chat.
+- **Claude**: a Claude Code cloud session, run as your [routine](https://claude.ai/code/routines) on
+  your Anthropic account, with the connectors and repositories you give that routine; this bot only
+  starts it. ⚙️ Claude walks you through creating the routine, sends you the prompt to paste into
+  it, and asks for the routine's API trigger id and token.
+- **Codex**: the Codex CLI on a machine of yours, signed in to your ChatGPT plan and run by the
+  relay — see [Codex on your machine](#codex-on-your-machine).
+- **OpenAI**: sessions on OpenAI's Agents API with your API key, which the Worker runs itself. A
+  chat session answers and hands real work to a task session with a machine of its own; ⚙️ OpenAI
+  sets the models and the webhook that tells you when a session fails.
+
+Keys and tokens go in the private chat, in one message: the bot deletes it, keeps the secret
+encrypted (with a key derived from the bot token), and starts a test session that answers "ok". No
+message containing such a key is ever stored, in any chat. Setting one up makes it the one that
+answers if none does yet (an OpenAI key once its test start went through; Codex when you choose it
+with its relay online); switching is always yours, in 🤖 Assistant. The others keep their settings,
+and replies to their sessions' messages still go to them.
 
 What starts a session:
 
-- **Your private chat with the bot** (on once the routine is set; 💬 Here turns it off): every
-  message, forwards too — commands aside, and an answer a waiting `ask_user` picks up. With the
-  relay (below) the day's messages, from 00:00 UTC, go to one session; without it each message
-  starts its own. A message right after a start — a forward, then what to do with it — joins that
+- **Your private chat with the bot** (on once an assistant is set up; 💬 Here turns it off): every
+  message, forwards too — commands aside, and an answer a waiting `ask_user` picks up. Where the
+  session can take messages (Claude's with the relay, below) the day's messages, from 00:00 UTC, go
+  to one session; otherwise each message starts its own. A message right after a start — a forward, then what to do with it — joins that
   session, which reads the messages around its own.
 - **A group**, once you turn it on in the group's screen: a mention of the bot, or a reply to a
   message your assistant sent there. One person per group: whoever turned it on first. If they leave
-  the group, it passes to the next who asks. With the relay, the group's tags of the day go to one
+  the group, it passes to the next who asks. As in the private chat, the group's tags of the day go to one
   session, like in the private chat — yours to one, other members' to another, so the session you
   work in never hears a third party.
 - **Any chat the bot is not in** (guest mode): tag the bot there, or reply to its message. Telegram
   hands the bot that one message and the one it replied to — no history, no members — and lets it
-  post one message per call, which Claude then edits: Claude Code's «✻ Clauding…» at once, the answer when
+  post one message per call, which the session then edits: a placeholder at once, the answer when
   ready. Such a chat is connected like a group: the first call there by someone who may use the bot
-  and has a routine binds the chat to them. From then on their routine answers there, and other
-  people's calls count only if they turn "Others too" on for that chat (🤖 Claude on tag → 🕊 Guest
-  chats: others, their hourly limit, the log of starts, disconnect) — under the same rules and
-  limits as in a group. Calls go to that chat's session of the day (with the relay) or start one;
-  a reply to the bot's message there goes to the chat's latest session. Everything else in that
-  chat is a third party's, and what Claude writes there is seen by everyone in it.
+  and has an assistant set up binds the chat to them. From then on their assistant answers there,
+  and other people's calls count only if they turn "Others too" on for that chat (🤖 Assistant →
+  🕊 Guest chats: others, their hourly limit, the log of starts, disconnect) — under the same rules
+  and limits as in a group. Calls go to that chat's session of the day or start one; a reply to the
+  bot's message there goes to the chat's latest session. Everything else in that chat is a third
+  party's, and what your assistant writes there is seen by everyone in it.
 - **Other members** of that group too, only if you turn on "Others too" — including messages posted
   as a channel or as the group, which always count as someone else's. The session helps them with
   what anyone could do on their own (answers, explanations, web search, talk about the chat). What is
@@ -420,12 +431,14 @@ What starts a session:
 
 Every start goes into the chat's 📜 Starts: who, when, the first words and a link to the session.
 
-**Who does the work.** The routine runs on Sonnet and does the talking: it answers what it can at
+**Who does the work.** Claude's routine runs on Sonnet and does the talking: it answers what it can at
 once and hands real work — research, building something, code — to a subagent on Opus, in the
 background, so the next message is not kept waiting. An agent sends its result itself and names
 itself (`agent`, next to `session`); a reply to that message reaches the session marked as that
-agent's, and the session passes it on. The prompt also tells Claude to write the way the chat does
-— its language, length and tone — rather than as an assistant with a house style.
+agent's, and the session passes it on. OpenAI's chat session hands such work to a task session
+(`start_task`); Codex does it itself, on the machine. The prompt — the same core for all three,
+with a few lines for each — also tells the assistant to write the way the chat does — its language,
+length and tone — rather than as an assistant with a house style.
 
 **Tags by another name.** If the bot has more usernames than the one BotFather gave it — a
 secondary one ending in `agent`, `ai`, `app` or `game`, which Telegram lets Premium owners assign to
@@ -436,13 +449,14 @@ Never: commands, edits, answers to the bot's own prompts, a reply that a waiting
 pick up, and — in groups — forwards and messages via inline bots. Each message starts one session at
 most, however often Telegram retries it. The bot reacts 👀 when a new session starts (not when a
 message goes into one already running); sessions answer by replying to it rather than tagging
-anyone. Failures go to your private chat, never to the group. Each start is a billed session that counts toward the
-routine's own limits.
+anyone. Failures go to your private chat, never to the group. Each start is a session billed by
+its provider, and counts toward its limits.
 
 ### Talking to other sessions
 
-Sessions cannot write to one another by themselves: only a full Claude Code sign-in can put a
-message into a cloud session. A **relay** can — any always-on Linux machine of yours (an Oracle free
+Claude Code cloud sessions cannot be written to from outside: only a full Claude Code sign-in can
+put a message into one (OpenAI's sessions take messages from the Worker itself, and Codex's go
+through the relay that runs them). A **relay** can — any always-on Linux machine of yours (an Oracle free
 VM will do) signed in to Claude Code. The bot queues messages; the relay asks for them and the
 Worker holds the request until one comes, up to 25 s, so a message is on its way within a couple of
 seconds — about 3,500 Worker requests a day, a few percent of the free plan. The relay passes each
@@ -452,12 +466,17 @@ Set it up in the menu: 🤖 Assistant → ⚙️ Claude → 🛰 Relay → 📋 
 machine:
 
 ```sh
-curl -fsSL https://<your worker>/relay/install.sh | RELAY_TOKEN=relay_… bash
+curl -fsSL https://<your worker>/relay/install.sh | RELAY_TOKEN=relay_… RELAY_AGENT=claude bash
 ```
 
-It installs curl, jq and Claude Code if missing and runs the relay as a systemd service. Then sign
-Claude Code in there once (`claude`, then `/login`) and `sudo systemctl restart tg-relay`. To update
-the relay later, run the same `curl … | bash` without `RELAY_TOKEN`: it keeps the token it has.
+A relay serves one assistant, named by `RELAY_AGENT` (`claude` or `codex`, below); the installer
+asks for it on the first install rather than assume one, and each screen's command carries its own.
+You have one relay: a new install command turns the old one off. It installs curl, jq and Claude
+Code if missing and runs the relay as a systemd service. Then sign Claude Code in there once
+(`claude`, then `/login`) and `sudo systemctl restart tg-relay`. To update the relay later, run the
+same `curl … | bash` without `RELAY_TOKEN` and `RELAY_AGENT`: it keeps the ones it has (an env file
+from an older installer, which had no choice, means Claude, or Codex where it says
+`RELAY_CODEX=1`).
 
 With the relay:
 
@@ -484,11 +503,11 @@ sign-in expires or it goes quiet, you hear once, and the session that answers in
 
 ### Codex on your machine
 
-The same relay can run the Codex CLI, signed in to your ChatGPT plan, as your assistant: 🤖
-Assistant → ⚙️ Codex → 📋 Install command sends the install command with `RELAY_CODEX=1`, which
-installs Codex from npm (it needs Node.js) instead of Claude Code, and bubblewrap for the sandbox. Then, once, on that machine:
-`codex login` and `sudo systemctl restart tg-relay`. With the relay online and running Codex,
-choose Codex in 🤖 Assistant.
+A relay can run the Codex CLI, signed in to your ChatGPT plan, as your assistant instead: 🤖
+Assistant → ⚙️ Codex → 📋 Install command sends the install command with `RELAY_AGENT=codex`, which
+installs Codex from npm (it needs Node.js) and bubblewrap for the sandbox. Then, once, on that
+machine: `codex login` and `sudo systemctl restart tg-relay`. With the relay online, choose Codex in
+🤖 Assistant.
 
 Codex is not signed in to the bot on that machine. Each job comes with an MCP token of its own,
 bound to its session and valid about as long as the run may last (an hour); the relay hands it to
@@ -499,7 +518,8 @@ own session, so a sandboxed run cannot speak as one of yours. The tokens hang on
 messaged by a caller that no token binds (a Claude session, say) counts that message as a third
 party's.
 
-The relay says what it can run (`claude`, `codex`) and is handed only those jobs. A start runs
+The relay says what it runs (`claude` or `codex`, and `codex-sandbox` where bubblewrap works) and
+is handed only those jobs. A start runs
 `codex exec --json` in the background — three at most at once, one at a time per session — and
 tells the bot the thread's id as soon as Codex prints it; messages for that session (replies, the
 day's messages, `message_session`) wait for it and go in with `codex exec resume`. A start that fails,

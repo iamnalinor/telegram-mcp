@@ -26,7 +26,7 @@
 import { nowSeconds } from "../crypto";
 import { isAllowed } from "../env";
 import { guestEnvelope } from "../agents/envelopes";
-import { activeProvider } from "../agents/route";
+import { activeProvider, startsPerHour } from "../agents/route";
 import { providerOf, type Delivery } from "../agents/types";
 import { redactSecrets } from "../secrets";
 import { GUEST_BASE, type ClaudeChat, type GuestCall, type GuestReply } from "../store";
@@ -188,7 +188,7 @@ export async function onGuestMessage(ctx: BotContext, message: Message): Promise
   };
   const active = await activeProvider(ctx, holder);
   const claimed = await ctx.store.beginFire(entry, {
-    user: active.limits.startsPerHour,
+    user: startsPerHour(active),
     others: claim.others_limit,
   });
   if (claimed === "again") return;
@@ -236,7 +236,7 @@ export async function onGuestMessage(ctx: BotContext, message: Message): Promise
     toOwn ? 0 : now - (now % DAY),
     byOther,
   );
-  const session = latest && (toOwn || providerOf(latest) === active.kind) ? latest : null;
+  const session = latest && (toOwn || providerOf(latest) === active?.kind) ? latest : null;
   const into: Delivery | null = session
     ? {
         session,

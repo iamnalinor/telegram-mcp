@@ -452,6 +452,7 @@ describe("switching providers", () => {
     )![1];
     await h.fetch("/relay/jobs", { headers: { authorization: `Bearer ${relay}` } });
     await h.say(dm(ALICE), ALICE, KEY);
+    await press("m:ap:openai");
     const before = h.openai.length;
     h.fires.length = 0;
 
@@ -470,7 +471,15 @@ describe("switching providers", () => {
 
   it("switches in the menu, keeping the other's settings", async () => {
     let screen = await press("m:as");
-    expect(String(screen!.text)).toContain("✓ Claude");
+    // Nothing is chosen until the user sets one up: no assistant is the default.
+    expect(String(screen!.text)).toContain("Nothing answers yet");
+    expect(String(screen!.text)).not.toContain("✓");
+    const rows = (screen!.reply_markup as { inline_keyboard: Button[][] }).inline_keyboard;
+    expect(rows.slice(0, 3).map((row) => row.map((b) => b.callback_data))).toEqual([
+      ["m:ap:claude", "m:cl"],
+      ["m:ap:codex", "m:cx"],
+      ["m:ap:openai", "m:oa"],
+    ]);
     const response = await h.update({
       callback_query: {
         id: "q",
@@ -481,13 +490,21 @@ describe("switching providers", () => {
     });
     expect((await response.json<{ text?: string }>()).text).toBe("Set OpenAI up first.");
 
+    // The first set up answers; the next, set up after it, waits to be chosen.
     await h.say(dm(ALICE), ALICE, `${TRIGGER} ${TOKEN}`);
+    expect(sentTexts()).toContain("Claude answers for you now (🤖 Assistant to switch).");
     await h.say(dm(ALICE), ALICE, KEY);
+    expect(sentTexts()).toContain(
+      "OpenAI is set up; Claude still answers for you. Switch in 🤖 Assistant.",
+    );
+    screen = await press("m:as");
+    expect(String(screen!.text)).toContain("✓ Claude");
+    await press("m:ap:openai");
     screen = await press("m:as");
     expect(String(screen!.text)).toContain("✓ OpenAI");
     await press("m:ap:claude");
     expect(h.db.raw.query("SELECT active_provider FROM users WHERE user_id = 111").get()).toEqual({
-      active_provider: null,
+      active_provider: "claude",
     });
     expect(h.db.raw.query("SELECT * FROM agent_configs").all()).toHaveLength(1);
 
@@ -502,14 +519,27 @@ describe("switching providers", () => {
     screen = await press("m:oa");
     expect(String(screen!.text)).toContain("Chat: <code>gpt-6-astra</code>");
 
+    // Removing one that does not answer leaves the choice alone.
     await press("m:oadel");
     await press("m:oadely");
     expect(h.db.raw.query("SELECT * FROM agent_configs").get()).toBeNull();
     expect(h.db.raw.query("SELECT active_provider FROM users WHERE user_id = 111").get()).toEqual({
-      active_provider: null,
+      active_provider: "claude",
     });
     // Claude is still set up: the chats it answers in stay.
     expect(h.db.raw.query("SELECT * FROM claude_chats").all()).toHaveLength(1);
+  });
+
+  it("starts nothing while no assistant is chosen, and says so", async () => {
+    await h.say(dm(ALICE), ALICE, `${TRIGGER} ${TOKEN}`);
+    await h.say(dm(ALICE), ALICE, KEY);
+    h.db.raw.exec("UPDATE users SET active_provider = NULL");
+    h.fires.length = 0;
+    const before = starts().length;
+    await h.say(dm(ALICE), ALICE, "hello");
+    expect(h.fires).toHaveLength(0);
+    expect(starts()).toHaveLength(before);
+    expect(sentTexts().at(-1)).toContain("no assistant is chosen");
   });
 
   it("answers with OpenAI alone, and forgets it all when OpenAI goes", async () => {

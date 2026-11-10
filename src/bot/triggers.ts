@@ -30,7 +30,7 @@ import { nowSeconds } from "../crypto";
 import { isAllowed } from "../env";
 import { messageLink } from "../links";
 import { replyEnvelope } from "../agents/envelopes";
-import { activeProvider, route } from "../agents/route";
+import { activeProvider, route, startsPerHour } from "../agents/route";
 import { providerOf, type Delivery } from "../agents/types";
 import { redactSecrets } from "../secrets";
 import { BOT_ACCOUNT, isGuestKey } from "../store";
@@ -108,7 +108,7 @@ export async function maybeStart(
   };
   const active = await activeProvider(ctx, holder);
   const claimed = await ctx.store.beginFire(entry, {
-    user: active.limits.startsPerHour,
+    user: startsPerHour(active),
     others: claim.others_limit,
   });
   if (claimed === "again") return;
@@ -141,7 +141,7 @@ export async function maybeStart(
     }
     const day = await ctx.store.latestSession(holder, [chat.id], now - (now % DAY), byOther);
     // Only a session of the provider the holder answers with now: after a switch, a new one starts.
-    if (day && providerOf(day) === active.kind) into = { session: day, kind: "day" };
+    if (day && providerOf(day) === active?.kind) into = { session: day, kind: "day" };
   }
 
   await launch(ctx, {

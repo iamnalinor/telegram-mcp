@@ -121,6 +121,7 @@ describe("a group's sessions of the day", () => {
     expect(h.fires).toHaveLength(1);
     await h.say(dm(ALICE), ALICE, OPENAI_KEY);
     expect(openaiStarts()).toHaveLength(1);
+    await press("m:ap:openai");
 
     // The Claude session of the day is not passed what OpenAI should answer now.
     await h.say(TEAM, ALICE, `${BOT} and the signup page`);
@@ -342,6 +343,7 @@ describe("guest mode", () => {
     expect(h.fires).toHaveLength(1);
     await h.say(dm(ALICE), ALICE, OPENAI_KEY);
     expect(openaiStarts()).toHaveLength(1);
+    await press("m:ap:openai");
 
     // A reply to the bot's own message there still goes to the Claude session that wrote it.
     await call(ALICE, "shorter please", { reply_to_message: ownMessage });
@@ -370,7 +372,7 @@ describe("guest mode", () => {
       inline_message_id: "inline-1",
     });
     expect(String(h.telegram.called("editMessageText").at(-1)!.params.text)).toContain(
-      "Could not start Claude",
+      "Could not start your assistant",
     );
   });
 });
