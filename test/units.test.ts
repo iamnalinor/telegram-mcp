@@ -334,12 +334,44 @@ describe("extract", () => {
       msg({
         checklist: {
           title: "Hackathon",
-          tasks: [{ text: "Pick one", completion_date: 1 }, { text: "Find a designer" }],
+          tasks: [
+            { id: 1, text: "Pick one", completion_date: 1 },
+            { id: 2, text: "Find a designer" },
+          ],
         },
       }),
       BOT,
     );
     expect(stored.text).toBe("[checklist] Hackathon\n[x] Pick one\n[ ] Find a designer");
+  });
+
+  it("says what a message without text is", () => {
+    const text = (extra: Partial<Message>) => toStored(msg(extra), BOT).text;
+    expect(
+      text({
+        venue: { location: { latitude: 1, longitude: 2 }, title: "Cafe", address: "Main St 1" },
+        location: { latitude: 1, longitude: 2 },
+      }),
+    ).toBe("[venue Cafe, Main St 1]");
+    expect(text({ dice: { emoji: "🎲", value: 4 } })).toBe("[dice 🎲 4]");
+    expect(text({ game: { title: "Snake", description: "Eat apples" } })).toBe(
+      "[game] Snake — Eat apples",
+    );
+    expect(text({ invoice: { title: "Ticket", description: "Row 5" } })).toBe(
+      "[invoice] Ticket — Row 5",
+    );
+    expect(text({ story: { chat: { id: -1, type: "channel", title: "News" }, id: 3 } })).toBe(
+      "[story from News]",
+    );
+    expect(text({ giveaway: { winner_count: 3, prize_description: "a mug" } })).toBe(
+      "[giveaway: 3 winners, a mug]",
+    );
+    expect(text({ paid_media: { star_count: 50 } })).toBe("[paid media, 50 stars]");
+    expect(text({ paid_media: { star_count: 50 }, caption: "behind the scenes" })).toBe(
+      "behind the scenes",
+    );
+    // The pinned text is not repeated: it would read as the pinner's.
+    expect(text({ pinned_message: { message_id: 4, date: 90, chat: group } })).toBe("[pinned #4]");
   });
 
   it("keeps the inline bot and whether the message was posted as the chat", () => {

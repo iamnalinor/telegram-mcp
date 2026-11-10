@@ -72,6 +72,18 @@ interface ChatShared {
   username?: string;
 }
 
+interface ChecklistTask {
+  id: number;
+  text: string;
+  /** Set once the task is done. */
+  completion_date?: number;
+}
+
+interface Checklist {
+  title: string;
+  tasks: ChecklistTask[];
+}
+
 export interface Message {
   message_id: number;
   message_thread_id?: number;
@@ -108,7 +120,29 @@ export interface Message {
   location?: { latitude: number; longitude: number };
   contact?: { phone_number: string; first_name: string; last_name?: string };
   poll?: { question: string; options: { text: string }[] };
-  checklist?: { title: string; tasks: { text: string; completion_date?: number }[] };
+  checklist?: Checklist;
+  /**
+   * Service messages: tasks of a checklist were ticked or unticked, or added.
+   * `checklist_message` is the checklist as it now is (without its own reply).
+   * Telegram has no separate update for checklists; these and edited_message are all there is.
+   * Bots send checklists only for a business account, so no scene can own one.
+   */
+  checklist_tasks_done?: {
+    checklist_message?: Message;
+    marked_as_done_task_ids?: number[];
+    marked_as_not_done_task_ids?: number[];
+  };
+  checklist_tasks_added?: { checklist_message?: Message; tasks: ChecklistTask[] };
+  venue?: { location: { latitude: number; longitude: number }; title: string; address: string };
+  dice?: { emoji: string; value: number };
+  game?: { title: string; description: string };
+  invoice?: { title: string; description: string };
+  /** A forwarded story: only who posted it comes along. */
+  story?: { chat: Chat; id: number };
+  giveaway?: { winner_count: number; prize_description?: string };
+  paid_media?: { star_count: number };
+  /** Service message; an old pinned message comes with date 0 and nothing else. */
+  pinned_message?: Pick<Message, "message_id" | "date" | "chat">;
   chat_shared?: ChatShared;
   forum_topic_created?: { name: string };
   forum_topic_edited?: { name?: string };

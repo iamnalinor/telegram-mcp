@@ -41,14 +41,22 @@ export function richText(value: unknown, join = "\n", depth = 0): string {
       .join(join);
   }
   const node = value as Record<string, unknown>;
+  const credit = richText(node.credit, "", depth + 1);
   return [
     richText(node.label, "", depth + 1),
     richText(node.summary, "", depth + 1),
     richText(node.text, "", depth + 1),
+    // A formula's LaTeX; a custom emoji's plain emoji.
+    typeof node.expression === "string" ? `$${node.expression}$` : "",
+    richText(node.alternative_text, "", depth + 1),
     richText(node.cells, "\n", depth + 1),
     richText(node.items, "\n", depth + 1),
     richText(node.blocks, "\n", depth + 1),
+    // A row of buttons, or one button inline: their labels.
+    richText(node.buttons, " | ", depth + 1),
+    richText(node.button, "", depth + 1),
     richText(node.caption, "", depth + 1),
+    credit && `— ${credit}`,
   ]
     .filter(Boolean)
     .join(join === "" ? "" : " ");
@@ -117,6 +125,7 @@ function fileOf(message: Message): FileInfo | null {
 function describeNonText(message: Message): string {
   if (message.sticker)
     return message.sticker.emoji ? `[sticker ${message.sticker.emoji}]` : "[sticker]";
+  if (message.venue) return `[venue ${message.venue.title}, ${message.venue.address}]`;
   if (message.location) {
     return `[location ${message.location.latitude}, ${message.location.longitude}]`;
   }
@@ -133,6 +142,20 @@ function describeNonText(message: Message): string {
     );
     return [`[checklist] ${message.checklist.title}`, ...tasks].join("\n");
   }
+  if (message.dice) return `[dice ${message.dice.emoji} ${message.dice.value}]`;
+  if (message.game) return `[game] ${message.game.title} — ${message.game.description}`;
+  if (message.invoice) return `[invoice] ${message.invoice.title} — ${message.invoice.description}`;
+  if (message.story) {
+    const chat = message.story.chat;
+    return `[story from ${chat.title ?? (chat.username ? `@${chat.username}` : "a user")}]`;
+  }
+  if (message.giveaway) {
+    const prize = message.giveaway.prize_description;
+    return `[giveaway: ${message.giveaway.winner_count} winners${prize ? `, ${prize}` : ""}]`;
+  }
+  if (message.paid_media) return `[paid media, ${message.paid_media.star_count} stars]`;
+  // Only the id: the pinned text is someone else's words, and would read as the pinner's.
+  if (message.pinned_message) return `[pinned #${message.pinned_message.message_id}]`;
   if (message.forum_topic_created) return `[topic created: ${message.forum_topic_created.name}]`;
   if (message.forum_topic_edited?.name)
     return `[topic renamed: ${message.forum_topic_edited.name}]`;
