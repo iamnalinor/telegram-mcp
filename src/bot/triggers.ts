@@ -20,6 +20,10 @@
  * times an hour; a message posted as a channel or the chat is always someone
  * else's. Each start goes into the chat's log in the menu; failures go to the
  * holder's private chat, never into the chat itself.
+ *
+ * Scenes (src/scenes/wake.ts) keep the same promise: the owner's wakes go to
+ * the session that made the scene, other members' to one of their own, and a
+ * session a scene woke is no chat's session of the day.
  */
 
 import { nowSeconds } from "../crypto";

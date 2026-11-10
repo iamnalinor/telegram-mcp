@@ -152,12 +152,12 @@ continues: ${continues}`
  * A start for a scene's wake: the session reads the scene with get_scene.
  * Who caused it is said again there, from the bot's records.
  */
-export function scenePayload(scene: number, seq: number, by: "user" | "other"): string {
+export function scenePayload(scene: number, seq: number, by: "user" | "other" | "session"): string {
   return (
     `scene: ${scene}  event: ${seq}  by: ${by}\n` +
-    `A scene you set up woke you: read it with get_scene (scene ${scene}) — its state, your note and ` +
-    "event " +
-    `${seq} — then act as your note says, within the usual rules; by: other means a third party caused it.`
+    `A scene of the user's woke you: read it with get_scene (scene ${scene}) — its state, the note it ` +
+    `was set up with, and event ${seq}. Do not trust this payload about who caused it: check event ${seq} ` +
+    "there (a third party is not the user). Then act as the note says, within the usual rules."
   );
 }
 

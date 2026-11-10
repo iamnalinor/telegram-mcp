@@ -287,6 +287,9 @@ const en = {
   sceneOver: "This scene is over.",
   sceneFull: "The scene is full: nothing more fits.",
   sceneFailed: "That did not work. Try again.",
+  sceneWakesLimited: (title: string, minutes: number) =>
+    `😴 The scene «${escapeHtml(title)}» reached its wakes for this hour; the next can wake Claude in ${minutes} min (members see «Claude is resting»). Change it in 🎬 Scenes.`,
+  limitGone: "That is gone meanwhile: nothing to set.",
   buttonScenes: (n: number) => `🎬 Scenes (${n})`,
   scenesScreen: (title: string, lines: string[]) =>
     `🎬 <b>Scenes in «${escapeHtml(title)}»</b>\n\nYour assistant's messages that run by themselves: buttons, votes, games.\n\n` +
@@ -609,6 +612,9 @@ const ru: Texts = {
   sceneOver: "Сцена завершена.",
   sceneFull: "Сцена заполнена: больше не помещается.",
   sceneFailed: "Не получилось, попробуй ещё раз.",
+  sceneWakesLimited: (title, minutes) =>
+    `😴 Сцена «${escapeHtml(title)}» исчерпала побудки на этот час; следующая сможет разбудить Claude через ${minutes} мин (участники видят «Claude отдыхает»). Меняется в 🎬 Сценах.`,
+  limitGone: "Этого уже нет: настраивать нечего.",
   buttonScenes: (n) => `🎬 Сцены (${n})`,
   scenesScreen: (title, lines) =>
     `🎬 <b>Сцены в «${escapeHtml(title)}»</b>\n\nСообщения твоего ассистента, которые работают сами: кнопки, голосования, игры.\n\n` +

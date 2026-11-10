@@ -99,6 +99,8 @@ export interface FireEntry {
   excerpt: string;
   /** An album starts once, whichever of its items comes first. */
   album: string | null;
+  /** A scene's wake: its id, counted against the scene's own hourly limit. */
+  sceneId?: number;
 }
 
 export interface RelayRow {
@@ -390,7 +392,10 @@ export interface SceneRow {
   owner: number;
   /** The owner's name as presses show it ("This button is only for …"), kept so no read is needed. */
   owner_name: string | null;
+  /** The session that set the scene up, or the latest one the owner's wakes started. */
   session_id: string | null;
+  /** The session third parties' wakes go to: never the owner's own. */
+  others_session_id: string | null;
   agent: string | null;
   title: string;
   brief: string | null;
@@ -1803,19 +1808,22 @@ export class Store {
    */
   async beginFire(
     fire: FireEntry,
-    limits: { user: number; others: number },
+    limits: { user: number; others: number; scene?: number },
   ): Promise<"claimed" | "again" | "limit"> {
     const now = nowSeconds();
     const result = await this.db
       .prepare(
-        `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at, from_name, excerpt, album)
-         SELECT ?1, ?2, ?3, ?4, 'pending', ?5, ?9, ?10, ?11
+        `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at, from_name, excerpt, album,
+           scene_id)
+         SELECT ?1, ?2, ?3, ?4, 'pending', ?5, ?9, ?10, ?11, ?12
          WHERE (SELECT COUNT(*) FROM fires WHERE user_id = ?3 AND at >= ?6
                 AND (status IN ('pending', 'started') OR (status = 'relayed' AND by_other = 1))) < ?7
            AND (?4 = 0 OR (SELECT COUNT(*) FROM fires
                 WHERE user_id = ?3 AND at >= ?6 AND chat_id = ?1 AND by_other = 1
                   AND status IN ('pending', 'started', 'relayed')) < ?8)
            AND (?11 IS NULL OR NOT EXISTS (SELECT 1 FROM fires WHERE chat_id = ?1 AND album = ?11))
+           AND (?12 IS NULL OR (SELECT COUNT(*) FROM fires WHERE user_id = ?3 AND scene_id = ?12
+                AND at >= ?6 AND status IN ('pending', 'started', 'relayed')) < ?13)
          ON CONFLICT (chat_id, message_id) DO NOTHING`,
       )
       .bind(
@@ -1830,6 +1838,8 @@ export class Store {
         fire.fromName,
         fire.excerpt,
         fire.album,
+        fire.sceneId ?? null,
+        limits.scene ?? 0,
       )
       .run();
     if ((result.meta.changes ?? 0) > 0) return "claimed";
@@ -1941,7 +1951,7 @@ export class Store {
   async recentStart(chatId: number, messageId: number, since: number): Promise<boolean> {
     const row = await this.db
       .prepare(
-        `SELECT 1 FROM fires WHERE chat_id = ? AND message_id < ? AND at >= ?
+        `SELECT 1 FROM fires WHERE chat_id = ? AND message_id < ? AND message_id > 0 AND at >= ?
          AND status IN ('pending', 'started') LIMIT 1`,
       )
       .bind(chatId, messageId, since)
@@ -1955,6 +1965,8 @@ export class Store {
    * kept apart, so a session the user works in never hears a third party.
    * Only a session started for that audience in these chats counts: a reply
    * passed into someone else's session must not make it theirs for the day.
+   * A session a scene woke was told to read the scene, not the chat: it is no
+   * chat's session of the day.
    */
   async latestSession(
     userId: number,
@@ -1966,9 +1978,9 @@ export class Store {
       .prepare(
         `SELECT f.session_id FROM fires f WHERE f.user_id = ?1 AND f.at >= ?2 AND f.by_other = ?3
          AND f.chat_id IN (${chatIds.map((_, i) => `?${i + 4}`).join(", ")})
-         AND f.status IN ('started', 'relayed') AND f.session_id IS NOT NULL
+         AND f.status IN ('started', 'relayed') AND f.session_id IS NOT NULL AND f.scene_id IS NULL
          AND EXISTS (SELECT 1 FROM fires s WHERE s.user_id = ?1 AND s.session_id = f.session_id
-                     AND s.status = 'started' AND s.by_other = ?3
+                     AND s.status = 'started' AND s.by_other = ?3 AND s.scene_id IS NULL
                      AND s.chat_id IN (${chatIds.map((_, i) => `?${i + 4}`).join(", ")}))
          ORDER BY f.at DESC, f.message_id DESC LIMIT 1`,
       )
@@ -2210,7 +2222,8 @@ export class Store {
   async sessionHeardOthers(userId: number, sessionId: string): Promise<boolean> {
     const row = await this.db
       .prepare(
-        "SELECT 1 FROM relay_jobs WHERE user_id = ? AND target_session = ? AND origin != 'user' LIMIT 1",
+        // A scene's wake from the session's own act is no third party's word.
+        "SELECT 1 FROM relay_jobs WHERE user_id = ? AND target_session = ? AND origin != 'user' AND kind != 'scene' LIMIT 1",
       )
       .bind(userId, sessionId)
       .first();
@@ -2759,15 +2772,32 @@ export class Store {
     return row?.n ?? 0;
   }
 
-  /** Wakes from this scene since `since`, and when the oldest of them was. */
-  async sceneWakes(sceneId: number, since: number): Promise<{ n: number; oldest: number | null }> {
+  /** Wakes from this scene since `since` (its starts), and when the oldest of them was. */
+  async sceneWakes(
+    owner: number,
+    sceneId: number,
+    since: number,
+  ): Promise<{ n: number; oldest: number | null }> {
     const row = await this.db
       .prepare(
-        "SELECT COUNT(*) AS n, MIN(date) AS oldest FROM scene_events WHERE scene_id = ? AND woke = 1 AND date > ?",
+        `SELECT COUNT(*) AS n, MIN(at) AS oldest FROM fires WHERE user_id = ? AND scene_id = ?
+         AND at >= ? AND status IN ('pending', 'started', 'relayed')`,
       )
-      .bind(sceneId, since)
+      .bind(owner, sceneId, since)
       .first<{ n: number; oldest: number | null }>();
     return row ?? { n: 0, oldest: null };
+  }
+
+  /** The oldest start that counts against the others' limit in a chat. */
+  async oldestOthersStart(userId: number, chatId: number, since: number): Promise<number | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT MIN(at) AS at FROM fires WHERE user_id = ? AND chat_id = ? AND by_other = 1
+         AND at >= ? AND status IN ('pending', 'started', 'relayed')`,
+      )
+      .bind(userId, chatId, since)
+      .first<{ at: number | null }>();
+    return row?.at ?? null;
   }
 
   async sceneEventCount(sceneId: number): Promise<number> {
@@ -2778,10 +2808,13 @@ export class Store {
     return row?.n ?? 0;
   }
 
-  /** The session a scene's wakes go to, once a start made one. */
-  async setSceneSession(id: number, sessionId: string): Promise<void> {
+  /**
+   * The session a scene's wakes go to, once a start made one: the owner's
+   * own, or (`others`) the one third parties' wakes go to.
+   */
+  async setSceneSession(id: number, sessionId: string, others: boolean): Promise<void> {
     await this.db
-      .prepare("UPDATE scenes SET session_id = ? WHERE id = ?")
+      .prepare(`UPDATE scenes SET ${others ? "others_session_id" : "session_id"} = ? WHERE id = ?`)
       .bind(sessionId, id)
       .run();
   }

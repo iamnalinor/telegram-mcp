@@ -145,7 +145,8 @@ describe("the access report", () => {
       .run(TEAM.id, ALICE.id);
     const panel = { ...COUNTER, rules: [{ on: "press:add", do: ["wake('add')"] }] };
     expect((await create(panel, { dry_run: true })).text).toContain(
-      "Other members can trigger it too, up to 20 an hour for the chat and 10 an hour for this scene.",
+      "Other members can trigger it too, up to 20 an hour for the chat and 10 an hour for this scene; " +
+        "their wakes go to a session of their own, not this one.",
     );
   });
 });
@@ -189,7 +190,11 @@ describe("reading and driving a scene", () => {
     };
     expect(JSON.parse(state.state)).toMatchObject({ n: 7 });
     const refused = await h.tool(alice, "update_scene", { scene: id, act: { name: "nothing" } });
-    expect(refused).toMatchObject({ isError: true, text: "Refused: Not now." });
+    expect(refused.isError).toBe(true);
+    // The rule's words come fenced, like any Telegram content.
+    expect(refused.text).toMatch(
+      /^Refused\. Telegram content is inside <(tg-[\w-]+)> tags.*\n<\1>\nNot now\.\n<\/\1>$/s,
+    );
   });
 
   it("wait_for_scene returns a logged event", async () => {

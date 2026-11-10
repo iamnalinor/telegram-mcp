@@ -9,7 +9,9 @@ import { z } from "zod";
 
 import { applyEvent, endScene, loaded, mergeState, startScene } from "../bot/scenes";
 import { Fence, formatTime, person } from "../format";
+import type { ChatView } from "../access";
 import { relayState } from "../relay";
+import { loadRoutine } from "../routine";
 import { compile, DefinitionError, wakingRules, type Compiled } from "../scenes/definition";
 import { guide, PRESETS } from "../scenes/guide";
 import type { Value } from "../scenes/lang";
@@ -18,9 +20,9 @@ import { GROUP_NOTE } from "../prompts";
 import type { SceneEventRow, SceneRow } from "../store";
 import {
   agentArg,
-  asBot,
   chatArg,
   mayPost,
+  notPersonal,
   sentLink,
   sessionArg,
   sessionId,
@@ -31,12 +33,14 @@ import {
   where,
   type ToolContext,
 } from "./common";
+import { originOf } from "./sessions";
 
 const ACTIVE_PER_CHAT = 20;
 const EVENTS_SHOWN = 20;
 const WAIT_MAX_SECONDS = 50;
 const WAIT_POLL_MS = 2000;
 const NO_SUCH = "No such scene.";
+const ACT_ARG_BYTES = 2048;
 
 const sceneArg = z.number().int().positive().describe("The scene's id, from create_scene.");
 
@@ -65,10 +69,13 @@ async function ownScene(ctx: ToolContext, id: number): Promise<SceneRow> {
   return row;
 }
 
-/** Who can wake the session through this scene, said plainly, so it does not promise the chat more. */
+/**
+ * Who can wake the session through this scene, said plainly and truly, so
+ * the session does not promise the chat more than the bot will let through.
+ */
 async function accessReport(
   ctx: ToolContext,
-  chatId: number,
+  chat: ChatView,
   scene: Compiled,
   session: string | null,
 ) {
@@ -76,28 +83,41 @@ async function accessReport(
   if (!waking.length) {
     return "Nothing in this scene wakes you: read it with get_scene or wait_for_scene.";
   }
-  const routine = await ctx.store.getRoutine(ctx.userId);
+  const routine = await loadRoutine(ctx.store, ctx.config.secretKey, ctx.userId);
   const relay = relayState(await ctx.store.getRelay(ctx.userId));
-  if (!routine && !(relay === "online" && session)) {
-    return "Nothing can wake you: the user has no routine set up. The scene still runs; read it yourself.";
+  if (typeof routine === "string" && !(relay === "online" && session)) {
+    return routine === "broken"
+      ? "Nothing can wake you: the user's routine can no longer be read (they must send it again). The scene still runs; read it yourself."
+      : "Nothing can wake you: the user has no routine set up. The scene still runs; read it yourself.";
   }
-  const events = [...new Set(waking.map((rule) => rule.on))].join(", ");
-  const claim = await ctx.store.getClaudeChat(chatId);
-  const others = claim?.user_id === ctx.userId && claim.others === 1;
-  const ownerOnly = waking.every((rule) => rule.who === "owner");
-  if (!others || ownerOnly) {
-    const name = ctx.user.username ? `@${ctx.user.username}` : (ctx.user.name ?? "the user");
-    return (
-      `Wakes you: ${events}. In this chat only the user can trigger that` +
-      (ownerOnly
-        ? ": the rules say so."
-        : `: "Others too" is off here, so other members get "This button is only for ${name}".`) +
-      " Do not tell the chat that anyone can press it."
-    );
+  const acts = waking.filter((rule) => rule.on.startsWith("act:"));
+  const members = waking.filter((rule) => !rule.on.startsWith("act:"));
+  const actLine = acts.length
+    ? ` ${[...new Set(acts.map((rule) => rule.on))].join(", ")} wake you only through update_scene act, ` +
+      "from this session (pass it as `session`)."
+    : "";
+  if (!members.length) return `Wakes you:${actLine}`;
+  const events = [...new Set(members.map((rule) => rule.on))].join(", ");
+  const name = ctx.user.username ? `@${ctx.user.username}` : (ctx.user.name ?? "the user");
+  const onlyUser = (why: string) =>
+    `Wakes you: ${events}. In this chat only the user can trigger that: ${why}. Do not tell the ` +
+    `chat that anyone can press it.${actLine}`;
+  if (members.every((rule) => rule.who === "owner")) return onlyUser("the rules say so");
+  if (chat.kind === "dm") return onlyUser("it is the user's private chat with the bot");
+  const claim = await ctx.store.getClaudeChat(chat.chat_id);
+  const refused = `other members get "This button is only for ${name}"`;
+  if (!claim) return onlyUser(`Claude on tag is off here, so ${refused}`);
+  if (claim.user_id !== ctx.userId) {
+    return onlyUser(`Claude on tag here belongs to someone else, so ${refused}`);
   }
+  if (!claim.others) return onlyUser(`"Others too" is off here, so ${refused}`);
+  const conditional = members.some((rule) => rule.who === "expr")
+    ? " where the rule's `who` lets them"
+    : "";
   return (
-    `Wakes you: ${events}. Other members can trigger it too, up to ${claim.others_limit} an hour ` +
-    `for the chat and ${scene.wakeLimit} an hour for this scene.`
+    `Wakes you: ${events}. Other members can trigger it too${conditional}, up to ` +
+    `${claim.others_limit} an hour for the chat and ${scene.wakeLimit} an hour for this scene; their ` +
+    `wakes go to a session of their own, not this one.${actLine}`
   );
 }
 
@@ -170,10 +190,11 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
     async (args) => {
       try {
         const chat = await ctx.access.resolve(args.chat);
-        asBot(chat, "nothing: scenes run only in the bot's own chats");
+        notPersonal(chat, "scenes run only in the bot's own chats.");
+        await mayPost(ctx, chat);
         const { compiled: scene, state } = compiled(args.definition);
         const session = sessionId(args.session);
-        const report = await accessReport(ctx, chat.chat_id, scene, session);
+        const report = await accessReport(ctx, chat, scene, session);
         if (args.dry_run) {
           const shown = render(scene, "main", state, {
             owner: { id: ctx.userId, name: ctx.user.name ?? "owner" },
@@ -186,10 +207,9 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
             `Valid; nothing sent. It would show:\n${shown.plain}\n${labels}\n\n${report}`,
           );
         }
-        await mayPost(ctx, chat);
         if ((await ctx.store.countScenesOf(ctx.userId, chat.chat_id)) >= ACTIVE_PER_CHAT) {
           throw new ToolError(
-            `${where(chat)} has ${ACTIVE_PER_CHAT} active scenes already: finish one (update_scene finish).`,
+            `You have ${ACTIVE_PER_CHAT} active scenes in ${where(chat)} already: finish one (update_scene finish).`,
           );
         }
         const { id, message } = await startScene(ctx, {
@@ -269,6 +289,7 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
           .optional()
           .describe("Fire the rule on act:<name>, as you."),
         finish: z.literal(true).optional().describe("End the scene and remove its buttons."),
+        session: sessionArg,
       }),
       annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     },
@@ -286,6 +307,11 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
           return text("State updated and redrawn.");
         }
         const act = args.act!;
+        if (act.arg !== undefined && JSON.stringify(act.arg).length > ACT_ARG_BYTES) {
+          throw new ToolError(`act's arg is at most ${ACT_ARG_BYTES} bytes of JSON.`);
+        }
+        // Not the user in Telegram: a session, standing for whoever its records say.
+        const caller = sessionId(args.session);
         const answer = await applyEvent(
           ctx,
           row.id,
@@ -296,9 +322,18 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
           },
           undefined,
           "en",
+          { session: caller, origin: await originOf(ctx, caller, undefined) },
         );
-        if (!answer.applied) throw new ToolError(`Refused: ${answer.text ?? "no rule took it"}`);
-        return text(`act:${act.name} applied.${answer.text ? ` It answered: ${answer.text}` : ""}`);
+        // A rule's words may carry members' names and replies: fenced like any Telegram content.
+        const said = answer.text ?? "no rule took it";
+        const fence = new Fence(ctx.user, [said]);
+        if (!answer.applied) {
+          throw new ToolError(`Refused. ${fence.note()}\n${fence.wrap(said)}`);
+        }
+        return text(
+          `act:${act.name} applied.` +
+            (answer.text ? ` It answered: ${fence.note()}\n${fence.wrap(answer.text)}` : ""),
+        );
       } catch (error) {
         return toolError(error, ctx);
       }
@@ -329,6 +364,10 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
             const { lines, contents } = eventsBlock(ctx, events);
             const fence = new Fence(ctx.user, contents);
             return text(`${fence.note()}\n${fence.wrap(lines)}`);
+          }
+          // A finished scene logs nothing more: no point waiting.
+          if ((await ctx.store.getScene(row.id))?.status !== "active") {
+            return text(`Scene ${row.id} is over; nothing after event ${args.after ?? 0}.`);
           }
           if (Date.now() + WAIT_POLL_MS > deadline) {
             return text(

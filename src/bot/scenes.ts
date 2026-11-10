@@ -47,7 +47,7 @@ import {
 import type { BotContext, WebhookReply } from "./context";
 import { toStored } from "./extract";
 import { texts } from "./texts";
-import { deliverWake, gateWake, releaseWake, type WakeGate } from "../scenes/wake";
+import { deliverWake, gateWake, releaseWake, type WakeGate, type WakeSource } from "../scenes/wake";
 
 /**
  * The answer for whoever caused the event: `applied` when a rule ran,
@@ -331,8 +331,10 @@ export async function applyEvent(
   incoming: Omit<SceneEvent, "owner" | "now">,
   press?: Press,
   language?: string | null,
+  /** A session of the owner's acting through update_scene, rather than a person in Telegram. */
+  source?: WakeSource,
 ): Promise<Answer> {
-  const wake: Wake = { gate: null, row: null, used: false };
+  const wake: Wake = { gate: null, row: null, used: false, source };
   try {
     return await attempt(ctx, sceneId, incoming, press, language, wake);
   } finally {
@@ -346,6 +348,7 @@ interface Wake {
   gate: (WakeGate & { ok: true }) | null;
   row: SceneRow | null;
   used: boolean;
+  source?: WakeSource;
 }
 
 /** After the commit nothing may undo the event: a failure is logged and kept for the session. */
@@ -421,10 +424,11 @@ async function attempt(
       return found.text ? { text: found.text, said: true } : { text: t.sceneDenied, said: true };
     }
     if (found.wakes && !wake.gate) {
-      const gate = await gateWake(ctx, row, event.user);
+      const gate = await gateWake(ctx, row, event.user, wake.source);
       if (!gate.ok) {
         if (gate.answer === "not_for_you") return { text: t.sceneNotForYou(owner.name) };
         if (gate.answer === "nobody") return { text: t.sceneNobody };
+        if (gate.answer === "session") return { text: SESSION_REFUSAL };
         return { text: t.sceneResting(gate.minutes ?? 60) };
       }
       wake.gate = gate;
@@ -522,7 +526,7 @@ async function perform(
       case "dice":
       case "tag":
       case "whisper":
-        await out.send(effect, event, callbackId);
+        await out.send(effect, event, callbackId, wake.source);
         break;
       case "toast":
         answer = { text: effect.text };
@@ -566,6 +570,11 @@ async function perform(
   return answer;
 }
 
+/** For the model, in update_scene's result: only the scene's own session may wake through act. */
+const SESSION_REFUSAL =
+  "wake() through act works only from the session that set the scene up: pass your session id as " +
+  "`session`, and only on a scene that session created.";
+
 /** Posts a minute per scene; a die counts as one. */
 const POSTS_PER_MINUTE = 5;
 /** Live messages a scene may have, the main one included. */
@@ -608,16 +617,26 @@ class Outbox {
     await this.ctx.store.insertMessage(stored, "always");
   }
 
-  async send(effect: Effect, event: SceneEvent, callbackId: string | undefined): Promise<void> {
+  async send(
+    effect: Effect,
+    event: SceneEvent,
+    callbackId: string | undefined,
+    source: WakeSource | undefined,
+  ): Promise<void> {
     try {
-      await this.perform(effect, event, callbackId);
+      await this.perform(effect, event, callbackId, source);
     } catch (error) {
       if (!(error instanceof TelegramError)) throw error;
       await recordError(this.ctx, this.row, event.user, effect.kind, error.description);
     }
   }
 
-  private async perform(effect: Effect, event: SceneEvent, callbackId: string | undefined) {
+  private async perform(
+    effect: Effect,
+    event: SceneEvent,
+    callbackId: string | undefined,
+    source: WakeSource | undefined,
+  ) {
     const refuse = (why: string) => recordError(this.ctx, this.row, event.user, effect.kind, why);
     const spend = () => this.ctx.store.spendScenePost(this.row.id, POSTS_PER_MINUTE);
     const overLimit = `at most ${POSTS_PER_MINUTE} posts a minute`;
@@ -710,11 +729,19 @@ class Outbox {
           { ...this.where(), emoji: effect.emoji },
         );
         if (sent.dice) {
-          await applyEvent(this.ctx, this.row.id, {
-            on: DICE_EVENT,
-            user: event.user,
-            event: { value: sent.dice.value, emoji: sent.dice.emoji },
-          });
+          // The die's event stands where the throw did: a session's act stays a session's.
+          await applyEvent(
+            this.ctx,
+            this.row.id,
+            {
+              on: DICE_EVENT,
+              user: event.user,
+              event: { value: sent.dice.value, emoji: sent.dice.emoji },
+            },
+            undefined,
+            null,
+            source,
+          );
         }
         return;
       }

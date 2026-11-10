@@ -505,7 +505,7 @@ async function scenesScreen(ctx: BotContext, user: User, chatId: number): Promis
 
 async function sceneScreen(ctx: BotContext, user: User, scene: SceneRow): Promise<Screen> {
   const t = texts(user.language_code);
-  const wakes = await ctx.store.sceneWakes(scene.id, nowSeconds() - 3600);
+  const wakes = await ctx.store.sceneWakes(scene.owner, scene.id, nowSeconds() - 3600);
   return {
     text: t.sceneScreen({
       title: scene.title,
@@ -900,6 +900,8 @@ export async function takeLimitAnswer(
 ): Promise<WebhookReply | "asked" | null> {
   const target = message.reply_to_message;
   if (!target || target.from?.id !== ctx.bot.id) return null;
+  // A command sent as the reply is still a command.
+  if (message.text?.startsWith("/")) return null;
   const user = message.from;
   const pending = await ctx.store.takeLimitPrompt(user.id, target.message_id);
   if (!pending) return null;
@@ -918,16 +920,16 @@ export async function takeLimitAnswer(
   }
   await ctx.store.dropLimitPrompt(user.id);
   const screen = await limitTarget(ctx, user, pending, limit);
-  return screen
-    ? {
-        method: "sendMessage",
-        chat_id: user.id,
-        text: screen.text,
-        parse_mode: "HTML",
-        link_preview_options: { is_disabled: true },
-        reply_markup: screen.reply_markup,
-      }
-    : "asked";
+  // The scene ended, or the chat is no longer theirs: say so rather than nothing.
+  if (!screen) return { method: "sendMessage", chat_id: user.id, text: t.limitGone };
+  return {
+    method: "sendMessage",
+    chat_id: user.id,
+    text: screen.text,
+    parse_mode: "HTML",
+    link_preview_options: { is_disabled: true },
+    reply_markup: screen.reply_markup,
+  };
 }
 
 /** Set a typed limit on what the prompt was for, if it is still the user's; its screen. */

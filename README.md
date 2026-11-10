@@ -305,11 +305,18 @@ rules answer only you. Every press gets an answer: the rule's own, or why not ("
 seconds per person).
 
 **Waking Claude.** A rule with `wake()` runs only if the wake may happen: it is your press, or the
-chat has «Others too» on in the menu; your routine is set up (or the relay is up and knows the
-scene's session); and the limits allow it — the scene's own wakes an hour (10 by default; change it
-in the menu: chat → 🎬 Scenes) and the starts every tag shares. Otherwise the press is refused and
-nothing changes. A wake goes into the session that made the scene, through the relay, or starts
-your routine; either way it shows in 📜 Starts.
+chat is a group where you hold Claude on tag with «Others too» on; your routine is set up (or the
+relay is up and knows the session to wake); and the limits allow it — the scene's own wakes an hour
+(10 by default; change it in the menu: chat → 🎬 Scenes) and the starts every tag shares. Otherwise
+the press is refused and nothing changes. The scene's own limit starts afresh if a scene is finished
+and created again; the shared limits do not.
+
+Like a group's sessions of the day, a scene keeps two audiences apart. Your wakes go into the
+session that made the scene, through the relay, or start your routine. Other members' wakes never go
+into that session: the first starts a session of its own for them, and later ones go there through
+the relay (or start the routine again without it). A session that drives its scene with
+`update_scene` `act` may wake only itself, and is never taken for you. Each wake is a start in the
+chat's log (📜 Starts, in a group where you hold Claude on tag).
 
 **Cost.** A press that changes something is one Worker request; it reads the scene's row and, for
 each of its live messages, the stored copy, and writes two rows: the scene and the redrawn message's
