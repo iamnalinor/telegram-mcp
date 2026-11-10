@@ -154,11 +154,18 @@ function tools(origin: string, token: string) {
   ];
 }
 
-/** A message into a session: a new turn if it is idle, a correction if it runs. */
+/**
+ * A message into a session: a new turn if it is idle, a correction if it runs.
+ * The events endpoint takes a list (`events`), checked against the live API.
+ */
 function inputEvent(text: string) {
   return {
-    type: "agent.session.input.message",
-    input: [{ role: "user", content: [{ type: "input_text", text }] }],
+    events: [
+      {
+        type: "agent.session.input.message",
+        input: [{ role: "user", content: [{ type: "input_text", text }] }],
+      },
+    ],
   };
 }
 

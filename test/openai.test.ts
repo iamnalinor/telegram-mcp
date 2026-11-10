@@ -198,11 +198,14 @@ describe("OpenAI sessions", () => {
     const event = h.openai.at(-1)!;
     expect(event.url).toBe("https://api.openai.com/v1/agents/sessions/sess_0/events");
     const body = event.body as {
-      type: string;
-      input: { role: string; content: { type: string; text: string }[] }[];
+      events: {
+        type: string;
+        input: { role: string; content: { type: string; text: string }[] }[];
+      }[];
     };
-    expect(body.type).toBe("agent.session.input.message");
-    const text = body.input[0].content[0].text;
+    expect(body.events).toHaveLength(1);
+    expect(body.events[0].type).toBe("agent.session.input.message");
+    const text = body.events[0].input[0].content[0].text;
     expect(text).toStartWith(`Your session id: ${sessionOf(0)}\n`);
     expect(text).toContain("A Telegram message replies to one this session sent");
     expect(text).toMatch(/<tg-[\w-]+>\nFrom: the user \(id 111\)/);
