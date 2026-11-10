@@ -24,7 +24,7 @@ import { guide, PRESETS } from "../scenes/guide";
 import type { Value } from "../scenes/lang";
 import { render } from "../scenes/render";
 import { GROUP_NOTE } from "../prompts";
-import type { GuestCall, SceneEventRow, SceneRow, SceneTemplateRow } from "../store";
+import type { GuestCall, GuestMedia, SceneEventRow, SceneRow, SceneTemplateRow } from "../store";
 import {
   agentArg,
   chatArg,
@@ -86,10 +86,6 @@ async function ownScene(ctx: ToolContext, id: number): Promise<SceneRow> {
   return row;
 }
 
-/**
- * Who can wake the session through this scene, said plainly and truly, so
- * the session does not promise the chat more than the bot will let through.
- */
 /** The guest call a scene is to run on: the user's, answerable, in a chat they still hold. */
 async function guestTarget(
   ctx: ToolContext,
@@ -114,6 +110,18 @@ async function guestTarget(
       "Telegram did not accept the bot's message for that call, so there is nothing to run a scene on.",
     );
   }
+  if (call.media) {
+    let type = "file";
+    try {
+      type = (JSON.parse(call.media) as GuestMedia).type;
+    } catch {
+      // The kind does not matter for the refusal.
+    }
+    throw new ToolError(
+      `The bot's message for that call is a ${type} now, and a scene draws text: Telegram cannot turn ` +
+        "it back. Answer with answer_guest (its caption and buttons) instead.",
+    );
+  }
   const claim = await ctx.store.getClaudeChat(call.chat_key);
   if (claim?.user_id !== ctx.userId) {
     throw new ToolError(
@@ -123,6 +131,10 @@ async function guestTarget(
   return call;
 }
 
+/**
+ * Who can wake the session through this scene, said plainly and truly, so
+ * the session does not promise the chat more than the bot will let through.
+ */
 async function accessReport(
   ctx: ToolContext,
   chat: Pick<ChatView, "kind" | "chat_id">,
@@ -275,7 +287,7 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
             "Instead of chat: run the scene on the bot's one message for this guest call (a chat the bot " +
               "is not in). Presses, toast, alert, whisper, show, log, wake and finish work there; post, " +
               "poll, dice and tag cannot (the bot can send nothing else there), and no reply, reaction " +
-              "or vote reaches it.",
+              "or vote reaches it. Not on a message answer_guest turned into media.",
           ),
         session: sessionArg,
         agent: agentArg,
@@ -356,6 +368,7 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
             id = await startGuestScene(ctx, {
               chatKey: guest.chat_key,
               call: guest.id,
+              had: { buttons: guest.buttons, scene_id: guest.scene_id },
               inlineId: guest.inline_message_id!,
               owner: ctx.userId,
               session,

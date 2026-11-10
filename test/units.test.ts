@@ -571,9 +571,26 @@ describe("schema upgrade", () => {
     db.raw.exec(`DROP INDEX guest_calls_by_inline;
       ALTER TABLE guest_calls DROP COLUMN buttons; ALTER TABLE guest_calls DROP COLUMN media;
       ALTER TABLE guest_calls DROP COLUMN scene_id; ALTER TABLE scenes DROP COLUMN inline_id;
+      INSERT INTO guest_calls (user_id, chat_key, query_id, inline_message_id, from_id, by_other, text, answer, at)
+      VALUES (1, 8000000000000001, 'gq', 'inline-1', 1, 0, 'hi', 'hello', 1);
+      INSERT INTO scenes (chat_id, owner, owner_name, title, def, state, wake_limit, created, updated)
+      VALUES (-100, 1, 'A', 'T', '{}', '{}', 0, 1, 1);
       UPDATE meta SET value = '24' WHERE key = 'schema_version';`);
     await ensureSchema(new SqliteD1Proxy(db).asD1());
     expect(version(db)).toBe("25");
+    // What was there stays, with nothing on it yet.
+    expect(db.raw.query("SELECT answer, buttons, media, scene_id FROM guest_calls").get()).toEqual({
+      answer: "hello",
+      buttons: null,
+      media: null,
+      scene_id: null,
+    });
+    expect(db.raw.query("SELECT title, inline_id FROM scenes").get()).toEqual({
+      title: "T",
+      inline_id: null,
+    });
+    const { Store } = await import("../src/store");
+    expect((await new Store(db.asD1()).guestCallByMessage("inline-1"))?.text).toBe("hi");
     db.raw.exec(`UPDATE guest_calls SET buttons = '[]', media = '{}', scene_id = 1;
       UPDATE scenes SET inline_id = 'x';`);
     expect(

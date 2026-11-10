@@ -61,6 +61,14 @@ async function pressInline(
 
 const last = (method: string) => h.telegram.called(method).at(-1)!.params;
 
+/** The callback data of a button on the bot's message as it was last drawn by `method`. */
+const dataOf = (method: string, row: number, column: number) =>
+  (last(method).reply_markup as { inline_keyboard: { callback_data: string }[][] }).inline_keyboard[
+    row
+  ][column].callback_data;
+
+const count = (sql: string) => (h.db.raw.query(sql).get() as { n: number }).n;
+
 describe("answer_guest: buttons", () => {
   it("puts buttons on the bot's message and records who pressed them", async () => {
     await call(ALICE, `${BOT} lunch?`);
@@ -76,13 +84,17 @@ describe("answer_guest: buttons", () => {
       ],
     });
     expect(answered.isError).toBe(false);
+    const [pizza, sushi] = [dataOf("editMessageText", 0, 0), dataOf("editMessageText", 0, 1)];
+    // Each press names the keyboard it was on: g:<revision>:<row>.<column>.
+    expect(pizza).toMatch(/^g:[0-9a-z]+:0\.0$/);
+    expect(sushi).toBe(pizza.replace(/0\.0$/, "0.1"));
     expect(last("editMessageText")).toMatchObject({
       inline_message_id: "inline-1",
       reply_markup: {
         inline_keyboard: [
           [
-            { text: "Pizza", callback_data: "cb:0.0" },
-            { text: "Sushi", callback_data: "cb:0.1", style: "primary" },
+            { text: "Pizza", callback_data: pizza },
+            { text: "Sushi", callback_data: sushi, style: "primary" },
           ],
           [
             { text: "Menu", url: "https://example.com/menu" },
@@ -92,11 +104,11 @@ describe("answer_guest: buttons", () => {
       },
     });
 
-    const reply = await pressInline(BOB, "cb:0.1");
+    const reply = await pressInline(BOB, sushi);
     expect(reply.method).toBe("answerCallbackQuery");
     expect(reply.text).toContain("Sushi");
     // A press on a message nobody knows changes nothing.
-    expect((await pressInline(BOB, "cb:0.0", "inline-unknown")).text).toBeTruthy();
+    expect((await pressInline(BOB, pizza, "inline-unknown")).text).toBeTruthy();
 
     const read = (await h.tool(alice, "get_guest_call", { call: 1 })).text;
     expect(read).toContain('"@bob" (id 222) pressed "Sushi" (data: fish)');
@@ -106,10 +118,11 @@ describe("answer_guest: buttons", () => {
   it("keeps the buttons the next answer leaves out off the message", async () => {
     await call(ALICE, `${BOT} hi`);
     await h.tool(alice, "answer_guest", { call: 1, text: "a", buttons: [[{ text: "X" }]] });
+    const old = dataOf("editMessageText", 0, 0);
     await h.tool(alice, "answer_guest", { call: 1, text: "b" });
     expect(last("editMessageText").reply_markup).toEqual({ inline_keyboard: [] });
     // The old keyboard is forgotten: a press on it is not recorded.
-    await pressInline(BOB, "cb:0.0");
+    await pressInline(BOB, old);
     expect((await h.tool(alice, "get_guest_call", { call: 1 })).text).not.toContain("pressed");
   });
 
@@ -134,6 +147,8 @@ describe("answer_guest: media", () => {
       buttons: [[{ text: "More" }]],
     });
     expect(answered.isError).toBe(false);
+    const more = dataOf("editMessageMedia", 0, 0);
+    expect(more).toMatch(/^g:[0-9a-z]+:0\.0$/);
     expect(last("editMessageMedia")).toMatchObject({
       inline_message_id: "inline-1",
       media: {
@@ -143,7 +158,9 @@ describe("answer_guest: media", () => {
         parse_mode: "HTML",
         has_spoiler: true,
       },
-      reply_markup: { inline_keyboard: [[{ text: "More", callback_data: "cb:0.0" }]] },
+      reply_markup: {
+        inline_keyboard: [[{ text: "More", callback_data: more }]],
+      },
     });
 
     // Text alone now goes to the caption: a media message has no text to edit.
@@ -291,5 +308,231 @@ describe("scenes in a chat the bot is not in", () => {
       status: string;
     };
     expect(row.status).toBe("finished");
+  });
+});
+
+describe("guest presses: stale keyboards and odd presses", () => {
+  it("counts a press on an older keyboard for nothing once the buttons changed", async () => {
+    await call(ALICE, `${BOT} vote`);
+    await h.tool(alice, "answer_guest", {
+      call: 1,
+      text: "Ban him?",
+      buttons: [[{ text: "Keep" }, { text: "Ban" }]],
+    });
+    const oldBan = dataOf("editMessageText", 0, 1);
+    await h.tool(alice, "answer_guest", {
+      call: 1,
+      text: "Lunch?",
+      buttons: [[{ text: "Pizza" }, { text: "Sushi" }]],
+    });
+    const sushi = dataOf("editMessageText", 0, 1);
+    expect(sushi).not.toBe(oldBan);
+
+    // The old "Ban" sits where "Sushi" is now: it must not count as "Sushi".
+    const stale = await pressInline(BOB, oldBan);
+    expect(stale.text).toContain("out of date");
+    expect(count("SELECT COUNT(*) AS n FROM button_presses")).toBe(0);
+
+    expect((await pressInline(BOB, sushi)).text).toContain("Sushi");
+    const read = (await h.tool(alice, "get_guest_call", { call: 1 })).text;
+    expect(read).toContain('pressed "Sushi"');
+    expect(read).not.toContain('pressed "Ban"');
+  });
+
+  it("records nothing for a guest button pressed without its inline message", async () => {
+    await call(ALICE, `${BOT} hi`);
+    await h.tool(alice, "answer_guest", { call: 1, text: "a", buttons: [[{ text: "X" }]] });
+    const data = dataOf("editMessageText", 0, 0);
+    // The same data, but as from a message in a chat: not the guest call's.
+    const response = await h.update({
+      callback_query: {
+        id: "q-msg",
+        from: { ...BOB, is_bot: false },
+        message: { message_id: 1, date: 1, chat: ELSEWHERE },
+        chat_instance: "ci-1",
+        data,
+      },
+    });
+    expect((await response.json<{ method: string }>()).method).toBe("answerCallbackQuery");
+    // The old format on the inline message is no press either.
+    await pressInline(BOB, "cb:0.0");
+    expect(count("SELECT COUNT(*) AS n FROM button_presses")).toBe(0);
+  });
+
+  it("keeps at most so many presses per call, and shows the latest with the total", async () => {
+    await call(ALICE, `${BOT} hi`);
+    await h.tool(alice, "answer_guest", { call: 1, text: "a", buttons: [[{ text: "X" }]] });
+    const key = (
+      h.db.raw.query("SELECT chat_key FROM guest_calls WHERE id = 1").get() as {
+        chat_key: number;
+      }
+    ).chat_key;
+    const insert = h.db.raw.prepare(
+      `INSERT INTO button_presses (chat_id, message_id, callback_id, user_id, user_name, label, data, date)
+       VALUES (?, 1, ?, 222, '@bob', 'X', 'X', ?)`,
+    );
+    for (let i = 0; i < 200; i++) insert.run(key, `old-${i}`, 1000 + i);
+    expect((await pressInline(BOB, dataOf("editMessageText", 0, 0))).method).toBe(
+      "answerCallbackQuery",
+    );
+    expect(count("SELECT COUNT(*) AS n FROM button_presses")).toBe(200);
+    const read = (await h.tool(alice, "get_guest_call", { call: 1 })).text;
+    expect(read).toContain("200 presses");
+    expect(read.match(/pressed "X"/g)?.length).toBeLessThan(200);
+  });
+});
+
+describe("answer_guest: what may go on a public message", () => {
+  it("takes only https links and media", async () => {
+    await call(ALICE, `${BOT} hi`);
+    const link = await h.tool(alice, "answer_guest", {
+      call: 1,
+      text: "a",
+      buttons: [[{ text: "Go", url: "http://example.com" }]],
+    });
+    expect(link.isError).toBe(true);
+    const media = await h.tool(alice, "answer_guest", {
+      call: 1,
+      text: "a",
+      media: { type: "photo", url: "http://example.com/a.jpg" },
+    });
+    expect(media.isError).toBe(true);
+    expect(h.telegram.called("editMessageMedia")).toHaveLength(0);
+  });
+
+  it("puts no links, copy buttons or media on a third party's call", async () => {
+    await call(ALICE, `${BOT} hi`);
+    h.db.raw.exec("UPDATE claude_chats SET others = 1");
+    await call(BOB, `${BOT} help me`);
+    const byOther = (
+      h.db.raw.query("SELECT by_other FROM guest_calls WHERE id = 2").get() as {
+        by_other: number;
+      }
+    ).by_other;
+    expect(byOther).toBe(1);
+    const edits = h.telegram.called("editMessageText").length;
+    for (const extra of [
+      { buttons: [[{ text: "Go", url: "https://example.com" }]] },
+      { buttons: [[{ text: "Copy", copy: "x" }]] },
+      { media: { type: "photo", url: "https://example.com/a.jpg" } },
+    ]) {
+      const refused = await h.tool(alice, "answer_guest", { call: 2, text: "a", ...extra });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain("not the user");
+    }
+    expect(h.telegram.called("editMessageText")).toHaveLength(edits);
+    expect(h.telegram.called("editMessageMedia")).toHaveLength(0);
+    // Plain buttons are fine, and the user's own call may carry links.
+    expect(
+      (await h.tool(alice, "answer_guest", { call: 2, text: "a", buttons: [[{ text: "Ok" }]] }))
+        .isError,
+    ).toBe(false);
+    expect(
+      (
+        await h.tool(alice, "answer_guest", {
+          call: 1,
+          text: "a",
+          buttons: [[{ text: "Go", url: "https://example.com" }]],
+        })
+      ).isError,
+    ).toBe(false);
+  });
+});
+
+describe("scenes on a guest call's message: edges", () => {
+  it("refuses a scene on a message that became media, and keeps its buttons", async () => {
+    await call(ALICE, `${BOT} cat`);
+    await h.tool(alice, "answer_guest", {
+      call: 1,
+      text: "cat",
+      media: { type: "photo", url: "https://example.com/cat.jpg" },
+      buttons: [[{ text: "More" }]],
+    });
+    const refused = await h.tool(alice, "create_scene", { definition: COUNTER, guest_call: 1 });
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain("photo");
+    expect(count("SELECT COUNT(*) AS n FROM scenes")).toBe(0);
+    expect(
+      h.db.raw.query("SELECT scene_id, buttons IS NOT NULL AS kept FROM guest_calls").get(),
+    ).toEqual({ scene_id: null, kept: 1 });
+  });
+
+  it("gives the message its buttons back when Telegram refuses the scene", async () => {
+    await call(ALICE, `${BOT} go`);
+    await h.tool(alice, "answer_guest", { call: 1, text: "a", buttons: [[{ text: "X" }]] });
+    const x = dataOf("editMessageText", 0, 0);
+    h.telegram.handlers.set("editMessageText", () => {
+      throw new TgError(400, "Bad Request: something went wrong");
+    });
+    const failed = await h.tool(alice, "create_scene", { definition: COUNTER, guest_call: 1 });
+    expect(failed.isError).toBe(true);
+    expect(count("SELECT COUNT(*) AS n FROM scenes")).toBe(0);
+    expect(
+      h.db.raw.query("SELECT scene_id, buttons IS NOT NULL AS kept FROM guest_calls").get(),
+    ).toEqual({ scene_id: null, kept: 1 });
+    expect((await pressInline(BOB, x)).text).toContain("X");
+  });
+
+  it("knows its message before the first press can come", async () => {
+    await call(ALICE, `${BOT} go`);
+    let seen: unknown = null;
+    h.telegram.handlers.set("editMessageText", () => {
+      seen = h.db.raw.query("SELECT messages FROM scenes WHERE id = 1").get();
+      return true;
+    });
+    await h.tool(alice, "create_scene", { definition: COUNTER, guest_call: 1 });
+    expect(seen).toEqual({ messages: JSON.stringify([{ id: 0, view: "main" }]) });
+  });
+
+  it("lets an answer take over from a finished scene whose last drawing is owed", async () => {
+    await call(ALICE, `${BOT} go`);
+    await h.tool(alice, "answer_guest", { call: 1, text: "before the scene" });
+    await h.tool(alice, "create_scene", { definition: COUNTER, guest_call: 1 });
+    // get_guest_call says what the message shows: the scene, not the old answer.
+    const during = (await h.tool(alice, "get_guest_call", { call: 1 })).text;
+    expect(during).not.toContain("before the scene");
+    expect(during).toContain("scene 1");
+
+    // It ended while Telegram asked for quiet: taking its buttons off is owed.
+    h.db.raw.exec("UPDATE scenes SET status = 'finished', dirty = 1");
+    h.telegram.handlers.set("editMessageText", () => {
+      throw new TgError(429, "Too Many Requests: retry after 5", { retry_after: 5 });
+    });
+    expect((await h.tool(alice, "answer_guest", { call: 1, text: "x" })).isError).toBe(true);
+    // A failed answer leaves the owed drawing owed.
+    expect(count("SELECT dirty AS n FROM scenes WHERE id = 1")).toBe(1);
+
+    h.telegram.handlers.set("editMessageText", () => true);
+    expect((await h.tool(alice, "answer_guest", { call: 1, text: "the answer" })).isError).toBe(
+      false,
+    );
+    // The answer replaced the whole message: nothing owed may draw over it.
+    expect(count("SELECT dirty AS n FROM scenes WHERE id = 1")).toBe(0);
+    const after = (await h.tool(alice, "get_guest_call", { call: 1 })).text;
+    expect(after).toContain("the answer");
+    expect(after).not.toContain("runs scene");
+  });
+
+  it("takes a scene's buttons off when the user lets the chat go", async () => {
+    await call(ALICE, `${BOT} go`);
+    await h.tool(alice, "create_scene", { definition: COUNTER, guest_call: 1 });
+    await Bun.sleep(1100);
+    await h.update({
+      callback_query: {
+        id: "q-menu",
+        from: { ...ALICE, is_bot: false },
+        data: "m:qx:1",
+        message: { message_id: 77, date: 1, chat: dm(ALICE) },
+      },
+    });
+    expect(h.db.raw.query("SELECT status, dirty FROM scenes WHERE id = 1").get()).toEqual({
+      status: "finished",
+      dirty: 0,
+    });
+    const off = h.telegram
+      .called("editMessageText")
+      .filter((c) => c.params.inline_message_id === "inline-1")
+      .at(-1)!.params;
+    expect(off.reply_markup).toEqual({ inline_keyboard: [] });
   });
 });

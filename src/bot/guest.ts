@@ -39,6 +39,7 @@ import {
 import { displayName, type CallbackQuery, type Message } from "../telegram/types";
 import type { BotContext, WebhookReply } from "./context";
 import { hasContent, realReply, toStored } from "./extract";
+import { releaseChat } from "./scenes";
 import { spinnerLine } from "./spinner";
 import { texts } from "./texts";
 import { excerptOf, holderName, launch } from "./triggers";
@@ -82,7 +83,7 @@ async function holderOf(
   let claim = known ? await ctx.store.getClaudeChat(GUEST_BASE + known.id) : null;
   if (claim && !isAllowed(ctx.config, claim.user_id)) {
     // A holder who may no longer use the bot holds nothing.
-    await ctx.store.releaseClaudeChat(claim.user_id, GUEST_BASE + known!.id);
+    await releaseChat(ctx, claim.user_id, GUEST_BASE + known!.id);
     claim = null;
   }
   if (!claim) {
@@ -303,6 +304,25 @@ export async function startGuest(
   }
 }
 
+/** Presses kept per call: past it the buttons still answer, but nothing more is recorded. */
+export const GUEST_PRESSES = 200;
+
+/**
+ * Which set of buttons a guest call's message carries (its stored buttons,
+ * hashed short): the callback data names it, so that a press on a keyboard an
+ * answer has since replaced is not read against the new one. The same buttons
+ * give the same revision, and mean the same.
+ */
+export function guestRevision(buttons: string): string {
+  // FNV-1a, 32 bits.
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < buttons.length; i++) {
+    hash ^= buttons.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
 /**
  * A press on a button answer_guest put on the bot's message for a call. Only
  * the buttons that message carries now count; the press is recorded under the
@@ -311,6 +331,7 @@ export async function startGuest(
 export async function handleGuestPress(
   ctx: BotContext,
   query: CallbackQuery,
+  revision: string,
   row: number,
   column: number,
 ): Promise<WebhookReply> {
@@ -320,26 +341,33 @@ export async function handleGuestPress(
     callback_query_id: query.id,
     text,
   });
-  const call = query.inline_message_id
-    ? await ctx.store.guestCallByMessage(query.inline_message_id)
-    : null;
+  // Telegram names a guest call's message by its inline id alone.
+  const call =
+    query.inline_message_id && !query.message
+      ? await ctx.store.guestCallByMessage(query.inline_message_id)
+      : null;
+  if (!call) return answer(t.alreadyAnswered);
+  if (!call.buttons || guestRevision(call.buttons) !== revision) return answer(t.sceneStale);
   let buttons: StoredButton[][] | null;
   try {
-    buttons = call?.buttons ? (JSON.parse(call.buttons) as StoredButton[][]) : null;
+    buttons = JSON.parse(call.buttons) as StoredButton[][];
   } catch {
     buttons = null;
   }
   const button = buttons?.[row]?.[column];
-  if (!call || !button || button.url || button.copy) return answer(t.alreadyAnswered);
-  await ctx.store.insertPress({
-    chat_id: call.chat_key,
-    message_id: call.id,
-    callback_id: query.id,
-    user_id: query.from.id,
-    user_name: query.from.username ? `@${query.from.username}` : displayName(query.from),
-    label: button.text,
-    data: button.data ?? button.text,
-    date: nowSeconds(),
-  });
+  if (!button || button.url || button.copy) return answer(t.sceneStale);
+  await ctx.store.insertPress(
+    {
+      chat_id: call.chat_key,
+      message_id: call.id,
+      callback_id: query.id,
+      user_id: query.from.id,
+      user_name: query.from.username ? `@${query.from.username}` : displayName(query.from),
+      label: button.text,
+      data: button.data ?? button.text,
+      date: nowSeconds(),
+    },
+    GUEST_PRESSES,
+  );
   return answer(t.pressed(button.text));
 }

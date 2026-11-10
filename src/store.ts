@@ -1435,11 +1435,13 @@ export class Store {
 
   // --- buttons and reactions -----------------------------------------------
 
-  async insertPress(press: PressRow): Promise<boolean> {
+  /** Record a press; with `cap`, only while the message has fewer presses than that. */
+  async insertPress(press: PressRow, cap?: number): Promise<boolean> {
     const result = await this.db
       .prepare(
         `INSERT INTO button_presses (chat_id, message_id, callback_id, user_id, user_name, label, data, date)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8 WHERE ?9 IS NULL
+           OR (SELECT COUNT(*) FROM button_presses WHERE chat_id = ?1 AND message_id = ?2) < ?9
          ON CONFLICT DO NOTHING`,
       )
       .bind(
@@ -1451,6 +1453,7 @@ export class Store {
         press.label,
         press.data,
         press.date,
+        cap ?? null,
       )
       .run();
     return (result.meta.changes ?? 0) > 0;
@@ -2848,7 +2851,10 @@ export class Store {
       .first<GuestCall>();
   }
 
-  /** What answer_guest put on the call's message: its text, buttons and media. */
+  /**
+   * What answer_guest put on the call's message: its text, buttons and media.
+   * It replaces whatever a scene that ran there left.
+   */
   async setGuestAnswer(
     id: number,
     answer: string,
@@ -2857,7 +2863,7 @@ export class Store {
     await this.db
       .prepare(
         `UPDATE guest_calls SET answer = ?, buttons = ?,
-           media = COALESCE(?, media) WHERE id = ?`,
+           media = COALESCE(?, media), scene_id = NULL WHERE id = ?`,
       )
       .bind(redactSecrets(answer), shown.buttons ?? null, shown.media ?? null, id)
       .run();
@@ -2889,6 +2895,21 @@ export class Store {
       .bind(id)
       .first<{ scene_id: number | null }>();
     return row?.scene_id ?? null;
+  }
+
+  /**
+   * A scene that took the call's message could not start there: the message
+   * gets back what it had, unless something else took it since.
+   */
+  async returnGuestMessage(
+    id: number,
+    sceneId: number,
+    had: Pick<GuestCall, "buttons" | "scene_id">,
+  ): Promise<void> {
+    await this.db
+      .prepare("UPDATE guest_calls SET scene_id = ?, buttons = ? WHERE id = ? AND scene_id = ?")
+      .bind(had.scene_id, had.buttons, id, sceneId)
+      .run();
   }
 
   // --- refresh sessions ----------------------------------------------------
@@ -3082,13 +3103,15 @@ export class Store {
     template_id?: number | null;
     template_version?: number | null;
     inline_id?: string | null;
+    /** Its live messages, when they are known before anything is drawn (a guest call's). */
+    messages?: string;
   }): Promise<number> {
     const now = nowSeconds();
     const created = await this.db
       .prepare(
         `INSERT INTO scenes (chat_id, thread_id, owner, owner_name, session_id, agent, title, brief,
-           def, state, wake_limit, template_id, template_version, inline_id, created, updated)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+           def, state, wake_limit, template_id, template_version, inline_id, messages, created, updated)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       )
       .bind(
         row.chat_id,
@@ -3105,6 +3128,7 @@ export class Store {
         row.template_id ?? null,
         row.template_version ?? null,
         row.inline_id ?? null,
+        row.messages ?? "[]",
         now,
         now,
       )
@@ -3243,6 +3267,18 @@ export class Store {
       )
       .bind(id, now)
       .first<SceneRow>();
+  }
+
+  /**
+   * Forget the drawing an ended scene still owes: something else replaced its
+   * message whole. False when nothing was owed (or the scene still runs).
+   */
+  async dropOwedRedraw(id: number): Promise<boolean> {
+    const result = await this.db
+      .prepare("UPDATE scenes SET dirty = 0 WHERE id = ? AND status != 'active' AND dirty = 1")
+      .bind(id)
+      .run();
+    return (result.meta.changes ?? 0) > 0;
   }
 
   /** A scene in use, though its state did not change: the daily cleanup must not end it. */

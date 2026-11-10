@@ -315,10 +315,11 @@ async function onCallback(ctx: BotContext, query: CallbackQuery): Promise<Webhoo
 
   if (data.startsWith("s:")) return handleScenePress(ctx, query);
 
+  // A button answer_guest put on a guest call's message, with the revision of its keyboard.
+  const guest = /^g:([0-9a-z]{1,8}):(\d+)\.(\d+)$/.exec(data);
+  if (guest) return handleGuestPress(ctx, query, guest[1], Number(guest[2]), Number(guest[3]));
+
   const press = /^cb:(\d+)\.(\d+)$/.exec(data);
-  if (press && query.inline_message_id) {
-    return handleGuestPress(ctx, query, Number(press[1]), Number(press[2]));
-  }
   if (press) return handleAssistantButton(ctx, query, Number(press[1]), Number(press[2]));
 
   return {

@@ -412,10 +412,14 @@ What starts a session:
 - **Any chat the bot is not in** (guest mode): tag the bot there, or reply to its message. Telegram
   hands the bot that one message and the one it replied to — no history, no members — and lets it
   post one message per call, which the session then edits: a placeholder at once, the answer when
-  ready. That message can carry inline buttons (link, copy, or recorded presses) and become a photo,
-  video, GIF, audio or document by URL; or a scene can run on it (`create_scene` with `guest_call`):
-  presses, toasts, alerts, whispers, screens, wakes — but no post, poll or die, since Telegram lets the
-  bot send nothing else there, and no reply, reaction or vote reaches it. Such a chat is connected like a group: the first call there by someone who may use the bot
+  ready. That message can carry inline buttons (link, copy, or recorded presses: up to 200 a call,
+  a press on a replaced keyboard counts for nothing) and become a photo, video, GIF, audio or document
+  by URL — links and media https only, and none of them (nor copy buttons) on a call from someone
+  other than the holder, since a model acting for a third party must not be able to plant a link or
+  make Telegram fetch a URL. Or a scene can run on it (`create_scene` with `guest_call`, unless the
+  message became media): presses, toasts, alerts, whispers, screens, wakes — but no post, poll or
+  die, since Telegram lets the bot send nothing else there, and no reply, reaction or vote reaches
+  it. Such a chat is connected like a group: the first call there by someone who may use the bot
   and has an assistant set up binds the chat to them. From then on their assistant answers there,
   and other people's calls count only if they turn "Others too" on for that chat (🤖 Assistant →
   🕊 Guest chats: others, their hourly limit, the log of starts, disconnect) — under the same rules

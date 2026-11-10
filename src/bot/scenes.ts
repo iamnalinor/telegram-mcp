@@ -39,6 +39,8 @@ import {
 } from "../scenes/render";
 import {
   BOT_ACCOUNT,
+  isGuestKey,
+  type GuestCall,
   type SceneMessage,
   type ScenePatch,
   type SceneRow,
@@ -276,6 +278,8 @@ export async function startGuestScene(
   p: {
     chatKey: number;
     call: number;
+    /** What the call's message carried before: it gets it back if the scene cannot start. */
+    had: Pick<GuestCall, "buttons" | "scene_id">;
     inlineId: string;
     owner: number;
     session: string | null;
@@ -300,14 +304,16 @@ export async function startGuestScene(
     template_id: p.template?.id ?? null,
     template_version: p.template?.version ?? null,
     inline_id: p.inlineId,
+    // Its one message is known now: a press that comes the moment it is drawn finds it.
+    messages: JSON.stringify([{ id: 0, view: "main" }]),
   });
   const taken = await ctx.store.takeGuestMessage(p.call, id);
   if (taken !== null) {
     await ctx.store.deleteScene(id);
     throw new MessageTaken(taken);
   }
-  const row = (await ctx.store.getScene(id))!;
   try {
+    const row = (await ctx.store.getScene(id))!;
     const owner = await ownerOf(ctx, row);
     const { compiled, state } = loaded(row);
     const rendered = render(compiled, "main", state, { owner, now: nowSeconds(), sceneId: id });
@@ -317,13 +323,12 @@ export async function startGuestScene(
       reply_markup: keyboard(rendered.rows, id),
     });
   } catch (error) {
+    // Nothing was drawn: the message keeps what it showed, buttons included.
+    await ctx.store.returnGuestMessage(p.call, id, p.had);
     await ctx.store.deleteScene(id);
     throw error;
   }
-  await ctx.store.commitScene(id, row.version, {
-    messages: JSON.stringify([{ id: 0, view: "main" }]),
-    edited_at: Date.now(),
-  });
+  await ctx.store.markSceneDrawn(id, { edited_at: Date.now() });
   return id;
 }
 
@@ -932,6 +937,19 @@ export async function revokeAccess(
   const gone = await ctx.store.revokeGrant(userId, chatId);
   await drawEnded(ctx, userId, chatId);
   return gone;
+}
+
+/**
+ * The user lets a chat go. In a chat the bot is not in, their scenes end with
+ * the claim, and lose their buttons now, as on a revoke.
+ */
+export async function releaseChat(
+  ctx: SceneContext,
+  userId: number,
+  chatId: number,
+): Promise<void> {
+  await ctx.store.releaseClaudeChat(userId, chatId);
+  if (isGuestKey(chatId)) await drawEnded(ctx, userId, chatId);
 }
 
 /** Sign out every assistant of the user; their scenes end with it. */
