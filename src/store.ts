@@ -79,6 +79,30 @@ export interface Routine {
   test_at: number | null;
 }
 
+/** A session under an id the Worker gave it (src/agents/openai.ts, src/agents/codex.ts). */
+export interface AgentSession {
+  id: string;
+  user_id: number;
+  provider: string;
+  external_id: string | null;
+  kind: "chat" | "task";
+  token_exp: number | null;
+  created_at: number;
+  /** What the user last heard of it from the provider's webhooks. */
+  told: "failed" | "action" | null;
+  /** The sign-in its MCP token hangs on, and the user's token version then. */
+  signin: string | null;
+  token_version: number | null;
+  /** A task's: whom the chat session that started it acted for. */
+  origin: RelayOrigin | null;
+  /** A Codex thread's: 1 when it lives in the relay's sandbox, where only sandboxed runs reach it. */
+  sandboxed: number | null;
+}
+
+/** The sign-ins the Worker's own sessions' MCP tokens hang on (src/oauth.ts `mintSessionToken`). */
+export const AGENTS_SIGN_IN = "OpenAI agents";
+export const CODEX_SIGN_IN = "Codex runs";
+
 export interface ClaudeChat {
   chat_id: number;
   user_id: number;
@@ -110,7 +134,15 @@ export interface RelayRow {
   last_seen: number | null;
   login_failed_at: number | null;
   offline_noticed_at: number | null;
+  /** What it said it can run, comma separated; null: a relay too old to say, Claude only. */
+  runners: string | null;
 }
+
+/**
+ * What the relay does with a job: pass it into a Claude cloud session, start
+ * a Codex thread on the machine, or carry one on.
+ */
+export type Runner = "claude-continue" | "codex-start" | "codex-resume";
 
 /** Who stands behind a message to a session, by the bot's records. */
 export type RelayOrigin = "user" | "other" | "unknown";
@@ -137,6 +169,9 @@ export interface RelayJob {
   kind: "reply" | "day" | "guest" | "ask" | "scene";
   /** 1 when the sender waits for answer_session; a notice expects none. */
   wants_answer: number;
+  runner: Runner;
+  /** The runner's settings, JSON: model, sandbox, working directory. */
+  params: string | null;
   answer: string | null;
   answered_at: number | null;
   created_at: number;
@@ -279,6 +314,8 @@ export interface UserRow {
   token_version: number;
   created_at: number;
   connected_at: number | null;
+  /** Whose sessions new starts go to; null: none chosen, and nothing starts. */
+  active_provider: string | null;
 }
 
 export interface ChatRow {
@@ -649,7 +686,8 @@ export class Store {
 
   /**
    * The menu asked the user to type a number (a limit) for `target`: `g:<chat>`,
-   * `q:<guest key>` or `s:<scene>`. One pending prompt per user; a newer one replaces it.
+   * `q:<guest key>` or `s:<scene>`; or a directory, `cw`: Codex's working one.
+   * One pending prompt per user; a newer one replaces it.
    */
   async setLimitPrompt(userId: number, target: string, promptMessageId: number): Promise<void> {
     await this.setMeta(`limit_prompt:${userId}`, `${target}:${promptMessageId}`);
@@ -1758,6 +1796,284 @@ export class Store {
     await this.db.prepare("DELETE FROM routines WHERE user_id = ?").bind(userId).run();
   }
 
+  // --- other providers -----------------------------------------------------
+
+  async getAgentConfig(userId: number, provider: string): Promise<string | null> {
+    const row = await this.db
+      .prepare("SELECT config_enc FROM agent_configs WHERE user_id = ? AND provider = ?")
+      .bind(userId, provider)
+      .first<{ config_enc: string }>();
+    return row?.config_enc ?? null;
+  }
+
+  /** When the user last changed that provider's settings; null when there are none. */
+  async agentConfigSince(userId: number, provider: string): Promise<number | null> {
+    const row = await this.db
+      .prepare("SELECT updated_at FROM agent_configs WHERE user_id = ? AND provider = ?")
+      .bind(userId, provider)
+      .first<{ updated_at: number }>();
+    return row?.updated_at ?? null;
+  }
+
+  /** `hook`: a hash of the path the provider's webhooks come to, if it sends any. */
+  async setAgentConfig(
+    userId: number,
+    provider: string,
+    configEnc: string,
+    hook: string | null = null,
+  ): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO agent_configs (user_id, provider, config_enc, updated_at, hook)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT (user_id, provider) DO UPDATE SET
+           config_enc = excluded.config_enc, updated_at = excluded.updated_at, hook = excluded.hook`,
+      )
+      .bind(userId, provider, configEnc, nowSeconds(), hook)
+      .run();
+  }
+
+  /** Whose settings a webhook path belongs to, by its hash. */
+  async agentByHook(hook: string): Promise<{ user_id: number; provider: string } | null> {
+    return this.db
+      .prepare("SELECT user_id, provider FROM agent_configs WHERE hook = ?")
+      .bind(hook)
+      .first<{ user_id: number; provider: string }>();
+  }
+
+  /** One provider's settings go, and the user's sessions with it end. */
+  async deleteAgentConfig(userId: number, provider: string): Promise<void> {
+    await this.db.batch([
+      this.db
+        .prepare("DELETE FROM agent_configs WHERE user_id = ? AND provider = ?")
+        .bind(userId, provider),
+      ...this.endAgentSessions(userId, provider),
+    ]);
+  }
+
+  /** Every provider's settings and sessions of the user, and the choice between them. */
+  async dropAgents(userId: number): Promise<void> {
+    await this.db.batch([
+      this.db.prepare("DELETE FROM agent_configs WHERE user_id = ?").bind(userId),
+      ...this.endAgentSessions(userId, null),
+      this.db.prepare("UPDATE users SET active_provider = NULL WHERE user_id = ?").bind(userId),
+    ]);
+  }
+
+  /**
+   * The user's sessions with a provider (any, when null) end: no message is
+   * passed into them any more, and the sign-in their MCP tokens hang on is
+   * revoked, so a session still running loses the tools at once. The next
+   * session started gets a new sign-in.
+   */
+  private endAgentSessions(userId: number, provider: string | null): D1PreparedStatement[] {
+    // Each provider's sessions hold tokens of a sign-in of its own (src/oauth.ts `mintSessionToken`).
+    const signIns =
+      provider === null
+        ? [AGENTS_SIGN_IN, CODEX_SIGN_IN]
+        : [provider === "codex" ? CODEX_SIGN_IN : AGENTS_SIGN_IN];
+    return [
+      ...signIns.map((name) =>
+        this.db
+          .prepare(
+            "UPDATE refresh_sessions SET revoked = 1 WHERE user_id = ? AND client_name = ? AND revoked = 0",
+          )
+          .bind(userId, name),
+      ),
+      // What the relay was still to run for them is not run.
+      this.db
+        .prepare(
+          `UPDATE relay_jobs SET status = 'failed', error = 'its provider was removed'
+           WHERE user_id = ?1 AND status = 'queued' AND target_session IN (
+             SELECT id FROM agent_sessions WHERE user_id = ?1 AND (?2 IS NULL OR provider = ?2))`,
+        )
+        .bind(userId, provider),
+      this.db
+        .prepare("DELETE FROM agent_sessions WHERE user_id = ?1 AND (?2 IS NULL OR provider = ?2)")
+        .bind(userId, provider),
+    ];
+  }
+
+  async agentUsers(): Promise<number[]> {
+    const { results } = await this.db
+      .prepare("SELECT DISTINCT user_id FROM agent_configs")
+      .all<{ user_id: number }>();
+    return results.map((row) => row.user_id);
+  }
+
+  /** Null: none chosen. */
+  async setActiveProvider(userId: number, provider: string | null): Promise<void> {
+    await this.db
+      .prepare("UPDATE users SET active_provider = ? WHERE user_id = ?")
+      .bind(provider, userId)
+      .run();
+  }
+
+  /** Whether any assistant is set up to start for the user: a routine or another provider. */
+  async hasAssistant(userId: number): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        `SELECT EXISTS (SELECT 1 FROM routines WHERE user_id = ?1)
+             OR EXISTS (SELECT 1 FROM agent_configs WHERE user_id = ?1) AS any`,
+      )
+      .bind(userId)
+      .first<{ any: number }>();
+    return row?.any === 1;
+  }
+
+  /**
+   * A session about to be started, before the provider knows it
+   * (`external_id` null). With `cap`, only while fewer than `cap` sessions of
+   * its kind were started in the last hour: the count and the insert are one
+   * statement, so two starts at once cannot both slip under it. The same id
+   * again (a start retried) takes the row over. False when the cap is reached.
+   */
+  async reserveAgentSession(
+    session: Omit<AgentSession, "created_at" | "told" | "external_id" | "sandboxed"> & {
+      sandboxed?: boolean;
+    },
+    cap: number | null = null,
+  ): Promise<boolean> {
+    const now = nowSeconds();
+    const result = await this.db
+      .prepare(
+        `INSERT INTO agent_sessions
+           (id, user_id, provider, kind, token_exp, signin, token_version, origin, created_at, sandboxed)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?11
+         WHERE ?10 IS NULL OR (SELECT COUNT(*) FROM agent_sessions
+                                WHERE user_id = ?2 AND kind = ?4 AND created_at >= ?9 - 3600) < ?10
+         ON CONFLICT (id) DO UPDATE SET token_exp = excluded.token_exp,
+           signin = excluded.signin, token_version = excluded.token_version
+         WHERE agent_sessions.user_id = excluded.user_id`,
+      )
+      .bind(
+        session.id,
+        session.user_id,
+        session.provider,
+        session.kind,
+        session.token_exp,
+        session.signin,
+        session.token_version,
+        session.origin,
+        now,
+        cap,
+        session.sandboxed === undefined ? null : Number(session.sandboxed),
+      )
+      .run();
+    return (result.meta.changes ?? 0) > 0;
+  }
+
+  /** The provider took the start: its own id for the session. */
+  async setAgentExternal(id: string, externalId: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE agent_sessions SET external_id = ? WHERE id = ?")
+      .bind(externalId, id)
+      .run();
+  }
+
+  /** A reserved start the provider refused: it never was. */
+  async dropReservedAgentSession(id: string): Promise<void> {
+    await this.db
+      .prepare("DELETE FROM agent_sessions WHERE id = ? AND external_id IS NULL")
+      .bind(id)
+      .run();
+  }
+
+  /** The user's session by the Worker's id; null when it is not theirs or gone. */
+  getAgentSession(userId: number, id: string): Promise<AgentSession | null> {
+    return this.db
+      .prepare("SELECT * FROM agent_sessions WHERE id = ? AND user_id = ?")
+      .bind(id, userId)
+      .first<AgentSession>();
+  }
+
+  /** The user's session by the provider's own id: a failure or a stuck session asks. */
+  agentSessionByExternal(
+    userId: number,
+    provider: string,
+    externalId: string,
+  ): Promise<AgentSession | null> {
+    return this.db
+      .prepare(
+        "SELECT * FROM agent_sessions WHERE user_id = ? AND provider = ? AND external_id = ?",
+      )
+      .bind(userId, provider, externalId)
+      .first<AgentSession>();
+  }
+
+  /**
+   * Note that the user was told this of the session; false when they were
+   * already, or heard it failed (nothing comes after that).
+   */
+  async tellOnce(id: string, what: "failed" | "action"): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        "UPDATE agent_sessions SET told = ?2 WHERE id = ?1 AND told IS NOT ?2 AND told IS NOT 'failed'",
+      )
+      .bind(id, what)
+      .run();
+    return (result.meta.changes ?? 0) > 0;
+  }
+
+  /**
+   * A message went into the session after all: a later action it waits for is
+   * worth telling again. A failure stands.
+   */
+  async clearTold(id: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE agent_sessions SET told = NULL WHERE id = ? AND told = 'action'")
+      .bind(id)
+      .run();
+  }
+
+  /**
+   * A session that never came to be (its start failed): what is queued for it
+   * fails, and so do the starts in the log that went to it.
+   */
+  async failAgentSession(userId: number, session: string, error: string): Promise<void> {
+    await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE relay_jobs SET status = 'failed', error = ?
+           WHERE user_id = ? AND target_session = ? AND status = 'queued'`,
+        )
+        .bind(error, userId, session),
+      this.db
+        .prepare(
+          `UPDATE fires SET status = 'failed'
+           WHERE user_id = ? AND session_id = ? AND status IN ('started', 'relayed')`,
+        )
+        .bind(userId, session),
+    ]);
+  }
+
+  /** The message whose start made the session, if a start in the log did. */
+  firstFireOf(
+    userId: number,
+    sessionId: string,
+  ): Promise<{ chat_id: number; message_id: number } | null> {
+    return this.db
+      .prepare(
+        `SELECT chat_id, message_id FROM fires WHERE user_id = ? AND session_id = ?
+         ORDER BY at LIMIT 1`,
+      )
+      .bind(userId, sessionId)
+      .first<{ chat_id: number; message_id: number }>();
+  }
+
+  /** The session was handed a new MCP token: when it runs out, and what it hangs on. */
+  async setAgentToken(
+    id: string,
+    token: { exp: number; signin: string; version: number },
+  ): Promise<void> {
+    await this.db
+      .prepare(
+        "UPDATE agent_sessions SET token_exp = ?, signin = ?, token_version = ? WHERE id = ?",
+      )
+      .bind(token.exp, token.signin, token.version, id)
+      .run();
+  }
+
   // --- where Claude answers -------------------------------------------------
 
   getClaudeChat(chatId: number): Promise<ClaudeChat | null> {
@@ -2064,7 +2380,7 @@ export class Store {
         `INSERT INTO relays (user_id, token_hash, created_at) VALUES (?1, ?2, ?3)
          ON CONFLICT (user_id) DO UPDATE SET token_hash = excluded.token_hash,
            created_at = excluded.created_at, last_seen = NULL, login_failed_at = NULL,
-           offline_noticed_at = NULL`,
+           offline_noticed_at = NULL, runners = NULL`,
       )
       .bind(userId, tokenHash, nowSeconds())
       .run();
@@ -2127,13 +2443,16 @@ export class Store {
       | "thread_id"
       | "wants_answer"
       | "kind"
-    >,
+    > &
+      Partial<Pick<RelayJob, "runner" | "params">>,
+    /** `done`: passed on already, by a provider that needs no relay (src/agents/openai.ts). */
+    status: "queued" | "done" = "queued",
   ): Promise<void> {
     await this.db
       .prepare(
         `INSERT INTO relay_jobs (id, user_id, target_session, body, origin, from_session,
-           chat_id, message_id, thread_id, wants_answer, kind, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
+           chat_id, message_id, thread_id, wants_answer, kind, status, created_at, runner, params)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         job.id,
@@ -2147,25 +2466,83 @@ export class Store {
         job.thread_id,
         job.wants_answer,
         job.kind,
+        status,
         nowSeconds(),
+        job.runner ?? "claude-continue",
+        job.params ?? null,
       )
       .run();
   }
 
-  /** Hand the oldest queued jobs to the relay, each once. */
-  async takeJobs(userId: number, limit: number): Promise<RelayJob[]> {
+  /**
+   * Hand the oldest queued jobs the relay can run (`runners`) to it, each
+   * once. A Codex thread is carried on only once its start told the thread's
+   * id, and only one job of a thread at a time: the rest wait their turn.
+   * `thread`: that id, for a job that carries one on.
+   */
+  async takeJobs(
+    userId: number,
+    limit: number,
+    runners: readonly Runner[],
+    sandboxes: boolean,
+  ): Promise<(RelayJob & { thread: string | null })[]> {
     const { results } = await this.db
       .prepare(
         `UPDATE relay_jobs SET status = 'taken', taken_at = ?1
-         WHERE id IN (SELECT id FROM relay_jobs WHERE user_id = ?2 AND status = 'queued'
-                      ORDER BY created_at, message_id LIMIT ?3)
-         RETURNING *`,
+         WHERE id IN (SELECT j.id FROM relay_jobs j
+                      LEFT JOIN agent_sessions s ON s.id = j.target_session
+                      WHERE j.user_id = ?2 AND j.status = 'queued'
+                        AND instr(?4, ',' || j.runner || ',') > 0
+                        AND (?5 OR json_extract(j.params, '$.sandbox') IS NOT 'read-only')
+                        AND (j.runner != 'codex-resume' OR (s.external_id IS NOT NULL
+                          AND NOT EXISTS (SELECT 1 FROM relay_jobs t
+                                          WHERE t.user_id = ?2 AND t.status = 'taken'
+                                            AND t.target_session = j.target_session)))
+                      ORDER BY j.created_at, j.message_id LIMIT ?3)
+         RETURNING *, (SELECT external_id FROM agent_sessions
+                       WHERE id = relay_jobs.target_session) AS thread`,
       )
-      .bind(nowSeconds(), userId, limit)
+      .bind(nowSeconds(), userId, limit, `,${runners.join(",")},`, sandboxes ? 1 : 0)
+      .all<RelayJob & { thread: string | null }>();
+    return results.sort(
+      (a, b) => a.created_at - b.created_at || (a.message_id ?? 0) - (b.message_id ?? 0),
+    );
+  }
+
+  /** Sandboxed Codex jobs, queued for a relay that cannot sandbox: they fail now, not taken. */
+  async failUnboxedJobs(userId: number, error: string): Promise<RelayJob[]> {
+    const { results } = await this.db
+      .prepare(
+        `UPDATE relay_jobs SET status = 'failed', error = ?
+         WHERE user_id = ? AND status = 'queued' AND runner IN ('codex-start', 'codex-resume')
+           AND json_extract(params, '$.sandbox') = 'read-only' RETURNING *`,
+      )
+      .bind(error, userId)
       .all<RelayJob>();
     return results.sort(
       (a, b) => a.created_at - b.created_at || (a.message_id ?? 0) - (b.message_id ?? 0),
     );
+  }
+
+  /** What the relay said it can run, when that changed. */
+  async setRelayRunners(userId: number, runners: string | null): Promise<void> {
+    await this.db
+      .prepare("UPDATE relays SET runners = ? WHERE user_id = ?")
+      .bind(runners, userId)
+      .run();
+  }
+
+  /**
+   * A Codex start the relay took told the thread's id: kept on the session,
+   * whose queued messages can follow now. The first id told stands.
+   */
+  async setAgentThread(userId: number, session: string, thread: string): Promise<void> {
+    await this.db
+      .prepare(
+        "UPDATE agent_sessions SET external_id = ? WHERE id = ? AND user_id = ? AND external_id IS NULL",
+      )
+      .bind(thread, session, userId)
+      .run();
   }
 
   /** The relay's report on a job it took; null when it was not that relay's or not taken. */
@@ -2184,21 +2561,67 @@ export class Store {
   }
 
   /**
-   * Jobs gone stale fail now: queued ones nobody took since `queuedBefore`
-   * (the relay is gone), and taken ones never reported since `takenBefore`
-   * (it restarted or lost the report).
+   * Jobs gone stale, the oldest first, left as they are: each fails only when
+   * what becomes of it is about to run (`expireJob`), so a sweep cut short
+   * loses none. Claude's: queued ones nobody took since `queued` (the relay is
+   * gone), and taken ones never reported since `taken` (it restarted or lost
+   * the report). Codex's run for long: queued ones go stale after
+   * `codexQueued` only while no relay that runs Codex was `online` since —
+   * before that they may wait behind a running start, up to `codexHeld` — and
+   * taken ones after `codexTaken`.
    */
-  async expireJobs(queuedBefore: number, takenBefore: number): Promise<RelayJob[]> {
+  async staleJobs(
+    cutoffs: {
+      queued: number;
+      taken: number;
+      codexQueued: number;
+      codexHeld: number;
+      codexTaken: number;
+      online: number;
+    },
+    limit: number,
+  ): Promise<RelayJob[]> {
     const { results } = await this.db
       .prepare(
-        `UPDATE relay_jobs SET status = 'failed', error = CASE status
-           WHEN 'queued' THEN 'the relay did not pick it up' ELSE 'the relay did not report back' END
-         WHERE (status = 'queued' AND created_at < ?) OR (status = 'taken' AND taken_at < ?)
-         RETURNING *`,
+        `SELECT j.* FROM relay_jobs j
+         WHERE (j.runner = 'claude-continue'
+                AND ((j.status = 'queued' AND j.created_at < ?1)
+                     OR (j.status = 'taken' AND j.taken_at < ?2)))
+            OR (j.runner != 'claude-continue'
+                AND ((j.status = 'queued' AND (j.created_at < ?4
+                       OR (j.created_at < ?3 AND NOT EXISTS (
+                         SELECT 1 FROM relays r WHERE r.user_id = j.user_id
+                           AND r.last_seen >= ?6
+                           AND instr(',' || r.runners || ',', ',codex,') > 0))))
+                     OR (j.status = 'taken' AND j.taken_at < ?5)))
+         ORDER BY j.created_at, j.message_id LIMIT ?7`,
       )
-      .bind(queuedBefore, takenBefore)
+      .bind(
+        cutoffs.queued,
+        cutoffs.taken,
+        cutoffs.codexQueued,
+        cutoffs.codexHeld,
+        cutoffs.codexTaken,
+        cutoffs.online,
+        limit,
+      )
       .all<RelayJob>();
     return results;
+  }
+
+  /** A stale job fails, if it is still as it was found; null when it moved on meanwhile. */
+  async expireJob(job: Pick<RelayJob, "id" | "status">): Promise<RelayJob | null> {
+    return this.db
+      .prepare(
+        `UPDATE relay_jobs SET status = 'failed', error = ?
+         WHERE id = ? AND status = ? RETURNING *`,
+      )
+      .bind(
+        job.status === "queued" ? "the relay did not pick it up" : "the relay did not report back",
+        job.id,
+        job.status,
+      )
+      .first<RelayJob>();
   }
 
   /**
@@ -2246,12 +2669,16 @@ export class Store {
     return row ? { by_other: row.by_other === 1 } : null;
   }
 
-  /** Whether anyone but the user has had messages relayed into this session. */
+  /**
+   * Whether anyone but the user has had messages relayed into this session —
+   * scene wakes that others caused among them.
+   */
   async sessionHeardOthers(userId: number, sessionId: string): Promise<boolean> {
     const row = await this.db
       .prepare(
         // A scene's wake from the session's own act is no third party's word.
-        "SELECT 1 FROM relay_jobs WHERE user_id = ? AND target_session = ? AND origin != 'user' AND kind != 'scene' LIMIT 1",
+        `SELECT 1 FROM relay_jobs WHERE user_id = ?1 AND target_session = ?2 AND origin != 'user'
+           AND (kind != 'scene' OR from_session IS NULL OR from_session != ?2) LIMIT 1`,
       )
       .bind(userId, sessionId)
       .first();
@@ -2447,6 +2874,33 @@ export class Store {
       .run();
   }
 
+  /**
+   * The user's standing sign-in named `clientName`, kept until at least
+   * `expiresAt`; a new one when there is none. For sign-ins the Worker holds
+   * itself (src/oauth.ts `mintSessionToken`): no refresh token, one row.
+   */
+  async workerSignIn(
+    userId: number,
+    clientName: string,
+    expiresAt: number,
+    newId: string,
+  ): Promise<string> {
+    const now = nowSeconds();
+    const found = await this.db
+      .prepare(
+        `UPDATE refresh_sessions SET rotated_at = ?1, expires_at = MAX(expires_at, ?2)
+         WHERE id = (SELECT id FROM refresh_sessions
+                     WHERE user_id = ?3 AND client_name = ?4 AND revoked = 0 AND expires_at > ?1
+                     ORDER BY created_at DESC LIMIT 1)
+         RETURNING id`,
+      )
+      .bind(now, expiresAt, userId, clientName)
+      .first<{ id: string }>();
+    if (found) return found.id;
+    await this.createSignIn(newId, userId, clientName, expiresAt);
+    return newId;
+  }
+
   /** The user's row and, when `sessionId` is given, whether that sign-in is revoked. */
   tokenState(userId: number, sessionId: string | null): Promise<TokenState | null> {
     return this.db
@@ -2525,6 +2979,7 @@ export class Store {
       this.db.prepare("DELETE FROM day_marks WHERE day < ?").bind(Math.floor(cutoff / DAY)),
       this.db.prepare("DELETE FROM fires WHERE at < ?").bind(cutoff),
       this.db.prepare("DELETE FROM relay_jobs WHERE created_at < ?").bind(cutoff),
+      this.db.prepare("DELETE FROM agent_sessions WHERE created_at < ?").bind(cutoff),
       this.db.prepare("DELETE FROM guest_calls WHERE at < ?").bind(cutoff),
       // Guest chats nobody holds any more: disconnected in the menu, or their holder is gone.
       this.db

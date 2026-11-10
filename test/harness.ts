@@ -258,6 +258,15 @@ export class Harness {
       claude_code_session_id: "cse_01TestSession0000000001",
       claude_code_session_url: "https://claude.ai/code/session_01TestSession0000000001",
     });
+  /** Calls to OpenAI's Agents API, and how the fake API answers the next one. */
+  openai: { url: string; headers: Headers; body: Record<string, unknown> }[] = [];
+  openaiAnswer: (url: string) => Response = (url) =>
+    url.endsWith("/sessions")
+      ? Response.json({
+          id: `sess_${this.openai.filter((call) => call.url === url).length - 1}`,
+          status: "running",
+        })
+      : Response.json({ ok: true });
   private updateId = 1;
   private messageIds = new Map<number, number>();
   private realFetch = globalThis.fetch;
@@ -279,6 +288,16 @@ export class Harness {
             body: body as { text: string },
           });
           return this.fireAnswer();
+        });
+      }
+      if (host === "api.openai.com") {
+        return request.json().then((body) => {
+          this.openai.push({
+            url: request.url,
+            headers: request.headers,
+            body: body as Record<string, unknown>,
+          });
+          return this.openaiAnswer(request.url);
         });
       }
       throw new Error(`Unexpected fetch to ${request.url}`);

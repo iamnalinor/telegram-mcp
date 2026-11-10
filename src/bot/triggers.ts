@@ -10,7 +10,7 @@
  *
  * Where it goes: a reply to a session's message goes back into that session,
  * and a chat's messages of the day (from 00:00 UTC) go to one session — when
- * the user's relay is online (src/relay.ts). A group has two such sessions:
+ * the user's relay is online (src/agents/route.ts). A group has two such sessions:
  * the holder's own, and one for the other members, so the session the holder
  * works in never hears a third party. Otherwise each message starts a new
  * session; one right after a start in the private chat (a forward, then what
@@ -29,8 +29,9 @@
 import { nowSeconds } from "../crypto";
 import { isAllowed } from "../env";
 import { messageLink } from "../links";
-import { enqueue, relayState, replyEnvelope } from "../relay";
-import { fire, firePayload, guestPayload, loadRoutine } from "../routine";
+import { replyEnvelope } from "../agents/envelopes";
+import { activeProvider, route, startsPerHour } from "../agents/route";
+import { providerOf, type Delivery } from "../agents/types";
 import { redactSecrets } from "../secrets";
 import { BOT_ACCOUNT, isGuestKey } from "../store";
 import { TelegramError } from "../telegram/api";
@@ -41,8 +42,6 @@ import { escapeHtml, texts } from "./texts";
 
 /** A reply this long after a wait ended is a new task, not the answer. */
 const AWAIT_GRACE = 60;
-/** Starts in all, per user per hour: Anthropic allows a routine about 30. */
-export const USER_PER_HOUR = 30;
 /** How much of the message the log keeps. */
 const EXCERPT_LENGTH = 20;
 /** A private-chat message this soon after a start is read by that session. */
@@ -107,8 +106,9 @@ export async function maybeStart(
     excerpt: excerptOf(bodyOf(message), ctx.bot),
     album: message.media_group_id ?? null,
   };
+  const active = await activeProvider(ctx, holder);
   const claimed = await ctx.store.beginFire(entry, {
-    user: USER_PER_HOUR,
+    user: startsPerHour(active),
     others: claim.others_limit,
   });
   if (claimed === "again") return;
@@ -125,7 +125,6 @@ export async function maybeStart(
   const topic = message.is_topic_message ? (message.message_thread_id ?? null) : null;
   const continues = replyToHolder ? answered.session_id : null;
   const agent = continues ? (answered?.agent ?? null) : null;
-  const state = relayState(await ctx.store.getRelay(holder));
 
   // Where it goes: the session it replies to, else the chat's session of the day.
   let into: { session: string; kind: "reply" | "day" } | null = continues
@@ -140,33 +139,34 @@ export async function maybeStart(
       await ctx.store.endFire(chat.id, message.message_id, { status: "joined" });
       return;
     }
-    const day =
-      state === "online"
-        ? await ctx.store.latestSession(holder, [chat.id], now - (now % DAY), byOther)
-        : null;
-    if (day) into = { session: day, kind: "day" };
+    const day = await ctx.store.latestSession(holder, [chat.id], now - (now % DAY), byOther);
+    // Only a session of the provider the holder answers with now: after a switch, a new one starts.
+    if (day && providerOf(day) === active?.kind) into = { session: day, kind: "day" };
   }
 
-  if (into && state === "online") {
-    // Passed on to a session that exists: no new start, so no 👀.
-    const owner = await ctx.store.getUser(holder);
-    const kind = into.kind;
-    await enqueue(
-      ctx.store,
-      {
-        user_id: holder,
-        target_session: into.session,
+  await launch(ctx, {
+    holder,
+    chat: { id: chat.id, title: chat.title ?? null, private: isPrivate },
+    messageId: message.message_id,
+    topic,
+    byOther,
+    continues,
+    agent,
+    into: into && {
+      session: into.session,
+      job: {
         origin: byOther ? "other" : "user",
         from_session: null,
         chat_id: chat.id,
         message_id: message.message_id,
         thread_id: topic,
         wants_answer: 0,
-        kind,
+        kind: into.kind,
       },
-      () =>
-        replyEnvelope({
-          kind,
+      envelope: async () => {
+        const owner = await ctx.store.getUser(holder);
+        return replyEnvelope({
+          kind: into.kind,
           user: { id: holder, username: owner?.username ?? null, name: owner?.first_name ?? null },
           chat: { id: chat.id, title: chat.title ?? null },
           messageId: message.message_id,
@@ -181,25 +181,9 @@ export async function maybeStart(
             : { id: from.id, name: displayName(from) },
           byUser: !byOther,
           agent,
-        }),
-    );
-    await ctx.store.endFire(chat.id, message.message_id, {
-      status: "relayed",
-      sessionId: into.session,
-    });
-    return;
-  }
-
-  await launch(ctx, {
-    holder,
-    chat: { id: chat.id, title: chat.title ?? null, private: isPrivate },
-    messageId: message.message_id,
-    topic,
-    byOther,
-    continues,
-    agent,
-    // A reply that should have gone into its session: the new one says why it did not.
-    relay: continues && (state === "login" || state === "offline") ? state : null,
+        });
+      },
+    },
   });
 }
 
@@ -220,12 +204,12 @@ export async function holderVoice(
 }
 
 /**
- * Start the holder's routine on a message already claimed in `fires`: the
- * usual way, and the fallback when the relay could not pass a reply on.
- * `relay` tells the session why the reply did not reach the session it answers.
- * A guest call (`guest`: the chat is its key, the message id the call's id)
- * starts the same way; nothing can be reacted to there. False when nothing
- * started.
+ * Route a message already claimed in `fires`: into the session it belongs to
+ * (`into`), else a new session of the holder's — the usual way, and the
+ * fallback when the relay could not pass a reply on. `relay` tells the new
+ * session why the reply did not reach the session it answers. A guest call
+ * (`guest`: the chat is its key, the message id the call's id) goes the same
+ * way; nothing can be reacted to there. False when it got nowhere.
  */
 export async function launch(
   ctx: BotContext,
@@ -239,52 +223,66 @@ export async function launch(
     agent?: string | null;
     relay?: "login" | "offline" | "failed" | null;
     guest?: boolean;
+    into?: Delivery | null;
   },
 ): Promise<boolean> {
-  const { tell, where, t } = await holderVoice(ctx, p.holder, p.chat.id, p.chat.title);
+  const by = p.byOther ? "other" : "user";
+  const routed = await route(ctx, {
+    holder: p.holder,
+    into: p.into,
+    start: p.guest
+      ? { kind: "guest", call: p.messageId, by, continues: p.continues }
+      : {
+          kind: "message",
+          chat: p.chat.id,
+          topic: p.topic,
+          message: p.messageId,
+          by,
+          continues: p.continues,
+          agent: p.agent ?? null,
+          relay: p.relay ?? null,
+        },
+  });
+  if (routed.via === "delivered") {
+    // Passed on to a session that exists: no new start, so no 👀.
+    await ctx.store.endFire(p.chat.id, p.messageId, {
+      status: "relayed",
+      sessionId: routed.session,
+    });
+    return true;
+  }
+  if (routed.via === "started") {
+    await ctx.store.endFire(p.chat.id, p.messageId, {
+      status: "started",
+      sessionId: routed.session,
+    });
+    // No notice: 👀 says it started, and the chat's log in the menu has the session.
+    if (!p.guest) await react(ctx, p.chat.id, p.messageId, "👀");
+    return true;
+  }
   // Others' failures reach the holder once an hour per chat: a broken routine
   // must not turn every member's message into a notice.
   const quiet =
     p.byOther && (await ctx.store.othersFailedSince(p.holder, p.chat.id, nowSeconds() - 3600));
-
-  const routine = await loadRoutine(ctx.store, ctx.config.secretKey, p.holder);
-  if (typeof routine === "string") {
-    await ctx.store.endFire(p.chat.id, p.messageId, { status: "failed" });
-    if (!quiet) await tell(where + t.fireFailed(routine));
-    return false;
-  }
-
-  const result = await fire(
-    routine.triggerId,
-    routine.token,
-    p.guest
-      ? guestPayload(p.messageId, p.byOther ? "other" : "user", p.continues)
-      : firePayload({
-          chat: p.chat.id,
-          topic: p.topic,
-          message: p.messageId,
-          by: p.byOther ? "other" : "user",
-          continues: p.continues,
-          agent: p.agent ?? null,
-          relay: p.relay ?? null,
-        }),
-  );
-  if (!result.ok) {
-    await ctx.store.endFire(p.chat.id, p.messageId, { status: "failed" });
+  await ctx.store.endFire(p.chat.id, p.messageId, { status: "failed" });
+  if (routed.via === "unreachable") return false;
+  if (routed.reason !== "none" && routed.reason !== "broken") {
     console.error(
-      JSON.stringify({ event: "routine_fire_failed", user: p.holder, detail: result.detail }),
+      JSON.stringify({ event: "routine_fire_failed", user: p.holder, detail: routed.detail }),
     );
-    const minutes = result.retryAfter ? Math.ceil(result.retryAfter / 60) : undefined;
-    if (!quiet) await tell(where + t.fireFailed(result.reason, minutes));
-    return false;
   }
-  await ctx.store.endFire(p.chat.id, p.messageId, {
-    status: "started",
-    sessionId: result.sessionId,
-  });
-  // No notice: 👀 says it started, and the chat's log in the menu has the session.
-  if (!p.guest) await react(ctx, p.chat.id, p.messageId, "👀");
-  return true;
+  if (!quiet) {
+    const { tell, where, t } = await holderVoice(ctx, p.holder, p.chat.id, p.chat.title);
+    const minutes = routed.retryAfter ? Math.ceil(routed.retryAfter / 60) : undefined;
+    // A session that is there but did not take it now: nothing new started in its place.
+    await tell(
+      where +
+        (routed.via === "undelivered"
+          ? t.deliverFailed(routed.reason, minutes)
+          : t.fireFailed(routed.reason, minutes, routed.provider)),
+    );
+  }
+  return false;
 }
 
 /** The first words, without the mention that called the bot. */

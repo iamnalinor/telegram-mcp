@@ -159,9 +159,9 @@ describe("waking the session", () => {
     const at = await create();
     for (let i = 0; i < 10; i++) expect((await press(ALICE, at)).text).toBeUndefined();
     const before = row(at.id).version;
-    expect((await press(ALICE, at)).text).toBe("Claude is resting. Try again in 60 min.");
+    expect((await press(ALICE, at)).text).toBe("The assistant is resting. Try again in 60 min.");
     expect((await press({ ...ALICE, language_code: "ru" }, at)).text).toBe(
-      "Claude отдыхает, попробуй через 60 мин.",
+      "Ассистент отдыхает, попробуй через 60 мин.",
     );
     expect(row(at.id).version).toBe(before);
     expect(h.fires).toHaveLength(10);
@@ -172,7 +172,9 @@ describe("waking the session", () => {
     const at = await create();
     await press(BOB, at);
     await press(BOB, at);
-    expect((await press(BOB, at)).text).toMatch(/^Claude is resting\. Try again in \d+ min\.$/);
+    expect((await press(BOB, at)).text).toMatch(
+      /^The assistant is resting\. Try again in \d+ min\.$/,
+    );
     expect(h.fires).toHaveLength(2);
     // The owner's own wakes are not the others' to use up.
     expect((await press(ALICE, at)).text).toBeUndefined();
@@ -221,7 +223,7 @@ describe("nobody to wake", () => {
     const at = await create();
     const before = row(at.id).version;
     expect((await press(ALICE, at)).text).toBe(
-      "Nobody to answer right now: Claude is not connected.",
+      "Nobody to answer right now: no assistant is connected.",
     );
     expect(row(at.id).version).toBe(before);
   });

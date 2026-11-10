@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { existsSync } from "node:fs";
+import { lstat, mkdir, mkdtemp, readFile, stat, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
 
 import worker from "../src/index";
+import { BOX_LOGIN } from "../src/relayScript";
 import { Harness } from "./harness";
 
 const ALICE = { id: 111, first_name: "Alice", username: "alice", language_code: "en" };
@@ -84,6 +88,7 @@ describe("setting the relay up", () => {
     expect(command).toContain(
       "https://tg.example.workers.dev/relay/install.sh | RELAY_TOKEN=relay_",
     );
+    expect(command).toContain(" RELAY_AGENT=claude bash");
 
     const script = await (await h.fetch("/relay/install.sh")).text();
     expect(script).toStartWith("#!/usr/bin/env bash");
@@ -451,5 +456,339 @@ describe("after review", () => {
     const t0 = Date.now();
     await h.fetch("/relay/jobs?wait=10", { headers: { authorization: `Bearer ${token}` } });
     expect(Date.now() - t0).toBeLessThan(1000);
+  });
+});
+
+describe("runners", () => {
+  const CX = "cx_0123456789abcdef01234567";
+  const pollWith = async (token: string, runners: string) =>
+    (
+      await h.fetch(`/relay/jobs?runners=${runners}`, {
+        headers: { authorization: `Bearer ${token}` },
+      })
+    ).json<Record<string, unknown>[]>();
+  const started = (token: string, id: string, body: unknown) =>
+    h.fetch(`/relay/jobs/${id}/started`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  /** A Codex session the bot started, its start queued, and a message queued behind it. */
+  function codexQueue() {
+    const now = Math.floor(Date.now() / 1000);
+    h.db.raw.exec(
+      `INSERT INTO agent_sessions (id, user_id, provider, kind, created_at, origin)
+       VALUES ('${CX}', ${ALICE.id}, 'codex', 'chat', ${now}, 'user');
+       INSERT INTO relay_jobs (id, user_id, target_session, body, origin, status, kind, runner, params, created_at)
+       VALUES ('ask_cxstart1', ${ALICE.id}, '${CX}', 'the prompt', 'user', 'queued', 'reply', 'codex-start',
+               '{"model":null,"sandbox":"danger-full-access","cwd":null}', ${now - 2}),
+              ('ask_cxresume', ${ALICE.id}, '${CX}', 'a reply', 'user', 'queued', 'reply', 'codex-resume',
+               '{"model":null,"sandbox":"read-only","cwd":null}', ${now - 1});`,
+    );
+  }
+  /** Another sandboxed Codex start, queued. */
+  function codexQueue2() {
+    const now = Math.floor(Date.now() / 1000);
+    const cx = "cx_0123456789abcdef76543210";
+    h.db.raw.exec(
+      `INSERT INTO agent_sessions (id, user_id, provider, kind, created_at, origin, sandboxed)
+       VALUES ('${cx}', ${ALICE.id}, 'codex', 'chat', ${now}, 'other', 1);
+       INSERT INTO relay_jobs (id, user_id, target_session, body, origin, status, kind, runner, params, created_at)
+       VALUES ('ask_cxstart2', ${ALICE.id}, '${cx}', 'the prompt', 'other', 'queued', 'reply', 'codex-start',
+               '{"model":null,"sandbox":"read-only","cwd":null}', ${now});`,
+    );
+  }
+  const status = (id: string) =>
+    (h.db.raw.query("SELECT status FROM relay_jobs WHERE id = ?").get(id) as { status: string })
+      .status;
+
+  it("an old relay that names none gets Claude's jobs, each saying its runner", async () => {
+    const token = await relayToken();
+    await poll(token);
+    await replyToSession();
+    const [job] = await jobs(token);
+    expect(job).toMatchObject({ runner: "claude-continue", session: `session_${SESSION}` });
+  });
+
+  it("a relay that runs only Codex gets no Claude job: a reply starts a session", async () => {
+    const token = await relayToken();
+    expect(await pollWith(token, "codex")).toEqual([]);
+    await replyToSession();
+    expect(h.fires).toHaveLength(1);
+    expect(await pollWith(token, "codex")).toEqual([]);
+  });
+
+  it("Codex jobs go only to a relay that runs Codex, and a message waits for its start", async () => {
+    const token = await relayToken();
+    codexQueue();
+    expect(await pollWith(token, "claude")).toEqual([]);
+    const [start] = await pollWith(token, "claude,codex,codex-sandbox");
+    expect(start).toMatchObject({
+      id: "ask_cxstart1",
+      runner: "codex-start",
+      session: CX,
+      text: "the prompt",
+      sandbox: "danger-full-access",
+    });
+    // No thread yet, and the start still runs: the message waits.
+    expect(await pollWith(token, "claude,codex,codex-sandbox")).toEqual([]);
+    expect((await started(token, "ask_cxstart1", { thread: "not ok!" })).status).toBe(404);
+    expect((await started(token, "ask_cxstart1", { thread: "0199a0b1-thread" })).status).toBe(204);
+    const row = h.db.raw.query("SELECT external_id FROM agent_sessions").get();
+    expect(row).toEqual({ external_id: "0199a0b1-thread" });
+    expect(await pollWith(token, "claude,codex,codex-sandbox")).toEqual([]);
+
+    expect((await report(token, "ask_cxstart1", { ok: true })).status).toBe(204);
+    const [resume] = await pollWith(token, "claude,codex,codex-sandbox");
+    expect(resume).toMatchObject({
+      id: "ask_cxresume",
+      runner: "codex-resume",
+      thread: "0199a0b1-thread",
+      sandbox: "read-only",
+    });
+  });
+
+  it("a relay that cannot sandbox is handed no sandboxed run: it fails at once, told once", async () => {
+    const token = await relayToken();
+    codexQueue();
+    h.db.raw.exec(
+      `UPDATE relay_jobs SET params = '{"model":null,"sandbox":"read-only","cwd":null}'`,
+    );
+    expect(await pollWith(token, "codex")).toEqual([]);
+    expect(status("ask_cxstart1")).toBe("failed");
+    expect(status("ask_cxresume")).toBe("failed");
+    const said = h.telegram.called("sendMessage").map((call) => String(call.params.text));
+    const told = said.filter((text) => text.includes("cannot sandbox Codex"));
+    expect(told).toHaveLength(1);
+    expect(told[0]).toContain("Codex could not start");
+    // One that can takes them.
+    codexQueue2();
+    const [start] = await pollWith(token, "codex,codex-sandbox");
+    expect(start).toMatchObject({ id: "ask_cxstart2", sandbox: "read-only" });
+  });
+
+  it("a Codex-only relay is no relay for Claude: its screen and the session tools say so", async () => {
+    const token = await relayToken();
+    await pollWith(token, "codex,codex-sandbox");
+    const screen = await press("m:rl");
+    expect(String(screen?.text)).toContain("it serves Codex");
+    const listed = await h.tool(alice, "list_sessions", {});
+    expect(listed.text).toContain("Relay: noclaude");
+    expect(listed.text).toContain("serves Codex, not Claude");
+  });
+
+  it("a start tells its thread only for a Codex start it holds", async () => {
+    const token = await relayToken();
+    await poll(token);
+    await replyToSession();
+    const [job] = await jobs(token);
+    expect((await started(token, job.id, { thread: "0199a0b1-thread" })).status).toBe(404);
+  });
+
+  it("a relay signed out of Claude still runs Codex", async () => {
+    const token = await relayToken();
+    await pollWith(token, "claude,codex,codex-sandbox");
+    h.db.raw.exec("UPDATE relays SET login_failed_at = 1");
+    codexQueue();
+    const [start] = await pollWith(token, "claude,codex,codex-sandbox");
+    expect(start.id).toBe("ask_cxstart1");
+  });
+
+  it("Codex jobs wait while the relay is there, and fail once it is gone or they ran too long", async () => {
+    const token = await relayToken();
+    await pollWith(token, "claude,codex,codex-sandbox");
+    codexQueue();
+    const sweep = () => worker.scheduled({ cron: "*/5 * * * *" } as ScheduledController, h.env);
+    h.db.raw.exec("UPDATE relay_jobs SET created_at = created_at - 600");
+    await sweep();
+    expect(status("ask_cxstart1")).toBe("queued");
+    // Gone quiet: Codex's jobs fail within minutes.
+    h.db.raw.exec("UPDATE relays SET last_seen = last_seen - 600");
+    await sweep();
+    expect(status("ask_cxstart1")).toBe("failed");
+    const said = h.telegram.called("sendMessage").map((call) => String(call.params.text));
+    expect(said.some((text) => text.includes("gone quiet"))).toBe(true);
+    expect(said.at(-1)).toContain("Codex could not start");
+  });
+
+  it("a Codex job taken runs up to an hour", async () => {
+    const token = await relayToken();
+    codexQueue();
+    await pollWith(token, "codex,codex-sandbox");
+    const sweep = () => worker.scheduled({ cron: "*/5 * * * *" } as ScheduledController, h.env);
+    h.db.raw.exec("UPDATE relay_jobs SET taken_at = taken_at - 1800 WHERE status = 'taken'");
+    await sweep();
+    expect(status("ask_cxstart1")).toBe("taken");
+    h.db.raw.exec("UPDATE relay_jobs SET taken_at = taken_at - 1900 WHERE status = 'taken'");
+    await sweep();
+    expect(status("ask_cxstart1")).toBe("failed");
+  });
+});
+
+describe("the installer", () => {
+  it("is valid bash, and so is the relay it writes", async () => {
+    const dir = await mkdtemp(`${tmpdir()}/relay-`);
+    const script = await (await h.fetch("/relay/install.sh")).text();
+    const loop = /<<'RELAY'\n([\s\S]*?)\nRELAY\n/.exec(script)![1];
+    for (const [name, text] of [
+      ["install.sh", script],
+      ["relay.sh", loop],
+    ]) {
+      await Bun.write(`${dir}/${name}`, text);
+      const check = Bun.spawnSync(["bash", "-n", `${dir}/${name}`]);
+      expect(check.stderr.toString()).toBe("");
+      expect(check.exitCode).toBe(0);
+    }
+    expect(loop).toContain("runners=$RUNNERS");
+    // Sandboxed runs go inside bubblewrap, and only where it works; the user's own Codex config stays.
+    expect(loop).toContain('RUNNERS="$RUNNERS,codex-sandbox"');
+    expect(loop).toContain("--unshare-pid");
+    expect(loop).toContain("mcp_servers.tg_relay.url");
+    expect(script).toContain("packages bubblewrap");
+    expect(script).toContain("apparmor_parser -r /etc/apparmor.d/bwrap");
+    expect(script).not.toMatch(/^\s*codex mcp (?:remove|logout)/m);
+  });
+
+  it("serves the one assistant it is told, and assumes none", async () => {
+    const home = await mkdtemp(`${tmpdir()}/relay-home-`);
+    const script = await (await h.fetch("/relay/install.sh")).text();
+    await Bun.write(`${home}/install.sh`, script);
+    const run = (agent?: string) =>
+      Bun.spawnSync(["bash", `${home}/install.sh`], {
+        env: {
+          PATH: Bun.env.PATH,
+          HOME: home,
+          RELAY_TOKEN: "relay_0123456789abcdefghij",
+          ...(agent ? { RELAY_AGENT: agent } : {}),
+        },
+      });
+    for (const agent of [undefined, "claude,codex", "gpt"]) {
+      const refused = run(agent);
+      expect(refused.exitCode).toBe(1);
+      expect(refused.stderr.toString()).toContain("RELAY_AGENT=claude");
+      expect(refused.stderr.toString()).toContain("RELAY_AGENT=codex");
+    }
+    const loop = /<<'RELAY'\n([\s\S]*?)\nRELAY\n/.exec(script)![1];
+    expect(script).toContain("RELAY_AGENT=%s");
+    // The relay itself guesses none either: an env file without one stops it.
+    expect(loop).not.toContain("RELAY_AGENT:-claude");
+    await Bun.write(`${home}/relay.sh`, loop);
+    const relay = Bun.spawnSync(["bash", `${home}/relay.sh`], {
+      env: {
+        PATH: Bun.env.PATH,
+        HOME: home,
+        RELAY_TOKEN: "relay_0123456789abcdefghij",
+        RELAY_ORIGIN: "http://127.0.0.1:9",
+      },
+    });
+    expect(relay.exitCode).toBe(1);
+    expect(relay.stderr.toString()).toContain("RELAY_AGENT=codex");
+  });
+});
+
+describe("a Codex login in a box", () => {
+  const jwt = (claims: object) =>
+    `e30.${btoa(JSON.stringify(claims)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "")}.sig`;
+  const id = (account: string, email = "alice@example.com") =>
+    jwt({ email, "https://api.openai.com/auth": { chatgpt_account_id: account } });
+  const access = (account: string) =>
+    jwt({ "https://api.openai.com/auth": { chatgpt_account_id: account } });
+  const login = (account: string, refresh: string, at: string, email?: string) => ({
+    tokens: {
+      id_token: id(account, email),
+      access_token: access(account),
+      refresh_token: refresh,
+      account_id: account,
+    },
+    last_refresh: at,
+  });
+  const USERS = {
+    auth_mode: "chatgpt",
+    OPENAI_API_KEY: null,
+    ...login("acct-1", "rt-old", "2026-11-01T10:00:00.123456Z"),
+  };
+
+  /** A fake home with the user's login and a box, and a way to run the relay's functions there. */
+  async function setUp() {
+    const home = await mkdtemp(`${tmpdir()}/relay-box-`);
+    const box = `${home}/.tg-relay/sandbox/cx_0123456789abcdef01234567`;
+    await mkdir(`${box}/codex`, { recursive: true });
+    await mkdir(`${home}/.codex`);
+    await Bun.write(`${home}/.codex/auth.json`, JSON.stringify(USERS));
+    await Bun.write(
+      `${home}/box.sh`,
+      `DIR="$HOME/.tg-relay"\nCODEX_AUTH="$HOME/.codex/auth.json"\n${BOX_LOGIN}\n"$@"\n`,
+    );
+    const run = (fn: "box_login" | "box_logout") => {
+      const done = Bun.spawnSync(["bash", `${home}/box.sh`, fn, box], {
+        env: { PATH: Bun.env.PATH, HOME: home },
+      });
+      expect(done.stderr.toString()).toBe("");
+      return done.exitCode;
+    };
+    const users = async () =>
+      JSON.parse(await readFile(`${home}/.codex/auth.json`, "utf8")) as typeof USERS;
+    const inBox = (login: object) => Bun.write(`${box}/codex/auth.json`, JSON.stringify(login));
+    return { home, box, run, users, inBox };
+  }
+
+  it("goes in as a file of the box's own, through no link a run left", async () => {
+    const { home, box, run } = await setUp();
+    await Bun.write(`${home}/precious`, "keep me");
+    await symlink(`${home}/precious`, `${box}/codex/auth.json`);
+    expect(run("box_login")).toBe(0);
+    expect(await readFile(`${home}/precious`, "utf8")).toBe("keep me");
+    const copied = await lstat(`${box}/codex/auth.json`);
+    expect(copied.isSymbolicLink()).toBe(false);
+    expect(copied.mode & 0o777).toBe(0o600);
+    expect(JSON.parse(await readFile(`${box}/codex/auth.json`, "utf8"))).toEqual(USERS);
+  });
+
+  it("comes out as the refreshed tokens alone, merged into the user's file", async () => {
+    const { home, run, users, inBox } = await setUp();
+    expect(run("box_login")).toBe(0);
+    await inBox({
+      auth_mode: "apikey",
+      OPENAI_API_KEY: "sk-theirs",
+      ...login("acct-1", "rt-new", "2026-11-02T10:00:00.5Z"),
+    });
+    expect(run("box_logout")).toBe(0);
+    expect(await users()).toEqual({
+      ...USERS,
+      ...login("acct-1", "rt-new", "2026-11-02T10:00:00.5Z"),
+    });
+    expect((await stat(`${home}/.codex/auth.json`)).mode & 0o777).toBe(0o600);
+  });
+
+  it("leaves the user's file as it was for a link, another account, an API key, or nothing newer", async () => {
+    const { home, box, run, users, inBox } = await setUp();
+    const forged = [
+      login("acct-2", "rt-new", "2026-11-02T10:00:00Z"),
+      login("acct-1", "rt-new", "2026-11-02T10:00:00Z", "mallory@example.com"),
+      {
+        ...login("acct-1", "rt-new", "2026-11-02T10:00:00Z"),
+        tokens: {
+          ...login("acct-1", "rt-new", "2026-11-02T10:00:00Z").tokens,
+          access_token: access("acct-2"),
+        },
+      },
+      { ...USERS, auth_mode: "apikey", OPENAI_API_KEY: "sk-theirs" },
+      login("acct-1", "rt-new", "2026-10-01T10:00:00Z"),
+      login("acct-1", "rt-new", "2099-01-01T00:00:00Z"),
+      { tokens: { id_token: id("acct-1") }, last_refresh: "2026-11-02T10:00:00Z" },
+    ];
+    for (const login of forged) {
+      expect(run("box_login")).toBe(0);
+      await inBox(login);
+      expect(run("box_logout")).toBe(0);
+      expect(await users()).toEqual(USERS);
+      expect(existsSync(`${box}/codex/auth.json`)).toBe(false);
+    }
+    // A link to a refreshed login elsewhere is not read.
+    await Bun.write(`${home}/elsewhere`, JSON.stringify(login("acct-1", "rt-new", "2026-11-02Z")));
+    await symlink(`${home}/elsewhere`, `${box}/codex/auth.json`);
+    expect(run("box_logout")).toBe(0);
+    expect(await users()).toEqual(USERS);
+    expect(existsSync(`${home}/elsewhere`)).toBe(true);
   });
 });

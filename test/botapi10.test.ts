@@ -61,6 +61,11 @@ function distinctSessions() {
     return Response.json({ claude_code_session_id: `cse_${id}` });
   };
 }
+const OPENAI_KEY = `sk-proj-${"a".repeat(48)}`;
+const openaiStarts = () =>
+  h.openai
+    .filter((call) => call.url.endsWith("/v1/agents/sessions"))
+    .map((call) => ({ url: call.url, body: call.body as { input: string } }));
 const lastSent = () =>
   (
     h.db.raw
@@ -108,6 +113,25 @@ describe("a group's sessions of the day", () => {
     const [job] = await jobs(token);
     expect(job.session).toBe("session_01Session000000000000002");
     expect(job.text).toContain('a third party, "Bob" (id 222)');
+  });
+
+  it("starts the day's next tag with OpenAI once the user switched", async () => {
+    const token = await relayOnline();
+    await h.say(TEAM, ALICE, `${BOT} fix the login page`);
+    expect(h.fires).toHaveLength(1);
+    await h.say(dm(ALICE), ALICE, OPENAI_KEY);
+    expect(openaiStarts()).toHaveLength(1);
+    await press("m:ap:openai");
+
+    // The Claude session of the day is not passed what OpenAI should answer now.
+    await h.say(TEAM, ALICE, `${BOT} and the signup page`);
+    expect(await jobs(token)).toHaveLength(0);
+    expect(openaiStarts()).toHaveLength(2);
+    expect(h.fires).toHaveLength(1);
+    // OpenAI's session is the chat's session of the day from then on.
+    await h.say(TEAM, ALICE, `${BOT} and the footer`);
+    expect(openaiStarts()).toHaveLength(2);
+    expect(h.openai.at(-1)!.url).toEndWith("/sess_1/events");
   });
 
   it("starts a session per tag without the relay, as before", async () => {
@@ -312,6 +336,26 @@ describe("guest mode", () => {
     expect((await jobs(token))[0].session).toBe("session_01Session000000000000002");
   });
 
+  it("starts the day's next call with OpenAI once the user switched, and takes replies back", async () => {
+    distinctSessions();
+    const token = await relayOnline();
+    await call(ALICE, `${BOT} translate this`);
+    expect(h.fires).toHaveLength(1);
+    await h.say(dm(ALICE), ALICE, OPENAI_KEY);
+    expect(openaiStarts()).toHaveLength(1);
+    await press("m:ap:openai");
+
+    // A reply to the bot's own message there still goes to the Claude session that wrote it.
+    await call(ALICE, "shorter please", { reply_to_message: ownMessage });
+    expect((await jobs(token))[0].session).toBe("session_01Session000000000000001");
+    // Anything else today is not that session's: OpenAI starts one of its own.
+    await call(ALICE, `${BOT} and this`);
+    expect(await jobs(token)).toHaveLength(0);
+    expect(openaiStarts()).toHaveLength(2);
+    expect(openaiStarts()[1].body.input).toContain("guest: 3  by: user");
+    expect(h.fires).toHaveLength(1);
+  });
+
   it("names the session a reply continues when there is no relay", async () => {
     await call(ALICE, `${BOT} is this true?`);
     await call(ALICE, "why?", { reply_to_message: ownMessage });
@@ -328,7 +372,7 @@ describe("guest mode", () => {
       inline_message_id: "inline-1",
     });
     expect(String(h.telegram.called("editMessageText").at(-1)!.params.text)).toContain(
-      "Could not start Claude",
+      "Could not start your assistant",
     );
   });
 });

@@ -10,6 +10,7 @@
  *   GET  /file/<signed>    attachment download
  *   GET  /health           liveness
  *   /relay/…               the user's relay to Claude Code sessions, see src/relay.ts
+ *   POST /openai/webhook/<path>  OpenAI's events about the user's sessions, see src/bot/openaiWebhook.ts
  *
  * Scheduled: daily, delete messages past retention and re-check the webhook;
  * every few minutes, fail relay jobs nobody picked up (src/relay.ts).
@@ -20,6 +21,7 @@ import { createMcpHandler, type McpHttpHandler } from "@modelcontextprotocol/ser
 import { escapeHtml } from "./bot/texts";
 import { ensureWebhook, WEBHOOK_PATH } from "./bot/setup";
 import { handleWebhook } from "./bot/webhook";
+import { handleOpenAIWebhook, OPENAI_WEBHOOK_PATH } from "./bot/openaiWebhook";
 import { base, botContext, toolContext, type Base } from "./context";
 import { nowSeconds } from "./crypto";
 import { isAllowed, type Env } from "./env";
@@ -40,6 +42,7 @@ import type { WebhookInfo } from "./telegram/types";
 import type { ToolContext } from "./tools/common";
 import { drawFinished, endScene } from "./bot/scenes";
 import { stillMember } from "./bot/triggers";
+import { fallBack } from "./bot/fallback";
 
 /**
  * One handler per isolate — it outlives requests. The server inside is built
@@ -108,11 +111,12 @@ async function handleMcp(
     return tooManyRequests("Too many requests for this user. Wait a minute and try again.");
   }
 
-  const { userId, username, name, client } = authInfo.extra as unknown as McpAuth;
+  const { userId, username, name, client, session } = authInfo.extra as unknown as McpAuth;
   const toolCtx = await toolContext(core, publicOrigin(request), userId, {
     username,
     name,
     client,
+    session,
   });
   // A scene's held-back redraw finishes after the answer is sent.
   toolCtx.defer = defer;
@@ -174,10 +178,21 @@ export default {
     }
 
     if (pathname.startsWith("/relay/")) {
-      const response = await handleRelay(request, pathname, core.store, publicOrigin(request), () =>
-        botContext(core, publicOrigin(request)),
+      const response = await handleRelay(
+        request,
+        pathname,
+        core.store,
+        publicOrigin(request),
+        () => botContext(core, publicOrigin(request)),
+        fallBack,
       );
       if (response) return response;
+    }
+
+    if (pathname.startsWith(OPENAI_WEBHOOK_PATH)) {
+      return handleOpenAIWebhook(request, pathname, core, () =>
+        botContext(core, publicOrigin(request)),
+      );
     }
 
     const contextFor = (userId: number) => toolContext(core, publicOrigin(request), userId);
@@ -203,8 +218,10 @@ export default {
   async scheduled(event, env) {
     const core = await base(env);
     if (event.cron === RELAY_SWEEP) {
-      await sweepRelays(core.store, async () =>
-        botContext(core, (await core.store.getMeta("public_origin")) ?? ""),
+      await sweepRelays(
+        core.store,
+        async () => botContext(core, (await core.store.getMeta("public_origin")) ?? ""),
+        fallBack,
       );
       return;
     }
@@ -251,6 +268,9 @@ export default {
     }
     for (const userId of await core.store.routineUsers()) {
       if (!isAllowed(core.config, userId)) await core.store.deleteRoutine(userId);
+    }
+    for (const userId of await core.store.agentUsers()) {
+      if (!isAllowed(core.config, userId)) await core.store.dropAgents(userId);
     }
     const origin = await core.store.getMeta("public_origin");
     if (origin) {

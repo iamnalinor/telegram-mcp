@@ -269,7 +269,7 @@ describe("B4: the scene's wake limit holds under concurrency", () => {
     restores.push(() => (proto.commitScene = commit));
     const answers = await Promise.all(Array.from({ length: 5 }, () => press(ALICE, at)));
     expect(h.fires).toHaveLength(2);
-    expect(answers.filter((a) => a.text?.startsWith("Claude is resting"))).toHaveLength(3);
+    expect(answers.filter((a) => a.text?.startsWith("The assistant is resting"))).toHaveLength(3);
   });
 
   it("the user's 30 starts an hour bind scene wakes too", async () => {
@@ -282,7 +282,7 @@ describe("B4: the scene's wake limit holds under concurrency", () => {
         )
         .run(TEAM.id, 9000 + i, ALICE.id, now - 60);
     }
-    expect((await press(ALICE, at)).text).toMatch(/^Claude is resting/);
+    expect((await press(ALICE, at)).text).toMatch(/^The assistant is resting/);
   });
 });
 
@@ -355,7 +355,7 @@ describe("waking from every source", () => {
     expect(woke.map((e) => e.name)).toEqual(["reply", "vote", "reaction", "rolled"]);
   });
 
-  it("where someone else holds Claude on tag, a third party cannot wake the owner", async () => {
+  it("where someone else's assistant answers, a third party cannot wake the owner", async () => {
     h.markConnected(BOB);
     await h.say(TEAM, BOB, "/connect");
     h.db.raw
@@ -364,7 +364,7 @@ describe("waking from every source", () => {
       )
       .run(TEAM.id, BOB.id);
     const at = await create();
-    expect(at.report).toContain("Claude on tag here belongs to someone else");
+    expect(at.report).toContain("The assistant here answers for someone else");
     expect((await press(CAROL, at)).text).toBe("This button is only for @alice.");
     expect(h.fires).toHaveLength(0);
   });
@@ -377,7 +377,7 @@ describe("waking from every source", () => {
     h.db = db;
     h.env.DB = db.asD1();
     expect((await press(ALICE, at)).text).toBe(
-      "Nobody to answer right now: Claude is not connected.",
+      "Nobody to answer right now: no assistant is connected.",
     );
     expect(h.fires).toHaveLength(0);
   });
@@ -438,7 +438,7 @@ describe("the access report", () => {
 
   it("a routine that no longer decrypts wakes nobody", async () => {
     h.db.raw.exec("UPDATE routines SET token_enc = 'garbage'");
-    expect((await create()).report).toContain("routine can no longer be read");
+    expect((await create()).report).toContain("assistant settings can no longer be read");
   });
 
   it("who-expression rules are reported as conditional", async () => {
@@ -464,7 +464,7 @@ describe("the tools' and menu's minor findings", () => {
         "INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at) VALUES (?, 1, ?, 1, 'started', ?)",
       )
       .run(TEAM.id, ALICE.id, Math.floor(Date.now() / 1000) - 50 * 60);
-    expect((await press(BOB, at)).text).toBe("Claude is resting. Try again in 10 min.");
+    expect((await press(BOB, at)).text).toBe("The assistant is resting. Try again in 10 min.");
     await press(BOB, at);
     const notices = h.telegram
       .called("sendMessage")

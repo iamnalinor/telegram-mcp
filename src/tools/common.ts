@@ -6,6 +6,7 @@
 
 import { z } from "zod";
 
+import { sessionId } from "../agents/types";
 import { AccessError, telegramChat, type Access, type ChatView } from "../access";
 import type { Config } from "../env";
 import { messageLink } from "../links";
@@ -32,6 +33,12 @@ export interface ToolContext {
   user: UserRef;
   /** The calling assistant by its sign-in: "Claude", "ChatGPT"… Null when unknown. */
   client: string | null;
+  /**
+   * The session the caller's token is bound to: one the Worker started itself
+   * (src/agents/openai.ts) or a Codex run (src/agents/codex.ts). It stands for
+   * `session` whatever the model passes.
+   */
+  session: string | null;
   /** Public origin of the Worker, for upload and download links. */
   origin: string;
   bot: { id: number; username: string; aliases?: string[]; canReadAll: boolean };
@@ -117,20 +124,22 @@ export const topicArg = z
     "Forum topic (thread) id, from list_chats or a message's header. Omit for General / non-forum chats.",
   );
 
-/** `cse_…` (the environment) and `session_…` (links, get_session) name the same session. */
-const SESSION_ID = /^(?:session|cse)_([0-9A-Za-z]{16,64})$/;
-
 // Lenient on purpose: a malformed id is dropped rather than costing the user the message.
 export const sessionArg = z
   .string()
   .max(100)
   .optional()
-  .describe("Your Claude Code session id (cse_… or session_…), if you are a cloud session.");
+  .describe(
+    "Your session id, if you have one: a Claude Code cloud session's (cse_… or session_…), or the one " +
+      "your start named (oa_… or cx_…).",
+  );
 
-/** One spelling in storage: session_…, as in claude.ai/code links. Anything else is dropped. */
-export function sessionId(value: string | undefined): string | null {
-  const match = value ? SESSION_ID.exec(value) : null;
-  return match ? `session_${match[1]}` : null;
+/** The calling session: the one its token is bound to, else the id it passed as `session`. */
+export function callerSession(
+  ctx: Pick<ToolContext, "session">,
+  value: string | undefined,
+): string | null {
+  return ctx.session ?? sessionId(value);
 }
 
 /** A subagent's name: plain enough to travel in a start payload and a relayed line. */
@@ -338,7 +347,7 @@ export async function recordSent(
   stored.buttons = extra.buttons ?? null;
   stored.mark_choice = extra.markChoice ?? false;
   stored.sent_by = ctx.userId;
-  stored.session_id = sessionId(extra.session);
+  stored.session_id = callerSession(ctx, extra.session);
   stored.agent = stored.session_id ? agentName(extra.agent) : null;
   await ctx.store.insertMessage(stored, personal ? "personal" : "always");
 }

@@ -24,8 +24,8 @@ import {
   messageIdArg,
   notPersonal,
   richAsPlain,
+  callerSession,
   sessionArg,
-  sessionId,
   storedButtons,
   text,
   ToolError,
@@ -335,7 +335,7 @@ export function registerEditTools(server: McpServer, ctx: ToolContext): void {
             sent_by: ctx.userId,
             via_bot: null,
             as_chat: false,
-            session_id: sessionId(args.session),
+            session_id: callerSession(ctx, args.session),
           },
           "always",
         );

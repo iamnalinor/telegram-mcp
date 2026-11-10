@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 19;
+const SCHEMA_VERSION = 24;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -76,7 +76,9 @@ const SCHEMA: string[] = [
     token_version INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     -- When the user first signed an assistant in. Only such users may link groups.
-    connected_at INTEGER
+    connected_at INTEGER,
+    -- Whose sessions new starts go to (src/agents/route.ts); null: none chosen, nothing starts.
+    active_provider TEXT
   )`,
 
   `CREATE TABLE IF NOT EXISTS chats (
@@ -214,6 +216,47 @@ const SCHEMA: string[] = [
     test_at INTEGER
   )`,
 
+  // Other providers' settings (src/agents/openai.ts): one encrypted JSON per
+  // user and provider, kept when the user switches to another one. `hook`: a
+  // hash of the path the provider's webhooks come to, which finds the user
+  // without decrypting anything.
+  `CREATE TABLE IF NOT EXISTS agent_configs (
+    user_id INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    config_enc TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    hook TEXT,
+    PRIMARY KEY (user_id, provider)
+  ) WITHOUT ROWID`,
+  `CREATE INDEX IF NOT EXISTS agent_configs_by_hook ON agent_configs (hook)`,
+
+  // Sessions under ids the Worker gives them (oa_…, cx_…), and the provider's
+  // own id for each (a Codex thread's, once the relay tells it). `token_exp`:
+  // when the MCP token it was handed runs out, so a delivery near that hands
+  // it a new one; `signin` and `token_version`: what that token hangs on, so
+  // a session whose sign-in ended is not fed any more. `told`: what the user
+  // last heard of it (failed, action), from the provider's webhooks or the
+  // relay. `origin`: whom a task's chat session acted for when it started it
+  // (src/tools/tasks.ts), and whom a Codex start was for; null for OpenAI's
+  // sessions started from Telegram, whose start in `fires` says it.
+  `CREATE TABLE IF NOT EXISTS agent_sessions (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    external_id TEXT,
+    kind TEXT NOT NULL,
+    token_exp INTEGER,
+    created_at INTEGER NOT NULL,
+    told TEXT,
+    signin TEXT,
+    token_version INTEGER,
+    origin TEXT,
+    sandboxed INTEGER
+  ) WITHOUT ROWID`,
+  // The hourly cap on tasks, and a provider's sessions found by its own id.
+  `CREATE INDEX IF NOT EXISTS agent_sessions_by_kind ON agent_sessions (user_id, kind, created_at)`,
+  `CREATE INDEX IF NOT EXISTS agent_sessions_by_provider ON agent_sessions (user_id, provider, external_id)`,
+
   // Chats where a tag starts the routine, and for whom: one user per chat,
   // whoever turned it on first. `others`: tags from other members count too.
   `CREATE TABLE IF NOT EXISTS claude_chats (
@@ -244,18 +287,23 @@ const SCHEMA: string[] = [
   `CREATE INDEX IF NOT EXISTS fires_by_user ON fires (user_id, at)`,
 
   // The user's relay: a machine signed in to Claude Code that passes messages
-  // into cloud sessions (`claude -p --cloud`). Only a hash of its token is kept.
+  // into cloud sessions (`claude -p --cloud`), and runs Codex if it has it.
+  // Only a hash of its token is kept. `runners`: what it said it can run, comma
+  // separated; null from a relay too old to say, which runs Claude only.
   `CREATE TABLE IF NOT EXISTS relays (
     user_id INTEGER PRIMARY KEY,
     token_hash TEXT NOT NULL UNIQUE,
     created_at INTEGER NOT NULL,
     last_seen INTEGER,
     login_failed_at INTEGER,
-    offline_noticed_at INTEGER
+    offline_noticed_at INTEGER,
+    runners TEXT
   )`,
 
   // Messages for the relay to pass on, and answers to them. `origin` is who
   // stands behind the message by the bot's own records, never by the sender's word.
+  // `runner`: what the relay does with it (src/store.ts `Runner`); `params`:
+  // that runner's settings as JSON (model, sandbox, working directory).
   `CREATE TABLE IF NOT EXISTS relay_jobs (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,
@@ -270,6 +318,8 @@ const SCHEMA: string[] = [
     error TEXT,
     wants_answer INTEGER NOT NULL DEFAULT 0,
     kind TEXT NOT NULL DEFAULT 'reply',
+    runner TEXT NOT NULL DEFAULT 'claude-continue',
+    params TEXT,
     answer TEXT,
     answered_at INTEGER,
     created_at INTEGER NOT NULL,
@@ -511,6 +561,38 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
       "ALTER TABLE scenes ADD COLUMN template_version INTEGER",
     ],
   },
+  {
+    target: 20,
+    alter: [
+      "ALTER TABLE users ADD COLUMN active_provider TEXT",
+      // Whoever had a routine had Claude answer: it still does.
+      "UPDATE users SET active_provider = 'claude' WHERE active_provider IS NULL AND user_id IN (SELECT user_id FROM routines)",
+    ],
+  },
+  {
+    target: 21,
+    alter: [
+      "ALTER TABLE agent_configs ADD COLUMN hook TEXT",
+      "ALTER TABLE agent_sessions ADD COLUMN told TEXT",
+    ],
+  },
+  {
+    target: 22,
+    alter: [
+      "ALTER TABLE agent_sessions ADD COLUMN signin TEXT",
+      "ALTER TABLE agent_sessions ADD COLUMN token_version INTEGER",
+      "ALTER TABLE agent_sessions ADD COLUMN origin TEXT",
+    ],
+  },
+  {
+    target: 23,
+    alter: [
+      "ALTER TABLE relays ADD COLUMN runners TEXT",
+      "ALTER TABLE relay_jobs ADD COLUMN runner TEXT NOT NULL DEFAULT 'claude-continue'",
+      "ALTER TABLE relay_jobs ADD COLUMN params TEXT",
+    ],
+  },
+  { target: 24, alter: ["ALTER TABLE agent_sessions ADD COLUMN sandboxed INTEGER"] },
 ];
 
 const ready = new WeakMap<D1Database, Promise<void>>();

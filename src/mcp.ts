@@ -3,8 +3,9 @@
  *
  * A fresh server is built per request, for that request's user, so nothing is
  * shared between users. Tools live in src/tools/: sending, changing what was
- * sent, and reading. The instructions in src/prompts.ts tell the model when
- * to reach for each.
+ * sent, and reading — and start_task, for the Worker's own chat sessions
+ * only. The instructions in src/prompts.ts tell the model when to reach for
+ * each.
  */
 
 import { McpServer } from "@modelcontextprotocol/server";
@@ -19,6 +20,7 @@ import { registerReadTools } from "./tools/read";
 import { registerSceneTools } from "./tools/scenes";
 import { registerSendTools } from "./tools/send";
 import { registerSessionTools } from "./tools/sessions";
+import { registerTaskTools } from "./tools/tasks";
 
 export function createServer(ctx: ToolContext): McpServer {
   const server = new McpServer(
@@ -37,6 +39,7 @@ export function createServer(ctx: ToolContext): McpServer {
   registerReadTools(server, ctx);
   registerMemoryTools(server, ctx);
   registerSessionTools(server, ctx);
+  registerTaskTools(server, ctx);
   registerGuestTools(server, ctx);
   registerSceneTools(server, ctx);
   return server;

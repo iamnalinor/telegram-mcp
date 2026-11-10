@@ -295,7 +295,7 @@ describe("in a group", () => {
     h.fires.length = 0;
 
     const held = await press(BOB, `m:g:${TEAM.id}`);
-    expect(String(held!.text)).toContain("Claude answers here for @alice");
+    expect(String(held!.text)).toContain("The assistant answers here for @alice");
     await press(BOB, `m:gc:${TEAM.id}`);
     const claim = () =>
       (
@@ -412,9 +412,7 @@ describe("in a group", () => {
         message: { message_id: 77, date: 1, chat: dm(ALICE) },
       },
     });
-    expect((await response.json<{ text?: string }>()).text).toContain(
-      "Set up 🤖 Claude on tag first",
-    );
+    expect((await response.json<{ text?: string }>()).text).toContain("Set up 🤖 Assistant first");
     expect(h.db.raw.query("SELECT * FROM claude_chats WHERE chat_id < 0").get()).toBeNull();
   });
 });

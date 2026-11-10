@@ -4,11 +4,35 @@
  * interpolated value goes through `escapeHtml`.
  */
 
-import type { RelayState } from "../relay";
+import { sessionLink } from "../agents/types";
+import type { SandboxPolicy } from "../agents/codex";
+import type { CodexRelayState, RelayState } from "../relay";
 
 export function escapeHtml(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
+
+/**
+ * A session's id as the user reads it: its prefix and the first six characters
+ * after it (`oa_3f9c2a`), enough to tell sessions apart. The model always gets
+ * the full id.
+ */
+function shortSession(id: string): string {
+  const match = /^([a-z]+_)(.{6})./.exec(id);
+  return match ? match[1] + match[2] : id;
+}
+
+/** A session under `label`: a link where it has a page, else the label and its short id. */
+export function sessionRef(id: string, label: string): string {
+  const link = sessionLink(id);
+  return link
+    ? `<a href="${escapeHtml(link)}">${label}</a>`
+    : `${label} <code>${escapeHtml(shortSession(id))}</code>`;
+}
+
+/** How a provider's setup is named on the assistant screen. */
+const STATE_EN = { set: "set up", none: "not set up", broken: "needs setting up again" };
+const STATE_RU = { set: "настроен", none: "не настроен", broken: "нужно настроить заново" };
 
 const en = {
   notAllowed: (id: number) =>
@@ -156,9 +180,166 @@ const en = {
     ].join("\n"),
   businessOff:
     "🔗 You disconnected me from your account. Everything I stored from your personal chats is deleted.",
-  buttonRoutine: "🤖 Claude on tag",
+  buttonRoutine: "🤖 Assistant",
+  assistantScreen: (p: {
+    active: "claude" | "openai" | "codex" | null;
+    claude: "none" | "set" | "broken";
+    openai: "none" | "set" | "broken";
+    codex: "none" | "set" | "broken";
+  }) =>
+    "<b>Assistant</b>\n\nWho answers when you write to me or tag me: one at a time, the one you choose. The others keep their settings, and replies to their earlier messages still go to them.\n\n" +
+    (p.active ? "" : "Nothing answers yet: set one up, then choose it.\n\n") +
+    `${p.active === "claude" ? "✓" : "•"} Claude — a routine on claude.ai: ${STATE_EN[p.claude]}\n` +
+    `${p.active === "codex" ? "✓" : "•"} Codex — the Codex CLI on your machine, through the relay: ${STATE_EN[p.codex]}\n` +
+    `${p.active === "openai" ? "✓" : "•"} OpenAI — the Agents API, with your API key: ${STATE_EN[p.openai]}`,
+  buttonUse: (name: string, active: boolean) => (active ? `✓ ${name}` : `Use ${name}`),
+  buttonSettings: (name: string) => `⚙️ ${name}`,
+  providerChosen: (name: string) => `${name} answers now.`,
+  providerFirst: (name: string) => `Set ${name} up first.`,
+  openaiScreen: (p: {
+    state: "none" | "set" | "broken";
+    chatModel: string;
+    taskModel: string;
+    since?: string;
+    /** Whether OpenAI's webhooks are set up: failures reach the user then. */
+    hooked: boolean;
+  }) =>
+    "<b>OpenAI</b>\n\nI run sessions on OpenAI's Agents API with your API key: a chat session answers, and hands real work to a task session with a machine of its own. You pay OpenAI per use: a chat message on terra costs roughly $0.02–0.05, a task on sol $0.3–1.5 (terra $1/$5, sol $2/$10 per 1M tokens in/out).\n\n" +
+    (p.state === "set"
+      ? `✅ Key set ${p.since}.\nChat: <code>${escapeHtml(p.chatModel)}</code>, tasks: <code>${escapeHtml(p.taskModel)}</code>.` +
+        (p.hooked
+          ? ""
+          : "\n\nA session that fails on OpenAI's side does not tell me until you set up the webhook (🔔 Webhook): until then, if no answer comes, check the logs on platform.openai.com.")
+      : p.state === "broken"
+        ? "⚠️ I can no longer read the saved key: the bot's token changed. Send the key again."
+        : "Not set up yet: create a project key on platform.openai.com (API keys) and send it to me."),
+  buttonOpenAIKey: "🔑 Send the API key",
+  openaiKeyAsk:
+    "Send your OpenAI API key (<code>sk-proj-…</code> or <code>sk-svcacct-…</code>). I delete the message right away and keep the key encrypted.",
+  openaiKeyNote: "Waiting for the key.",
+  buttonChatModel: (model: string) => `💬 Chat: ${model}`,
+  buttonTaskModel: (model: string) => `🛠 Tasks: ${model}`,
+  modelPicker: (kind: "chat" | "task"): string =>
+    kind === "chat"
+      ? "The model for the chat session: it talks, reads Telegram and starts tasks."
+      : "The model for task sessions: research, code, many-step work.",
+  modelSet: "Saved.",
+  confirmDeleteOpenAI:
+    "Remove the OpenAI key here? I will stop starting sessions with it. Revoke it on platform.openai.com too.",
+  openaiSaved: (deleted: boolean) =>
+    "✅ Saved your OpenAI key, kept only encrypted" +
+    (deleted ? ", and I deleted your message." : "."),
+  providerActive: (name: string) => `${name} answers for you now (🤖 Assistant to switch).`,
+  providerReady: (name: string, active: string) =>
+    `${name} is set up; ${active} still answers for you. Switch in 🤖 Assistant.`,
+  openaiNotSaved: "⚠️ Could not save the key. Send it again in a minute.",
+  openaiNotActive: (first: boolean) =>
+    "The key is saved, but its test start did not go through, so OpenAI does not answer for you yet. " +
+    "Once a test in 🤖 Assistant → OpenAI works, choose OpenAI there" +
+    (first ? " and turn answering in this chat on." : "."),
+  secretTooLong:
+    "⚠️ That is longer than any OpenAI key or webhook secret: nothing saved. Copy it again, whole and alone.",
+  webhookSaved: (deleted: boolean) =>
+    "✅ Saved the webhook secret, kept only encrypted" +
+    (deleted ? ", and I deleted your message." : "."),
+  webhookNoKey: "That is an OpenAI webhook secret: send the API key first, then the secret.",
+  buttonWebhook: "🔔 Webhook",
+  webhookScreen: (url: string, secret: boolean) =>
+    "<b>OpenAI webhook</b>\n\nSo that I can tell you when a session fails or gets stuck:\n\n" +
+    "1. On platform.openai.com open Settings → Webhooks → Create.\n" +
+    `2. Paste this URL:\n<code>${escapeHtml(url)}</code>\n` +
+    "3. Select the Agents API session events and save.\n" +
+    "4. Send me the signing secret it shows (<code>whsec_…</code>). I delete the message right away and keep the secret encrypted.\n\n" +
+    (secret
+      ? "✅ The secret is set: failed sessions reach you here."
+      : "The secret is not set yet: until it is, I ignore what comes to this URL."),
+  agentFailed: (session: string, from: { chat: string; link: string | null } | null) =>
+    `⚠️ An OpenAI session failed: <code>${escapeHtml(shortSession(session))}</code>.` +
+    (from
+      ? ` It started from ${from.link ? `<a href="${escapeHtml(from.link)}">a message</a>` : "a message"} in «${escapeHtml(from.chat)}».`
+      : "") +
+    " What it was doing did not finish: write again to start a new one, or check its logs on platform.openai.com.",
+  agentStuck: (session: string, from: { chat: string; link: string | null } | null) =>
+    `⏸ An OpenAI session is waiting for an action I cannot give: <code>${escapeHtml(shortSession(session))}</code>.` +
+    (from
+      ? ` It started from ${from.link ? `<a href="${escapeHtml(from.link)}">a message</a>` : "a message"} in «${escapeHtml(from.chat)}».`
+      : "") +
+    " It will not go on by itself: write again to start a new one.",
+  codexScreen: (p: {
+    state: "none" | "set" | "broken";
+    relay: CodexRelayState;
+    seen: string | null;
+    model: string | null;
+    sandbox: SandboxPolicy;
+    workdir: string | null;
+    /** Whether the relay can sandbox: bubblewrap works there. */
+    boxes: boolean;
+  }) =>
+    "<b>Codex</b>\n\nThe Codex CLI on a machine of yours, signed in to your ChatGPT plan: I hand it starts and messages through a relay there, and it works with that machine's files.\n\n" +
+    {
+      none: "Relay: not set up. Get the install command and run it on the machine (Linux with systemd).",
+      online: "Relay: online ✅, with Codex.",
+      offline: `Relay: offline ⚠️${p.seen ? ` since ${p.seen}` : " — it has not called in yet"}. Check the machine: <code>systemctl status tg-relay</code>.`,
+      nocodex:
+        "Relay: online, but it serves Claude ⚠️. A relay serves one assistant: run the install command from this screen to have it serve Codex.",
+    }[p.relay] +
+    "\n\n" +
+    (p.state === "broken"
+      ? "⚠️ I can no longer read the saved settings: the bot's token changed. Choose them again."
+      : `Model: ${p.model ? `<code>${escapeHtml(p.model)}</code>` : "Codex's default"}. Working directory: ` +
+        `${p.workdir ? `<code>${escapeHtml(p.workdir)}</code>` : "the relay's home"}.\n\n` +
+        "Sandbox — a sandboxed run goes inside bubblewrap on that machine. It sees its own empty directory, the system's " +
+        "programs and your Codex login (it runs on it, so it can read it too), and keeps the network; it does not see your " +
+        "files, keys or the relay's token, and its conversations are kept apart from yours. Codex's own read-only sandbox " +
+        "applies inside it too, where the machine allows. Outside it Codex can do whatever the relay's user can:\n" +
+        (["all", "others", "none"] as const)
+          .map(
+            (policy) =>
+              `${policy === p.sandbox ? "✓" : "•"} ` +
+              {
+                all: "All: every run is sandboxed.",
+                others:
+                  "Others: yours run freely; whatever a third party stands behind is sandboxed.",
+                none: "None: nothing is sandboxed — anyone you let call me runs commands there.",
+              }[policy],
+          )
+          .join("\n") +
+        (p.relay === "online" && !p.boxes && p.sandbox !== "none"
+          ? "\n\n⚠️ The relay cannot sandbox: bubblewrap does not work on that machine. Sandboxed runs are refused " +
+            "until it does — run the install command there again, it says what is wrong."
+          : "")),
+  buttonSandbox: (policy: SandboxPolicy, current: boolean) =>
+    `${current ? "✓ " : ""}${{ all: "🧱 All", others: "🧱 Others", none: "🧱 None" }[policy]}`,
+  buttonCodexModel: (model: string | null) => `🧠 Model: ${model ?? "default"}`,
+  buttonWorkdir: "📁 Working directory",
+  buttonCodexSetup: "🔌 Sign Codex in",
+  codexModelPicker: "The model Codex runs with. «Default»: whatever Codex picks itself.",
+  buttonDefaultModel: "Codex's default",
+  workdirAsk:
+    "Send the directory Codex works in on the relay's machine: an absolute path or one under <code>~</code>, like <code>~/projects</code>. Sandboxed runs do not use it.",
+  workdirNote: "Waiting for the directory.",
+  workdirInvalid:
+    "That is not a path I can use: an absolute path or one under ~, without quotes, $ or backslashes. Send it again, as a reply.",
+  codexInstall: (command: string) =>
+    "Run this on the machine (Linux with systemd; it asks for sudo). It installs Codex if needed — that takes Node.js and npm — and " +
+    `starts the relay as a service:\n<pre>${escapeHtml(command)}</pre>\nThen sign Codex in there once: 🔌 in the Codex screen. ` +
+    "This command holds the relay's token. A relay serves one assistant, and you have one relay: getting a new command turns the old one off, Claude's included.",
+  codexSetup:
+    "<b>Signing Codex in</b>\n\nOnce, on the relay's machine, as the user the relay runs as:\n\n" +
+    "1. Sign Codex in to ChatGPT: <code>codex login</code> (on a machine without a browser: <code>codex login --device-auth</code>).\n" +
+    "2. <code>sudo systemctl restart tg-relay</code>, then ▶️ Test start.\n\n" +
+    "Codex needs no sign-in to me: the relay hands each run a key of its own to my tools, good for that run only. " +
+    "You see them as «Codex runs» among the sign-ins.",
+  confirmDeleteCodex:
+    "Remove the Codex settings? I will stop starting Codex. The relay stays: turn it off in its own screen.",
+  codexStartFailed: (error: string) =>
+    `⚠️ Codex could not start on your machine: <code>${escapeHtml(error)}</code>. ` +
+    "What was sent to it did not get through: write again once that is fixed.",
+  codexDeliverFailed: (session: string, error: string) =>
+    `⚠️ Codex failed on the message in ${sessionRef(session, "its session")} on your machine: ` +
+    `<code>${escapeHtml(error)}</code>. It did not get through: write again to try once more.`,
   routineScreen: (p: { state: "none" | "set" | "broken"; trigger?: string; since?: string }) =>
-    "<b>Claude on tag</b>\n\nA Claude Code cloud session that I start for you: it does the work and answers in Telegram. It is your routine on claude.ai and runs on your account.\n\n" +
+    "<b>Claude</b>\n\nA Claude Code cloud session that I start for you: it does the work and answers in Telegram. It is your routine on claude.ai and runs on your account.\n\n" +
     (p.state === "set"
       ? `✅ Routine <code>${escapeHtml(p.trigger ?? "")}</code>, set ${p.since}.`
       : p.state === "broken"
@@ -189,27 +370,81 @@ const en = {
     `✅ Saved routine <code>${escapeHtml(trigger)}</code>. The token is kept only encrypted` +
     (deleted ? ", and I deleted your message." : "."),
   routineNotSaved: "⚠️ Could not save the routine. Send it again in a minute.",
+  routineNotActive: (first: boolean) =>
+    "The routine is saved, but its test start did not go through, so Claude does not answer for you yet. " +
+    "Once a test in 🤖 Assistant → Claude works, choose Claude there" +
+    (first ? " and turn answering in this chat on." : "."),
   deleteYourself:
     "⚠️ I could not delete your message: delete it yourself, and if others can see this chat, generate a new token.",
   testTooSoon:
     "A test session was started less than a minute ago. Wait for its «ok», or try again shortly.",
-  testStarted: (url: string) =>
-    `▶️ Started a test session (<a href="${escapeHtml(url)}">open</a>). If everything is set up, it writes «ok» here within a minute or two.`,
-  fireFailed: (reason: FireFailure, retryMinutes?: number) =>
-    "⚠️ Could not start the routine: " +
-    {
-      token:
-        "its token was refused. Generate a new one in the routine's trigger and send it again.",
-      missing: "there is no such trigger. Check the trig_… id.",
-      paused: "it is paused on claude.ai.",
-      limit: `its start limit is reached. Try again in ${retryMinutes ?? 60} min.`,
-      other: "Anthropic's API did not accept the start. Try again later.",
-      none: "none is set up.",
-      broken: "I can no longer read its token. Send the routine again.",
-    }[reason],
+  testStarted: (url: string | null) =>
+    `▶️ Started a test session${url ? ` (<a href="${escapeHtml(url)}">open</a>)` : ""}. If everything is set up, it writes «ok» here within a minute or two.`,
+  /** `provider` null: none is chosen. */
+  fireFailed: (
+    reason: FireFailure,
+    retryMinutes: number | undefined,
+    provider: "claude" | "openai" | "codex" | null,
+  ) =>
+    provider === null
+      ? "⚠️ Nothing started: no assistant is chosen. Set one up and choose it in 🤖 Assistant."
+      : provider === "codex"
+        ? "⚠️ Could not start Codex: " +
+          {
+            relay:
+              "the relay on your machine is offline or serves another assistant. Check it: <code>systemctl status tg-relay</code>.",
+            sandbox:
+              "this run is to be sandboxed, and the relay on your machine cannot sandbox: bubblewrap does not work there. " +
+              "Run the install command there again — it says what is wrong — or set the sandbox policy to None in 🤖 Assistant → Codex.",
+            limit: `too many starts this hour. Try again in ${retryMinutes ?? 60} min.`,
+            none: "it is not set up.",
+            broken: "I can no longer read its settings. Choose them again in 🤖 Assistant → Codex.",
+            token: "the relay did not take it. Try again later.",
+            missing: "the relay did not take it. Try again later.",
+            paused: "the relay did not take it. Try again later.",
+            quota: "the relay did not take it. Try again later.",
+            other: "the relay did not take it. Try again later.",
+          }[reason]
+        : provider === "openai"
+          ? "⚠️ Could not start OpenAI: " +
+            {
+              token: "the API key was refused. Send a new one.",
+              missing: "OpenAI's API answered «not found». Try again later.",
+              paused: "OpenAI's API did not accept the start. Try again later.",
+              limit: `its rate limit is reached. Try again in ${retryMinutes ?? 1} min.`,
+              quota: "the key has no quota left. Check billing on platform.openai.com.",
+              other: "OpenAI's API did not accept the start. Try again later.",
+              relay: "OpenAI's API did not accept the start. Try again later.",
+              sandbox: "OpenAI's API did not accept the start. Try again later.",
+              none: "no API key is set.",
+              broken: "I can no longer read the key. Send it again.",
+            }[reason]
+          : "⚠️ Could not start the routine: " +
+            {
+              token:
+                "its token was refused. Generate a new one in the routine's trigger and send it again.",
+              missing: "there is no such trigger. Check the trig_… id.",
+              paused: "it is paused on claude.ai.",
+              limit: `its start limit is reached. Try again in ${retryMinutes ?? 60} min.`,
+              quota: "Anthropic's API did not accept the start. Try again later.",
+              other: "Anthropic's API did not accept the start. Try again later.",
+              relay: "Anthropic's API did not accept the start. Try again later.",
+              sandbox: "Anthropic's API did not accept the start. Try again later.",
+              none: "none is set up.",
+              broken: "I can no longer read its token. Send the routine again.",
+            }[reason],
+  deliverFailed: (reason: FireFailure, retryMinutes?: number) =>
+    "⚠️ Could not pass the message to its OpenAI session: " +
+    (reason === "token"
+      ? "the API key was refused. Send a new one."
+      : reason === "limit"
+        ? `the rate limit is reached. Try again in ${retryMinutes ?? 1} min.`
+        : reason === "quota"
+          ? "the key has no quota left. Check billing on platform.openai.com."
+          : "OpenAI's API did not take it. Try again later."),
   inChat: (title: string) => `«${escapeHtml(title)}»:`,
   tooManyStarts: "⚠️ Too many starts in the last hour; I start no more until it passes.",
-  guestFailed: "⚠️ Could not start Claude.",
+  guestFailed: "⚠️ Could not start your assistant.",
   buttonGuestChats: "🕊 Guest chats",
   guestChatsScreen: (lines: string[]) =>
     "🕊 <b>Guest chats</b>\n\nChats I am not in, where I was called by a tag. The first call in a chat binds it to whoever called: from then on your routine answers there, and your rules apply. Others' calls there count only if you turn «Others too» on.\n\n" +
@@ -234,9 +469,9 @@ const en = {
   startsSession: "session",
   startsLimited: (n: number) => `😴 ${n} more held back by the limit in the last 24 hours.`,
   buttonRelay: (state: RelayState) =>
-    `🛰 Relay: ${{ none: "off", online: "online ✅", offline: "offline ⚠️", login: "sign-in needed ⚠️" }[state]}`,
+    `🛰 Relay: ${{ none: "off", online: "online ✅", offline: "offline ⚠️", login: "sign-in needed ⚠️", noclaude: "serves Codex ⚠️" }[state]}`,
   relayScreen: (p: { state: RelayState; seen: string | null }) =>
-    "🛰 <b>Relay</b>\n\nSessions cannot write to one another by themselves. A relay can: a machine of yours " +
+    "🛰 <b>Relay</b>\n\nClaude Code sessions cannot be written to from outside. A relay can: a machine of yours " +
     "signed in to Claude Code that I hand messages to. With it, a reply to a session's message goes to that " +
     "session instead of starting a new one, and sessions can ask each other how things are going. Without it " +
     "everything works as before.\n\n" +
@@ -246,6 +481,8 @@ const en = {
       offline: `⚠️ Offline${p.seen ? ` since ${p.seen}` : " — it has not called in yet"}. Check the machine: <code>systemctl status tg-relay</code>.`,
       login:
         "⚠️ Its Claude sign-in expired. On the machine: <code>claude</code>, then /login, then <code>sudo systemctl restart tg-relay</code>.",
+      noclaude:
+        "⚠️ Online, but it serves Codex. A relay serves one assistant: run the install command from this screen to have it serve Claude.",
     }[p.state],
   buttonRelayInstall: "📋 Install command",
   buttonRelayOff: "Turn off",
@@ -253,7 +490,7 @@ const en = {
     "Run this on the machine (Linux with systemd; it asks for sudo). It installs Claude Code if needed and " +
     `starts the relay as a service:\n<pre>${escapeHtml(command)}</pre>\nThen sign Claude Code in there once: ` +
     "<code>claude</code>, then /login, then <code>sudo systemctl restart tg-relay</code>. This command holds the " +
-    "relay's token — getting a new one turns the old one off.",
+    "relay's token. A relay serves one assistant, and you have one relay: getting a new command turns the old one off, Codex's included.",
   relayOff: "Relay turned off.",
   relayLoginLost:
     "⚠️ The relay's Claude sign-in expired, so replies to sessions start new sessions instead. On the machine: <code>claude</code>, then /login, then <code>sudo systemctl restart tg-relay</code>.",
@@ -261,17 +498,18 @@ const en = {
     "⚠️ The relay has gone quiet: messages to sessions are not getting through, and replies start new sessions instead. Check the machine: <code>systemctl status tg-relay</code>.",
   claudeHere: (on: boolean): string => (on ? "💬 Here: on ✅" : "💬 Here: off"),
   claudeHereHint:
-    "Here: every message goes to Claude — with the 🛰 relay, a chat's messages of the day go to one session (from 00:00 UTC), and a reply to a session's message goes back to that session; without it, each message starts its own. In groups, turn it on in 👥 Groups. You can also call me from chats I am not in, by tagging me there: see 🕊 Guest chats.",
-  claudeToggle: (on: boolean): string => (on ? "🤖 Claude answers: ✅" : "🤖 Claude answers: off"),
+    "Here: every message goes to your assistant — a chat's messages of the day go to one session (from 00:00 UTC), and a reply to a session's message goes back to that session, where the session can take messages (Claude's need the 🛰 relay); otherwise each message starts its own. In groups, turn it on in 👥 Groups. You can also call me from chats I am not in, by tagging me there: see 🕊 Guest chats.",
+  claudeToggle: (on: boolean): string =>
+    on ? "🤖 Assistant answers: ✅" : "🤖 Assistant answers: off",
   othersToggle: (on: boolean): string => (on ? "👥 Others too: ⚠️ on" : "👥 Others too: off"),
   groupClaude: (p: { on: boolean; others: boolean; limit: number; heldBy: string | null }) =>
     p.heldBy
-      ? `\n\n🤖 Claude answers here for ${p.heldBy}. You can turn it on once they turn it off.`
+      ? `\n\n🤖 The assistant answers here for ${p.heldBy}. You can turn yours on once they turn theirs off.`
       : p.on
-        ? `\n\n🤖 A mention of me or a reply to your assistant's message starts Claude — for you` +
+        ? `\n\n🤖 A mention of me or a reply to your assistant's message starts your assistant — for you` +
           (p.others ? `, and ⚠️ for everyone else here, up to ${p.limit} times an hour.` : " only.")
         : "",
-  chatHeld: "Claude already answers here for someone else.",
+  chatHeld: "An assistant already answers here for someone else.",
   othersLimitButton: (limit: number) => `⏱ Others: up to ${limit}/h`,
   limitPickerTitle: (subject: string, current: number) =>
     `⏱ <b>${escapeHtml(subject)}</b>\n\nHow many times an hour, at most? Now: ${current}. Pick one, or type your own number (1–500).`,
@@ -280,15 +518,15 @@ const en = {
   limitInvalid: "A number from 1 to 500, please.",
   sceneDenied: "Not now.",
   sceneNotForYou: (name: string) => `This button is only for ${name}.`,
-  sceneNobody: "Nobody to answer right now: Claude is not connected.",
-  sceneResting: (minutes: number) => `Claude is resting. Try again in ${minutes} min.`,
+  sceneNobody: "Nobody to answer right now: no assistant is connected.",
+  sceneResting: (minutes: number) => `The assistant is resting. Try again in ${minutes} min.`,
   sceneTooFast: "Not so fast.",
   sceneStale: "This button is out of date.",
   sceneOver: "This scene is over.",
   sceneFull: "The scene is full: nothing more fits.",
   sceneFailed: "That did not work. Try again.",
   sceneWakesLimited: (title: string, minutes: number) =>
-    `😴 The scene «${escapeHtml(title)}» reached its wakes for this hour; the next can wake Claude in ${minutes} min (members see «Claude is resting»). Change it in 🎬 Scenes.`,
+    `😴 The scene «${escapeHtml(title)}» reached its wakes for this hour; the next can wake your assistant in ${minutes} min (members see «The assistant is resting»). Change it in 🎬 Scenes.`,
   limitGone: "That is gone meanwhile: nothing to set.",
   buttonScenes: (n: number) => `🎬 Scenes (${n})`,
   scenesScreen: (title: string, lines: string[]) =>
@@ -302,21 +540,19 @@ const en = {
     limit: number;
   }) =>
     `🎬 <b>${escapeHtml(p.title)}</b>\n\nSet up by ` +
-    (p.session
-      ? `<a href="https://claude.ai/code/${escapeHtml(p.session)}">a session</a>`
-      : "your assistant") +
+    (p.session ? sessionRef(p.session, "a session") : "your assistant") +
     `.\nEvents logged: ${p.events}.\nWakes this hour: ${p.wakes} of ${p.limit}.`,
   buttonSceneWakes: (limit: number) => `⏱ Wakes: up to ${limit}/h`,
   buttonStopScene: "■ Stop",
   sceneStopped: "Stopped: the buttons are gone.",
   othersLimited: (limit: number) =>
     `😴 Other members used up ${limit} starts this hour; theirs wait until it passes (they see 😴). Change the limit in 👥 Groups.`,
-  routineFirst: "Set up 🤖 Claude on tag first.",
+  routineFirst: "Set up 🤖 Assistant first.",
   othersWarning: (title: string) =>
-    `⚠️ Claude will answer the members of «${escapeHtml(title)}». It is told not to do what they ask or share your data unless your memory for this chat allows it. But that is a guard of instructions, not of access: the session has your connectors, chats and repositories, and a clever message can talk it round. Turn it on where you trust people. Every start goes into 📜 Starts here.`,
+    `⚠️ Your assistant will answer the members of «${escapeHtml(title)}». It is told not to do what they ask or share your data unless your memory for this chat allows it. But that is a guard of instructions, not of access: the session has your connectors, chats and repositories, and a clever message can talk it round. Turn it on where you trust people. Every start goes into 📜 Starts here.`,
   buttonTurnOn: "Turn on",
   privacyHint:
-    "👁 I am not an admin here and privacy mode is on: I see only mentions and replies, so Claude may miss the context. Make me an admin to fix it.",
+    "👁 I am not an admin here and privacy mode is on: I see only mentions and replies, so your assistant may miss the context. Make me an admin to fix it.",
   testPassed: (at: string) => `✅ The test start at ${at} answered: it works.`,
   testWaiting: (at: string) =>
     `⏳ Test started at ${at}, no answer yet. If none comes, check that the routine has the Telegram connector.`,
@@ -327,7 +563,17 @@ const en = {
     " To set the routine, send its trig_… id and the token together, in one message.",
 };
 
-type FireFailure = "token" | "missing" | "paused" | "limit" | "other" | "none" | "broken";
+type FireFailure =
+  | "token"
+  | "missing"
+  | "paused"
+  | "limit"
+  | "quota"
+  | "relay"
+  | "sandbox"
+  | "other"
+  | "none"
+  | "broken";
 
 interface BusinessStatus {
   changed: boolean;
@@ -483,9 +729,145 @@ const ru: Texts = {
     ].join("\n"),
   businessOff:
     "🔗 Ты отключил(а) меня от своего аккаунта. Всё, что я сохранил из личных переписок, удалено.",
-  buttonRoutine: "🤖 Claude по тегу",
+  buttonRoutine: "🤖 Ассистент",
+  assistantScreen: (p) =>
+    "<b>Ассистент</b>\n\nКто отвечает, когда ты пишешь мне или тегаешь меня: только один — тот, кого ты выберешь. У остальных настройки сохраняются, а ответы на их прежние сообщения по-прежнему идут им.\n\n" +
+    (p.active ? "" : "Пока никто не отвечает: настрой одного и выбери его.\n\n") +
+    `${p.active === "claude" ? "✓" : "•"} Claude — рутина на claude.ai: ${STATE_RU[p.claude]}\n` +
+    `${p.active === "codex" ? "✓" : "•"} Codex — Codex CLI на твоей машине, через relay: ${STATE_RU[p.codex]}\n` +
+    `${p.active === "openai" ? "✓" : "•"} OpenAI — Agents API с твоим API-ключом: ${STATE_RU[p.openai]}`,
+  buttonUse: (name, active) => (active ? `✓ ${name}` : `Выбрать ${name}`),
+  buttonSettings: (name) => `⚙️ ${name}`,
+  providerChosen: (name) => `Теперь отвечает ${name}.`,
+  providerFirst: (name) => `Сначала настрой ${name}.`,
+  openaiScreen: (p) =>
+    "<b>OpenAI</b>\n\nЯ запускаю сессии в Agents API от OpenAI с твоим API-ключом: чат-сессия отвечает, а настоящую работу отдаёт сессии-задаче со своей машиной. Платишь OpenAI по факту: сообщение в чате на terra — примерно $0.02–0.05, задача на sol — $0.3–1.5 (terra $1/$5, sol $2/$10 за 1M токенов на вход/выход).\n\n" +
+    (p.state === "set"
+      ? `✅ Ключ задан ${p.since}.\nЧат: <code>${escapeHtml(p.chatModel)}</code>, задачи: <code>${escapeHtml(p.taskModel)}</code>.` +
+        (p.hooked
+          ? ""
+          : "\n\nЕсли сессия упала на стороне OpenAI, я не узнаю об этом, пока ты не настроишь вебхук (🔔 Вебхук): до тех пор, если ответа нет, посмотри логи на platform.openai.com.")
+      : p.state === "broken"
+        ? "⚠️ Я больше не могу прочитать сохранённый ключ: сменился токен бота. Пришли ключ заново."
+        : "Ещё не настроено: создай ключ проекта на platform.openai.com (API keys) и пришли его мне."),
+  buttonOpenAIKey: "🔑 Прислать API-ключ",
+  openaiKeyAsk:
+    "Пришли свой API-ключ OpenAI (<code>sk-proj-…</code> или <code>sk-svcacct-…</code>). Я сразу удалю сообщение, а ключ сохраню только в зашифрованном виде.",
+  openaiKeyNote: "Жду ключ.",
+  buttonChatModel: (model) => `💬 Чат: ${model}`,
+  buttonTaskModel: (model) => `🛠 Задачи: ${model}`,
+  modelPicker: (kind) =>
+    kind === "chat"
+      ? "Модель чат-сессии: она общается, читает Telegram и запускает задачи."
+      : "Модель сессий-задач: исследования, код, многошаговая работа.",
+  modelSet: "Сохранено.",
+  confirmDeleteOpenAI:
+    "Удалить ключ OpenAI отсюда? Я перестану запускать с ним сессии. Отзови его и на platform.openai.com.",
+  openaiSaved: (deleted) =>
+    "✅ Ключ OpenAI сохранён, только в зашифрованном виде" +
+    (deleted ? ", а твоё сообщение я удалил." : "."),
+  providerActive: (name) => `Теперь тебе отвечает ${name} (переключить — в 🤖 Ассистенте).`,
+  providerReady: (name, active) =>
+    `${name} настроен; тебе по-прежнему отвечает ${active}. Переключить — в 🤖 Ассистенте.`,
+  openaiNotSaved: "⚠️ Не получилось сохранить ключ. Пришли его ещё раз через минуту.",
+  openaiNotActive: (first) =>
+    "Ключ сохранён, но тестовый запуск не прошёл, так что OpenAI тебе пока не отвечает. " +
+    "Когда тест в 🤖 Ассистент → OpenAI заработает, выбери там OpenAI" +
+    (first ? " и включи ответы в этом чате." : "."),
+  secretTooLong:
+    "⚠️ Это длиннее любого ключа или секрета вебхука OpenAI: ничего не сохранено. Скопируй его ещё раз, целиком и отдельно.",
+  webhookSaved: (deleted) =>
+    "✅ Секрет вебхука сохранён, только в зашифрованном виде" +
+    (deleted ? ", а твоё сообщение я удалил." : "."),
+  webhookNoKey: "Это секрет вебхука OpenAI: сначала пришли API-ключ, потом секрет.",
+  buttonWebhook: "🔔 Вебхук",
+  webhookScreen: (url, secret) =>
+    "<b>Вебхук OpenAI</b>\n\nЧтобы я сообщал, когда сессия упала или застряла:\n\n" +
+    "1. На platform.openai.com открой Settings → Webhooks → Create.\n" +
+    `2. Вставь этот URL:\n<code>${escapeHtml(url)}</code>\n` +
+    "3. Выбери события сессий Agents API и сохрани.\n" +
+    "4. Пришли мне секрет подписи, который он покажет (<code>whsec_…</code>). Я сразу удалю сообщение, а секрет сохраню только в зашифрованном виде.\n\n" +
+    (secret
+      ? "✅ Секрет задан: об упавших сессиях я сообщу сюда."
+      : "Секрет ещё не задан: пока его нет, я не слушаю, что приходит на этот URL."),
+  agentFailed: (session, from) =>
+    `⚠️ Сессия OpenAI упала: <code>${escapeHtml(shortSession(session))}</code>.` +
+    (from
+      ? ` Её запустило ${from.link ? `<a href="${escapeHtml(from.link)}">сообщение</a>` : "сообщение"} в «${escapeHtml(from.chat)}».`
+      : "") +
+    " Начатое она не закончила: напиши ещё раз, чтобы запустить новую, или посмотри её логи на platform.openai.com.",
+  agentStuck: (session, from) =>
+    `⏸ Сессия OpenAI ждёт действия, которое я дать не могу: <code>${escapeHtml(shortSession(session))}</code>.` +
+    (from
+      ? ` Её запустило ${from.link ? `<a href="${escapeHtml(from.link)}">сообщение</a>` : "сообщение"} в «${escapeHtml(from.chat)}».`
+      : "") +
+    " Сама она дальше не пойдёт: напиши ещё раз, чтобы запустить новую.",
+  codexScreen: (p) =>
+    "<b>Codex</b>\n\nCodex CLI на твоей машине, со входом в твою подписку ChatGPT: я передаю ему запуски и сообщения через relay на ней, и он работает с файлами этой машины.\n\n" +
+    {
+      none: "Relay: не настроен. Возьми команду установки и запусти её на машине (Linux с systemd).",
+      online: "Relay: онлайн ✅, с Codex.",
+      offline: `Relay: офлайн ⚠️${p.seen ? ` с ${p.seen}` : " — он ещё ни разу не выходил на связь"}. Проверь машину: <code>systemctl status tg-relay</code>.`,
+      nocodex:
+        "Relay: онлайн, но служит Claude ⚠️. Relay служит одному ассистенту: запусти команду установки с этого экрана, чтобы он служил Codex.",
+    }[p.relay] +
+    "\n\n" +
+    (p.state === "broken"
+      ? "⚠️ Я больше не могу прочитать сохранённые настройки: сменился токен бота. Выбери их заново."
+      : `Модель: ${p.model ? `<code>${escapeHtml(p.model)}</code>` : "по умолчанию Codex"}. Рабочая папка: ` +
+        `${p.workdir ? `<code>${escapeHtml(p.workdir)}</code>` : "домашняя папка relay"}.\n\n` +
+        "Песочница — запуск в ней идёт внутри bubblewrap на этой машине. Он видит свою пустую папку, системные программы " +
+        "и твой вход в Codex (он на нём работает, так что может его и прочитать) и остаётся с сетью; твоих файлов, ключей " +
+        "и токена relay он не видит, а его переписки хранятся отдельно от твоих. Внутри, где машина позволяет, действует " +
+        "ещё и собственная песочница Codex (только чтение). Вне её Codex может всё, что может пользователь relay:\n" +
+        (["all", "others", "none"] as const)
+          .map(
+            (policy) =>
+              `${policy === p.sandbox ? "✓" : "•"} ` +
+              {
+                all: "Все: любой запуск в песочнице.",
+                others:
+                  "Чужие: твои запуски без неё; всё, за чем стоит третье лицо, — в песочнице.",
+                none: "Никто: песочницы нет — любой, кому ты разрешил звать меня, запускает там команды.",
+              }[policy],
+          )
+          .join("\n") +
+        (p.relay === "online" && !p.boxes && p.sandbox !== "none"
+          ? "\n\n⚠️ Relay не умеет делать песочницу: на той машине не работает bubblewrap. Запуски в песочнице " +
+            "не пойдут, пока он не заработает, — запусти там команду установки ещё раз, она скажет, в чём дело."
+          : "")),
+  buttonSandbox: (policy, current) =>
+    `${current ? "✓ " : ""}${{ all: "🧱 Все", others: "🧱 Чужие", none: "🧱 Никто" }[policy]}`,
+  buttonCodexModel: (model) => `🧠 Модель: ${model ?? "по умолчанию"}`,
+  buttonWorkdir: "📁 Рабочая папка",
+  buttonCodexSetup: "🔌 Вход в Codex",
+  codexModelPicker: "Модель, на которой работает Codex. «По умолчанию» — какую выберет сам Codex.",
+  buttonDefaultModel: "По умолчанию Codex",
+  workdirAsk:
+    "Пришли папку, в которой Codex работает на машине relay: абсолютный путь или путь под <code>~</code>, например <code>~/projects</code>. Запуски в песочнице её не используют.",
+  workdirNote: "Жду папку.",
+  workdirInvalid:
+    "Такой путь я принять не могу: нужен абсолютный путь или путь под ~, без кавычек, $ и обратных слэшей. Пришли ещё раз, ответом.",
+  codexInstall: (command) =>
+    "Запусти это на машине (Linux с systemd; попросит sudo). Команда поставит Codex, если его нет — для этого нужны Node.js и npm, — и " +
+    `запустит relay как сервис:\n<pre>${escapeHtml(command)}</pre>\nПотом один раз войди там в Codex: 🔌 на экране Codex. ` +
+    "В команде токен relay. Relay служит одному ассистенту, и он у тебя один: новая команда отключает старый, в том числе у Claude.",
+  codexSetup:
+    "<b>Вход в Codex</b>\n\nОдин раз, на машине relay, от того пользователя, под которым он работает:\n\n" +
+    "1. Войди в Codex через ChatGPT: <code>codex login</code> (на машине без браузера: <code>codex login --device-auth</code>).\n" +
+    "2. <code>sudo systemctl restart tg-relay</code>, потом ▶️ Тестовый запуск.\n\n" +
+    "Входить в меня Codex не нужно: relay выдаёт каждому запуску собственный ключ к моим инструментам, только на этот запуск. " +
+    "В списке входов они видны как «Codex runs».",
+  confirmDeleteCodex:
+    "Удалить настройки Codex? Я перестану запускать Codex. Relay останется: его можно выключить на его экране.",
+  codexStartFailed: (error) =>
+    `⚠️ Codex не смог запуститься на твоей машине: <code>${escapeHtml(error)}</code>. ` +
+    "Отправленное ему не дошло: напиши ещё раз, когда это будет исправлено.",
+  codexDeliverFailed: (session, error) =>
+    `⚠️ Codex сломался на сообщении в ${sessionRef(session, "его сессии")} на твоей машине: ` +
+    `<code>${escapeHtml(error)}</code>. Оно не дошло: напиши ещё раз, чтобы попробовать снова.`,
   routineScreen: (p) =>
-    "<b>Claude по тегу</b>\n\nОблачная сессия Claude Code, которую я запускаю для тебя: она делает работу и отвечает в Telegram. Это твоя рутина на claude.ai, она работает от твоего аккаунта.\n\n" +
+    "<b>Claude</b>\n\nОблачная сессия Claude Code, которую я запускаю для тебя: она делает работу и отвечает в Telegram. Это твоя рутина на claude.ai, она работает от твоего аккаунта.\n\n" +
     (p.state === "set"
       ? `✅ Рутина <code>${escapeHtml(p.trigger ?? "")}</code>, задана ${p.since}.`
       : p.state === "broken"
@@ -515,26 +897,76 @@ const ru: Texts = {
     `✅ Рутина <code>${escapeHtml(trigger)}</code> сохранена. Токен хранится только зашифрованным` +
     (deleted ? ", а твоё сообщение я удалил." : "."),
   routineNotSaved: "⚠️ Не получилось сохранить рутину. Пришли её ещё раз через минуту.",
+  routineNotActive: (first) =>
+    "Рутина сохранена, но тестовый запуск не прошёл, так что Claude тебе пока не отвечает. " +
+    "Когда тест в 🤖 Ассистент → Claude заработает, выбери там Claude" +
+    (first ? " и включи ответы в этом чате." : "."),
   deleteYourself:
     "⚠️ Не получилось удалить твоё сообщение: удали его сам, а если этот чат видят другие — сгенерируй новый токен.",
   testTooSoon:
     "Тестовая сессия уже запущена меньше минуты назад. Дождись её «ok» или попробуй чуть позже.",
   testStarted: (url) =>
-    `▶️ Запустил тестовую сессию (<a href="${escapeHtml(url)}">открыть</a>). Если всё настроено, через минуту-две она напишет сюда «ok».`,
-  fireFailed: (reason, retryMinutes) =>
-    "⚠️ Не получилось запустить рутину: " +
-    {
-      token: "её токен не принят. Сгенерируй новый в триггере рутины и пришли заново.",
-      missing: "такого триггера нет. Проверь id trig_….",
-      paused: "она на паузе на claude.ai.",
-      limit: `исчерпан лимит запусков. Попробуй через ${retryMinutes ?? 60} мин.`,
-      other: "API Anthropic не принял запуск. Попробуй позже.",
-      none: "она не задана.",
-      broken: "я больше не могу прочитать её токен. Пришли рутину заново.",
-    }[reason],
+    `▶️ Запустил тестовую сессию${url ? ` (<a href="${escapeHtml(url)}">открыть</a>)` : ""}. Если всё настроено, через минуту-две она напишет сюда «ok».`,
+  fireFailed: (reason, retryMinutes, provider) =>
+    provider === null
+      ? "⚠️ Ничего не запущено: ассистент не выбран. Настрой и выбери его в 🤖 Ассистенте."
+      : provider === "codex"
+        ? "⚠️ Не получилось запустить Codex: " +
+          {
+            relay:
+              "relay на твоей машине офлайн или служит не Codex. Проверь его: <code>systemctl status tg-relay</code>.",
+            sandbox:
+              "этот запуск должен идти в песочнице, а relay на твоей машине не умеет её делать: там не работает bubblewrap. " +
+              "Запусти там команду установки ещё раз — она скажет, в чём дело, — или выбери политику песочницы «Никто» в 🤖 Ассистент → Codex.",
+            limit: `слишком много запусков за час. Попробуй через ${retryMinutes ?? 60} мин.`,
+            none: "он не настроен.",
+            broken:
+              "я больше не могу прочитать его настройки. Выбери их заново в 🤖 Ассистент → Codex.",
+            token: "relay его не принял. Попробуй позже.",
+            missing: "relay его не принял. Попробуй позже.",
+            paused: "relay его не принял. Попробуй позже.",
+            quota: "relay его не принял. Попробуй позже.",
+            other: "relay его не принял. Попробуй позже.",
+          }[reason]
+        : provider === "openai"
+          ? "⚠️ Не получилось запустить OpenAI: " +
+            {
+              token: "API-ключ не принят. Пришли новый.",
+              missing: "API OpenAI ответил «не найдено». Попробуй позже.",
+              paused: "API OpenAI не принял запуск. Попробуй позже.",
+              limit: `исчерпан лимит запросов. Попробуй через ${retryMinutes ?? 1} мин.`,
+              quota: "у ключа закончилась квота. Проверь оплату на platform.openai.com.",
+              other: "API OpenAI не принял запуск. Попробуй позже.",
+              relay: "API OpenAI не принял запуск. Попробуй позже.",
+              sandbox: "API OpenAI не принял запуск. Попробуй позже.",
+              none: "API-ключ не задан.",
+              broken: "я больше не могу прочитать ключ. Пришли его заново.",
+            }[reason]
+          : "⚠️ Не получилось запустить рутину: " +
+            {
+              token: "её токен не принят. Сгенерируй новый в триггере рутины и пришли заново.",
+              missing: "такого триггера нет. Проверь id trig_….",
+              paused: "она на паузе на claude.ai.",
+              limit: `исчерпан лимит запусков. Попробуй через ${retryMinutes ?? 60} мин.`,
+              quota: "API Anthropic не принял запуск. Попробуй позже.",
+              other: "API Anthropic не принял запуск. Попробуй позже.",
+              relay: "API Anthropic не принял запуск. Попробуй позже.",
+              sandbox: "API Anthropic не принял запуск. Попробуй позже.",
+              none: "она не задана.",
+              broken: "я больше не могу прочитать её токен. Пришли рутину заново.",
+            }[reason],
+  deliverFailed: (reason, retryMinutes) =>
+    "⚠️ Не получилось передать сообщение в его сессию OpenAI: " +
+    (reason === "token"
+      ? "API-ключ не принят. Пришли новый."
+      : reason === "limit"
+        ? `исчерпан лимит запросов. Попробуй через ${retryMinutes ?? 1} мин.`
+        : reason === "quota"
+          ? "у ключа закончилась квота. Проверь оплату на platform.openai.com."
+          : "API OpenAI его не принял. Попробуй позже."),
   inChat: (title) => `«${escapeHtml(title)}»:`,
   tooManyStarts: "⚠️ Слишком много запусков за последний час; новых не будет, пока он не пройдёт.",
-  guestFailed: "⚠️ Не получилось запустить Claude.",
+  guestFailed: "⚠️ Не получилось запустить ассистента.",
   buttonGuestChats: "🕊 Гостевые чаты",
   guestChatsScreen: (lines) =>
     "🕊 <b>Гостевые чаты</b>\n\nЧаты, где меня нет, но куда меня позвали тегом. Первый вызов привязывает чат к тому, кто позвал: дальше там отвечает твоя рутина и действуют твои правила. Чужие вызовы считаются, только если включишь «Отвечать другим».\n\n" +
@@ -559,9 +991,9 @@ const ru: Texts = {
   startsSession: "сессия",
   startsLimited: (n) => `😴 Ещё ${n} — придержаны лимитом за последние 24 часа.`,
   buttonRelay: (state) =>
-    `🛰 Ретранслятор: ${{ none: "выкл", online: "онлайн ✅", offline: "офлайн ⚠️", login: "нужен вход ⚠️" }[state]}`,
+    `🛰 Ретранслятор: ${{ none: "выкл", online: "онлайн ✅", offline: "офлайн ⚠️", login: "нужен вход ⚠️", noclaude: "служит Codex ⚠️" }[state]}`,
   relayScreen: (p) =>
-    "🛰 <b>Ретранслятор</b>\n\nСессии не умеют сами писать друг другу. Ретранслятор умеет: это твоя машина " +
+    "🛰 <b>Ретранслятор</b>\n\nВ сессии Claude Code нельзя писать снаружи. Ретранслятор может: это твоя машина " +
     "с залогиненным Claude Code, которой я передаю сообщения. С ним реплай на сообщение сессии уходит в эту " +
     "сессию, а не запускает новую, и сессии могут спрашивать друг у друга, как дела. Без него всё работает " +
     "как раньше.\n\n" +
@@ -571,6 +1003,8 @@ const ru: Texts = {
       offline: `⚠️ Офлайн${p.seen ? ` с ${p.seen}` : " — ещё ни разу не выходил на связь"}. Проверь машину: <code>systemctl status tg-relay</code>.`,
       login:
         "⚠️ Слетел вход в Claude. На машине: <code>claude</code>, затем /login, затем <code>sudo systemctl restart tg-relay</code>.",
+      noclaude:
+        "⚠️ Онлайн, но служит Codex. Ретранслятор служит одному ассистенту: выполни команду установки с этого экрана, чтобы он служил Claude.",
     }[p.state],
   buttonRelayInstall: "📋 Команда установки",
   buttonRelayOff: "Отключить",
@@ -578,7 +1012,7 @@ const ru: Texts = {
     "Выполни на машине (Linux с systemd; попросит sudo). Команда при необходимости поставит Claude Code и " +
     `запустит ретранслятор как сервис:\n<pre>${escapeHtml(command)}</pre>\nПотом один раз войди там в Claude Code: ` +
     "<code>claude</code>, затем /login, затем <code>sudo systemctl restart tg-relay</code>. В команде токен " +
-    "ретранслятора — новая команда отключает старый.",
+    "ретранслятора. Ретранслятор служит одному ассистенту, и он у тебя один: новая команда отключает старый, в том числе у Codex.",
   relayOff: "Ретранслятор отключён.",
   relayLoginLost:
     "⚠️ У ретранслятора слетел вход в Claude, поэтому реплаи сессиям запускают новые сессии. На машине: <code>claude</code>, затем /login, затем <code>sudo systemctl restart tg-relay</code>.",
@@ -586,17 +1020,17 @@ const ru: Texts = {
     "⚠️ Ретранслятор замолчал: сообщения сессиям не доходят, реплаи запускают новые сессии. Проверь машину: <code>systemctl status tg-relay</code>.",
   claudeHere: (on) => (on ? "💬 Здесь: вкл ✅" : "💬 Здесь: выкл"),
   claudeHereHint:
-    "Здесь каждое сообщение идёт Claude: с 🛰 ретранслятором сообщения чата за день уходят в одну сессию (с 00:00 UTC), а реплай на сообщение сессии — обратно в неё; без него каждое сообщение запускает свою. В группах включается в 👥 Группы. Меня можно звать и из чатов, где меня нет, — тегом: см. 🕊 Гостевые чаты.",
-  claudeToggle: (on) => (on ? "🤖 Claude отвечает: ✅" : "🤖 Claude отвечает: выкл"),
+    "Здесь каждое сообщение идёт твоему ассистенту: сообщения чата за день уходят в одну сессию (с 00:00 UTC), а реплай на сообщение сессии — обратно в неё, если сессия может принимать сообщения (сессиям Claude для этого нужен 🛰 ретранслятор); иначе каждое сообщение запускает свою. В группах включается в 👥 Группы. Меня можно звать и из чатов, где меня нет, — тегом: см. 🕊 Гостевые чаты.",
+  claudeToggle: (on) => (on ? "🤖 Ассистент отвечает: ✅" : "🤖 Ассистент отвечает: выкл"),
   othersToggle: (on) => (on ? "👥 Отвечать другим: ⚠️ вкл" : "👥 Отвечать другим: выкл"),
   groupClaude: (p) =>
     p.heldBy
-      ? `\n\n🤖 Здесь Claude отвечает для ${p.heldBy}. Включить можно, когда он отключит.`
+      ? `\n\n🤖 Здесь отвечает ассистент ${p.heldBy}. Включить своего можно, когда он отключит.`
       : p.on
-        ? `\n\n🤖 Упоминание меня или реплай на сообщение ассистента запускает Claude — для тебя` +
+        ? `\n\n🤖 Упоминание меня или реплай на сообщение ассистента запускает твоего ассистента — для тебя` +
           (p.others ? `, и ⚠️ для всех остальных здесь — до ${p.limit} раз в час.` : ".")
         : "",
-  chatHeld: "Здесь Claude уже отвечает для другого человека.",
+  chatHeld: "Здесь уже отвечает ассистент другого человека.",
   othersLimitButton: (limit) => `⏱ Другим: до ${limit}/ч`,
   limitPickerTitle: (subject, current) =>
     `⏱ <b>${escapeHtml(subject)}</b>\n\nСколько раз в час, не больше? Сейчас: ${current}. Выбери или впиши своё число (1–500).`,
@@ -605,15 +1039,15 @@ const ru: Texts = {
   limitInvalid: "Нужно число от 1 до 500.",
   sceneDenied: "Сейчас нельзя.",
   sceneNotForYou: (name) => `Эта кнопка только для ${name}.`,
-  sceneNobody: "Сейчас некому ответить: Claude не подключён.",
-  sceneResting: (minutes) => `Claude отдыхает, попробуй через ${minutes} мин.`,
+  sceneNobody: "Сейчас некому ответить: ассистент не подключён.",
+  sceneResting: (minutes) => `Ассистент отдыхает, попробуй через ${minutes} мин.`,
   sceneTooFast: "Не так быстро.",
   sceneStale: "Кнопка устарела.",
   sceneOver: "Сцена завершена.",
   sceneFull: "Сцена заполнена: больше не помещается.",
   sceneFailed: "Не получилось, попробуй ещё раз.",
   sceneWakesLimited: (title, minutes) =>
-    `😴 Сцена «${escapeHtml(title)}» исчерпала побудки на этот час; следующая сможет разбудить Claude через ${minutes} мин (участники видят «Claude отдыхает»). Меняется в 🎬 Сценах.`,
+    `😴 Сцена «${escapeHtml(title)}» исчерпала побудки на этот час; следующая сможет разбудить ассистента через ${minutes} мин (участники видят «Ассистент отдыхает»). Меняется в 🎬 Сценах.`,
   limitGone: "Этого уже нет: настраивать нечего.",
   buttonScenes: (n) => `🎬 Сцены (${n})`,
   scenesScreen: (title, lines) =>
@@ -621,21 +1055,19 @@ const ru: Texts = {
     (lines.length ? lines.join("\n") : "Ни одной не идёт."),
   sceneScreen: (p) =>
     `🎬 <b>${escapeHtml(p.title)}</b>\n\nЗапустила ` +
-    (p.session
-      ? `<a href="https://claude.ai/code/${escapeHtml(p.session)}">сессия</a>`
-      : "твой ассистент") +
+    (p.session ? sessionRef(p.session, "сессия") : "твой ассистент") +
     `.\nСобытий в журнале: ${p.events}.\nПобудок за час: ${p.wakes} из ${p.limit}.`,
   buttonSceneWakes: (limit) => `⏱ Побудок: до ${limit}/ч`,
   buttonStopScene: "■ Остановить",
   sceneStopped: "Остановлена: кнопок больше нет.",
   othersLimited: (limit) =>
     `😴 Остальные участники исчерпали ${limit} запусков за час; их теги подождут, пока он пройдёт (они видят 😴). Лимит меняется в 👥 Группах.`,
-  routineFirst: "Сначала настрой 🤖 Claude по тегу.",
+  routineFirst: "Сначала настрой 🤖 Ассистента.",
   othersWarning: (title) =>
-    `⚠️ Claude будет отвечать участникам «${escapeHtml(title)}». Он настроен не выполнять их просьбы и не делиться твоими данными, если память этого чата это не разрешает. Но это защита инструкциями, а не доступом: у сессии твои коннекторы, чаты и репозитории, и хитрое сообщение может её переубедить. Включай там, где доверяешь людям. Все запуски видны в 📜 Запусках здесь.`,
+    `⚠️ Твой ассистент будет отвечать участникам «${escapeHtml(title)}». Он настроен не выполнять их просьбы и не делиться твоими данными, если память этого чата это не разрешает. Но это защита инструкциями, а не доступом: у сессии твои коннекторы, чаты и репозитории, и хитрое сообщение может её переубедить. Включай там, где доверяешь людям. Все запуски видны в 📜 Запусках здесь.`,
   buttonTurnOn: "Включить",
   privacyHint:
-    "👁 Я здесь не админ, а privacy mode включён: вижу только упоминания и реплаи, так что Claude может не хватить контекста. Сделай меня админом, чтобы это исправить.",
+    "👁 Я здесь не админ, а privacy mode включён: вижу только упоминания и реплаи, так что ассистенту может не хватить контекста. Сделай меня админом, чтобы это исправить.",
   testPassed: (at) => `✅ Тестовый запуск в ${at} ответил: всё работает.`,
   testWaiting: (at) =>
     `⏳ Тест запущен в ${at}, ответа пока нет. Если не придёт — проверь, что у рутины есть коннектор Telegram.`,

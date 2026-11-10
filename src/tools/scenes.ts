@@ -10,8 +10,7 @@ import { z } from "zod";
 import { applyEvent, endScene, loaded, mergeState, startScene } from "../bot/scenes";
 import { Fence, formatTime, person } from "../format";
 import type { ChatView } from "../access";
-import { relayState } from "../relay";
-import { loadRoutine } from "../routine";
+import { reachable } from "../agents/route";
 import { compile, DefinitionError, wakingRules, type Compiled } from "../scenes/definition";
 import { guide, PRESETS } from "../scenes/guide";
 import type { Value } from "../scenes/lang";
@@ -24,8 +23,8 @@ import {
   mayPost,
   notPersonal,
   sentLink,
+  callerSession,
   sessionArg,
-  sessionId,
   text,
   ToolError,
   toolError,
@@ -93,12 +92,11 @@ async function accessReport(
   if (!waking.length) {
     return "Nothing in this scene wakes you: read it with get_scene or wait_for_scene.";
   }
-  const routine = await loadRoutine(ctx.store, ctx.config.secretKey, ctx.userId);
-  const relay = relayState(await ctx.store.getRelay(ctx.userId));
-  if (typeof routine === "string" && !(relay === "online" && session)) {
-    return routine === "broken"
-      ? "Nothing can wake you: the user's routine can no longer be read (they must send it again). The scene still runs; read it yourself."
-      : "Nothing can wake you: the user has no routine set up. The scene still runs; read it yourself.";
+  const reach = await reachable(ctx, ctx.userId, session);
+  if (reach !== true) {
+    return reach === "broken"
+      ? "Nothing can wake you: the user's assistant settings can no longer be read (they must send them again). The scene still runs; read it yourself."
+      : "Nothing can wake you: the user has no assistant set up to start sessions. The scene still runs; read it yourself.";
   }
   const acts = waking.filter((rule) => rule.on.startsWith("act:"));
   const members = waking.filter((rule) => !rule.on.startsWith("act:"));
@@ -116,9 +114,9 @@ async function accessReport(
   if (chat.kind === "dm") return onlyUser("it is the user's private chat with the bot");
   const claim = await ctx.store.getClaudeChat(chat.chat_id);
   const refused = `other members get "This button is only for ${name}"`;
-  if (!claim) return onlyUser(`Claude on tag is off here, so ${refused}`);
+  if (!claim) return onlyUser(`The user's assistant does not answer here, so ${refused}`);
   if (claim.user_id !== ctx.userId) {
-    return onlyUser(`Claude on tag here belongs to someone else, so ${refused}`);
+    return onlyUser(`The assistant here answers for someone else, so ${refused}`);
   }
   if (!claim.others) return onlyUser(`"Others too" is off here, so ${refused}`);
   const conditional = members.some((rule) => rule.who === "expr")
@@ -267,7 +265,7 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
         }
         const saveAs = args.save_as === undefined ? null : await checkSaveAs(ctx, args.save_as);
         const { compiled: scene, state } = compiled(source);
-        const session = sessionId(args.session);
+        const session = callerSession(ctx, args.session);
         const report = await accessReport(ctx, chat, scene, session);
         if (args.dry_run) {
           const shown = render(scene, "main", state, {
@@ -410,7 +408,7 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
           throw new ToolError(`act's arg is at most ${ACT_ARG_BYTES} bytes of JSON.`);
         }
         // Not the user in Telegram: a session, standing for whoever its records say.
-        const caller = sessionId(args.session);
+        const caller = callerSession(ctx, args.session);
         const answer = await applyEvent(
           ctx,
           row.id,
@@ -421,7 +419,7 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
           },
           undefined,
           "en",
-          { session: caller, origin: await originOf(ctx, caller, undefined) },
+          { session: caller, origin: await originOf(ctx, caller, undefined, row.session_id) },
         );
         // A rule's words may carry members' names and replies: fenced like any Telegram content.
         const said = answer.text ?? "no rule took it";
