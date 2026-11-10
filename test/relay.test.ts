@@ -562,7 +562,9 @@ describe("runners", () => {
     h.db.raw.exec("UPDATE relays SET last_seen = last_seen - 600");
     await sweep();
     expect(status("ask_cxstart1")).toBe("failed");
-    expect(String(h.telegram.called("sendMessage").at(-1)!.params.text)).toContain("gone quiet");
+    const said = h.telegram.called("sendMessage").map((call) => String(call.params.text));
+    expect(said.some((text) => text.includes("gone quiet"))).toBe(true);
+    expect(said.at(-1)).toContain("Codex could not start");
   });
 
   it("a Codex job taken runs up to an hour", async () => {

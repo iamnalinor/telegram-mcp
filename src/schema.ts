@@ -230,13 +230,14 @@ const SCHEMA: string[] = [
   ) WITHOUT ROWID`,
   `CREATE INDEX IF NOT EXISTS agent_configs_by_hook ON agent_configs (hook)`,
 
-  // Sessions the Worker runs itself, under ids it gives them (oa_…), and the
-  // provider's own id for each. `token_exp`: when the MCP token it was handed
-  // runs out, so a delivery near that hands it a new one; `signin` and
-  // `token_version`: what that token hangs on, so a session whose sign-in
-  // ended is not fed any more. `told`: what the user last heard of it from
-  // the provider's webhooks (failed, action). `origin`: whom a task's chat
-  // session acted for when it started it (src/tools/tasks.ts); null for
+  // Sessions under ids the Worker gives them (oa_…, cx_…), and the provider's
+  // own id for each (a Codex thread's, once the relay tells it). `token_exp`:
+  // when the MCP token it was handed runs out, so a delivery near that hands
+  // it a new one; `signin` and `token_version`: what that token hangs on, so
+  // a session whose sign-in ended is not fed any more. `told`: what the user
+  // last heard of it (failed, action), from the provider's webhooks or the
+  // relay. `origin`: whom a task's chat session acted for when it started it
+  // (src/tools/tasks.ts), and whom a Codex start was for; null for OpenAI's
   // sessions started from Telegram, whose start in `fires` says it.
   `CREATE TABLE IF NOT EXISTS agent_sessions (
     id TEXT PRIMARY KEY,

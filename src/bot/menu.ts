@@ -24,6 +24,13 @@
  *                 m:oam:<chat|task> picks a model and m:oan:<chat|task>:<n> sets it,
  *                 m:oatest starts a test session, m:oadm toggles the private chat,
  *                 m:oadel removes the key (asks first; m:oadely does it)
+ *   m:cx          Codex: the relay, the sandbox, the model, a test; m:cxnew sends
+ *                 the install command (a new relay token), m:cxsetup how to connect
+ *                 Codex to the bot, m:cxs:<policy> sets the sandbox policy, m:cxw
+ *                 asks for the working directory (see `takeLimitAnswer`), m:cxm
+ *                 picks a model and m:cxn:<n|d> sets it, m:cxtest starts a test
+ *                 session, m:cxdm toggles the private chat, m:cxdel removes the
+ *                 settings (asks first; m:cxdely does it)
  *   m:cl          Claude on tag: the routine, if set
  *   m:clh         how to set the routine up; m:clp sends its prompt
  *   m:clset       asks for the trigger and token
@@ -50,8 +57,17 @@
 import { nowSeconds } from "../crypto";
 import { formatTime } from "../format";
 import { isAllowed } from "../env";
+import {
+  CODEX_DEFAULTS,
+  CODEX_MODELS,
+  loadCodex,
+  saveCodex,
+  SANDBOX_POLICIES,
+  workdirOf,
+  type CodexConfig,
+} from "../agents/codex";
 import { loadOpenAI, MODELS, saveOpenAI } from "../agents/openai";
-import { relayState, relayToken, tokenHash } from "../relay";
+import { codexRelayState, relayState, relayToken, tokenHash } from "../relay";
 import { routinePrompt, tokenOf } from "../routine";
 import { GUEST_BASE, type SceneRow } from "../store";
 import { memoryTitle } from "../tools/memory";
@@ -60,7 +76,7 @@ import type { CallbackQuery, InlineKeyboardMarkup, Message, User } from "../tele
 import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { fallBack } from "./fallback";
 import { OPENAI_WEBHOOK_PATH } from "./openaiWebhook";
-import { testOpenAI, testRoutine } from "./routine";
+import { testCodex, testOpenAI, testRoutine } from "./routine";
 import { endScene, revokeAccess, signOutAll } from "./scenes";
 import { holderName, stillMember } from "./triggers";
 import { escapeHtml, formatDate, sessionRef, texts } from "./texts";
@@ -258,28 +274,73 @@ async function routineState(ctx: BotContext, userId: number) {
   return { row, state };
 }
 
-const PROVIDER_NAMES = { claude: "Claude", openai: "OpenAI" } as const;
+const PROVIDER_NAMES = { claude: "Claude", openai: "OpenAI", codex: "Codex" } as const;
+type Kind = keyof typeof PROVIDER_NAMES;
+const SCREENS: Record<Kind, string> = { claude: "cl", openai: "oa", codex: "cx" };
 
 /** Which provider answers, and a way into each one's own screen. */
 async function assistantScreen(ctx: BotContext, user: User): Promise<Screen> {
   const t = texts(user.language_code);
-  const active =
-    (await ctx.store.getUser(user.id))?.active_provider === "openai" ? "openai" : "claude";
+  const chosen = (await ctx.store.getUser(user.id))?.active_provider;
+  const active: Kind = chosen === "openai" || chosen === "codex" ? chosen : "claude";
   const openai = await loadOpenAI(ctx.store, ctx.config.secretKey, user.id);
-  const row = (kind: "claude" | "openai") => [
+  const codex = await loadCodex(ctx.store, ctx.config.secretKey, user.id);
+  const row = (kind: Kind) => [
     button(t.buttonUse(PROVIDER_NAMES[kind], kind === active), `ap:${kind}`),
-    button(t.buttonSettings(PROVIDER_NAMES[kind]), kind === "claude" ? "cl" : "oa"),
+    button(t.buttonSettings(PROVIDER_NAMES[kind]), SCREENS[kind]),
   ];
   return {
     text: t.assistantScreen({
       active,
       claude: (await routineState(ctx, user.id)).state,
       openai: typeof openai === "string" ? openai : "set",
+      codex: typeof codex === "string" ? codex : "set",
     }),
     reply_markup: {
-      inline_keyboard: [row("claude"), row("openai"), [button(t.buttonBack, "main")]],
+      inline_keyboard: [row("claude"), row("openai"), row("codex"), [button(t.buttonBack, "main")]],
     },
   };
+}
+
+async function codexScreen(ctx: BotContext, user: User): Promise<Screen> {
+  const t = texts(user.language_code);
+  const config = await loadCodex(ctx.store, ctx.config.secretKey, user.id);
+  const shown = typeof config === "string" ? CODEX_DEFAULTS : config;
+  const relay = await ctx.store.getRelay(user.id);
+  const here = (await ctx.store.getClaudeChat(user.id))?.user_id === user.id;
+  return {
+    text: t.codexScreen({
+      state: typeof config === "string" ? config : "set",
+      relay: codexRelayState(relay),
+      seen: relay?.last_seen ? formatDate(relay.last_seen) : null,
+      ...shown,
+    }),
+    reply_markup: {
+      inline_keyboard: [
+        [button(t.buttonRelayInstall, "cxnew"), button(t.buttonCodexSetup, "cxsetup")],
+        SANDBOX_POLICIES.map((policy) =>
+          button(t.buttonSandbox(policy, policy === shown.sandbox), `cxs:${policy}`),
+        ),
+        [button(t.buttonCodexModel(shown.model), "cxm"), button(t.buttonWorkdir, "cxw")],
+        ...(config === "none"
+          ? []
+          : [[button(t.claudeHere(here), "cxdm"), button(t.buttonTestRoutine, "cxtest")]]),
+        ...(config === "none" ? [] : [[button(t.buttonDeleteRoutine, "cxdel")]]),
+        [button(t.buttonBack, "as")],
+      ],
+    },
+  };
+}
+
+/** The user's Codex settings with one change, saved; defaults where none were saved yet. */
+async function changeCodex(
+  ctx: BotContext,
+  user: User,
+  change: Partial<CodexConfig>,
+): Promise<void> {
+  const config = await loadCodex(ctx.store, ctx.config.secretKey, user.id);
+  const base = typeof config === "string" ? CODEX_DEFAULTS : config;
+  await saveCodex(ctx.store, ctx.config.secretKey, user.id, { ...base, ...change });
 }
 
 async function openaiScreen(ctx: BotContext, user: User): Promise<Screen> {
@@ -753,26 +814,40 @@ async function render(
     });
     return { ...(await routineScreen(ctx, user)), note: t.setRoutineNote };
   }
-  if (name === "cldm" || name === "oadm") {
+  if (name === "cldm" || name === "oadm" || name === "cxdm") {
     const claim = await ctx.store.getClaudeChat(user.id);
     if (claim) await ctx.store.releaseClaudeChat(user.id, user.id);
     else if (await ctx.store.hasAssistant(user.id)) {
       await ctx.store.claimClaudeChat(user.id, user.id);
     }
-    return name === "cldm" ? routineScreen(ctx, user) : openaiScreen(ctx, user);
+    return name === "cldm"
+      ? routineScreen(ctx, user)
+      : name === "oadm"
+        ? openaiScreen(ctx, user)
+        : codexScreen(ctx, user);
   }
   if (name === "as") return assistantScreen(ctx, user);
-  const choose = /^ap:(claude|openai)$/.exec(name);
+  const choose = /^ap:(claude|openai|codex)$/.exec(name);
   if (choose) {
-    const kind = choose[1] as "claude" | "openai";
-    const ready =
-      kind === "claude"
-        ? (await routineState(ctx, user.id)).state === "set"
-        : typeof (await loadOpenAI(ctx.store, ctx.config.secretKey, user.id)) !== "string";
+    const kind = choose[1] as Kind;
+    const first = !(await ctx.store.hasAssistant(user.id));
+    let ready: boolean;
+    if (kind === "claude") ready = (await routineState(ctx, user.id)).state === "set";
+    else if (kind === "openai") {
+      ready = typeof (await loadOpenAI(ctx.store, ctx.config.secretKey, user.id)) !== "string";
+    } else {
+      // Nothing secret to send: a relay that runs Codex is all it takes.
+      ready = codexRelayState(await ctx.store.getRelay(user.id)) === "online";
+      const config = await loadCodex(ctx.store, ctx.config.secretKey, user.id);
+      if (ready && config === "none") await changeCodex(ctx, user, {});
+      ready &&= config !== "broken";
+    }
     if (!ready) {
       return { ...(await assistantScreen(ctx, user)), note: t.providerFirst(PROVIDER_NAMES[kind]) };
     }
-    // The other one's settings stay: switching back needs nothing sent again.
+    // Answering in the private chat comes on with the first assistant, as when a key is sent.
+    if (first && kind === "codex") await ctx.store.claimClaudeChat(user.id, user.id);
+    // The others' settings stay: switching back needs nothing sent again.
     await ctx.store.setActiveProvider(user.id, kind === "claude" ? null : kind);
     return {
       ...(await assistantScreen(ctx, user)),
@@ -838,15 +913,87 @@ async function render(
     return { ...(await openaiScreen(ctx, user)), note: t.routineDeleted };
   }
   if (name === "rl") return relayScreen(ctx, user);
-  if (name === "rlnew") {
+  if (name === "rlnew" || name === "cxnew") {
     const token = relayToken();
     await ctx.store.setRelay(user.id, await tokenHash(token));
+    const command = `curl -fsSL ${ctx.origin}/relay/install.sh | RELAY_TOKEN=${token}`;
     await ctx.api.call("sendMessage", {
       chat_id: user.id,
-      text: t.relayInstall(`curl -fsSL ${ctx.origin}/relay/install.sh | RELAY_TOKEN=${token} bash`),
+      text:
+        name === "rlnew"
+          ? t.relayInstall(`${command} bash`)
+          : t.codexInstall(`${command} RELAY_CODEX=1 bash`),
       parse_mode: "HTML",
     });
-    return relayScreen(ctx, user);
+    return name === "rlnew" ? relayScreen(ctx, user) : codexScreen(ctx, user);
+  }
+  if (name === "cx") return codexScreen(ctx, user);
+  if (name === "cxsetup") {
+    return {
+      text: t.codexSetup(ctx.origin),
+      reply_markup: { inline_keyboard: [[button(t.buttonBack, "cx")]] },
+    };
+  }
+  const policy = /^cxs:(all|others|none)$/.exec(name);
+  if (policy) {
+    await changeCodex(ctx, user, { sandbox: policy[1] as CodexConfig["sandbox"] });
+    return { ...(await codexScreen(ctx, user)), note: t.modelSet };
+  }
+  if (name === "cxw") {
+    const sent = await ctx.api.call<Message>("sendMessage", {
+      chat_id: user.id,
+      text: t.workdirAsk,
+      parse_mode: "HTML",
+      reply_markup: { force_reply: true, input_field_placeholder: "~/projects" },
+    });
+    await ctx.store.setLimitPrompt(user.id, WORKDIR, sent.message_id);
+    return { ...(await codexScreen(ctx, user)), note: t.workdirNote };
+  }
+  if (name === "cxm") {
+    const config = await loadCodex(ctx.store, ctx.config.secretKey, user.id);
+    const current = typeof config === "string" ? null : config.model;
+    return {
+      text: t.codexModelPicker,
+      reply_markup: {
+        inline_keyboard: [
+          [button(current === null ? `✓ ${t.buttonDefaultModel}` : t.buttonDefaultModel, "cxn:d")],
+          ...CODEX_MODELS.map((model, n) => [
+            button(model === current ? `✓ ${model}` : model, `cxn:${n}`),
+          ]),
+          [button(t.buttonBack, "cx")],
+        ],
+      },
+    };
+  }
+  const codexModel = /^cxn:(d|\d)$/.exec(name);
+  if (codexModel) {
+    const picked = codexModel[1] === "d" ? null : CODEX_MODELS[Number(codexModel[1])];
+    if (picked === undefined) return codexScreen(ctx, user);
+    await changeCodex(ctx, user, { model: picked });
+    return { ...(await codexScreen(ctx, user)), note: t.modelSet };
+  }
+  if (name === "cxtest") {
+    await testCodex(ctx, user, 0);
+    return codexScreen(ctx, user);
+  }
+  if (name === "cxdel") {
+    return {
+      text: t.confirmDeleteCodex,
+      reply_markup: {
+        inline_keyboard: [
+          [button(t.buttonConfirmRemove, "cxdely")],
+          [button(t.buttonCancel, "cx")],
+        ],
+      },
+    };
+  }
+  if (name === "cxdely") {
+    await ctx.store.deleteAgentConfig(user.id, "codex");
+    if ((await ctx.store.getUser(user.id))?.active_provider === "codex") {
+      await ctx.store.setActiveProvider(user.id, null);
+    }
+    await dropIfNoAssistant(ctx, user.id);
+    return { ...(await codexScreen(ctx, user)), note: t.routineDeleted };
   }
   if (name === "rloff") {
     // Replies it had not passed on yet start sessions instead of getting lost.
@@ -870,9 +1017,11 @@ async function render(
   }
   if (name === "cldely") {
     await ctx.store.deleteRoutine(user.id);
-    // With OpenAI set up, it answers from now on.
+    // With OpenAI or Codex set up, that one answers from now on.
     if (typeof (await loadOpenAI(ctx.store, ctx.config.secretKey, user.id)) !== "string") {
       await ctx.store.setActiveProvider(user.id, "openai");
+    } else if (typeof (await loadCodex(ctx.store, ctx.config.secretKey, user.id)) !== "string") {
+      await ctx.store.setActiveProvider(user.id, "codex");
     }
     // Otherwise nothing would start in them any more, and others could not turn Claude on there.
     await dropIfNoAssistant(ctx, user.id);
@@ -1032,9 +1181,10 @@ async function render(
 }
 
 /**
- * A reply to the menu's prompt for a number (`askLimit`). A number in range
- * sets the limit and shows the chat's screen anew; anything else asks again,
- * and that question becomes the pending prompt. Null when the message answers
+ * A reply to the menu's prompt for a number (`askLimit`), or for Codex's
+ * working directory. A number in range sets the limit and shows the chat's
+ * screen anew; anything else asks again, and that question becomes the
+ * pending prompt. Null when the message answers
  * no pending prompt: it goes its usual way.
  */
 export async function takeLimitAnswer(
@@ -1049,6 +1199,7 @@ export async function takeLimitAnswer(
   const pending = await ctx.store.takeLimitPrompt(user.id, target.message_id);
   if (!pending) return null;
   const t = texts(user.language_code);
+  if (pending === WORKDIR) return takeWorkdir(ctx, user, message.text ?? "");
   const limit = limitOf(message.text ?? "");
   if (limit === null) {
     const sent = await ctx.api
@@ -1065,6 +1216,41 @@ export async function takeLimitAnswer(
   const screen = await limitTarget(ctx, user, pending, limit);
   // The scene ended, or the chat is no longer theirs: say so rather than nothing.
   if (!screen) return { method: "sendMessage", chat_id: user.id, text: t.limitGone };
+  return {
+    method: "sendMessage",
+    chat_id: user.id,
+    text: screen.text,
+    parse_mode: "HTML",
+    link_preview_options: { is_disabled: true },
+    reply_markup: screen.reply_markup,
+  };
+}
+
+/** The prompt for Codex's working directory, among the limits' prompts. */
+const WORKDIR = "cw";
+
+/** A working directory typed for Codex: saved, or asked for again. */
+async function takeWorkdir(
+  ctx: BotContext,
+  user: User,
+  text: string,
+): Promise<WebhookReply | "asked"> {
+  const t = texts(user.language_code);
+  const dir = workdirOf(text);
+  if (dir === null) {
+    const sent = await ctx.api
+      .call<Message>("sendMessage", {
+        chat_id: user.id,
+        text: t.workdirInvalid,
+        reply_markup: { force_reply: true, input_field_placeholder: "~/projects" },
+      })
+      .catch(() => null);
+    if (sent) await ctx.store.setLimitPrompt(user.id, WORKDIR, sent.message_id);
+    return "asked";
+  }
+  await ctx.store.dropLimitPrompt(user.id);
+  await changeCodex(ctx, user, { workdir: dir });
+  const screen = await codexScreen(ctx, user);
   return {
     method: "sendMessage",
     chat_id: user.id,

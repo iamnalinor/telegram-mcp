@@ -233,7 +233,7 @@ allowlist.
 | `get_message`         | One message in full, with its reply chain, button presses and reactions    |
 | `get_file`            | Download link for an attachment, and the content when small                |
 | `memory`              | Read and edit what your assistants keep about each chat (see Memory)       |
-| `list_sessions`       | Claude Code sessions the bot knows of, and whether the relay is up         |
+| `list_sessions`       | Assistant sessions the bot knows of, and whether the relay is up           |
 | `message_session`     | Ask another session something, or hand it a request (needs the relay)      |
 | `wait_for_session`    | Keep waiting for that session's answer                                     |
 | `answer_session`      | Answer a session that asked you                                            |
@@ -444,7 +444,7 @@ Worker holds the request until one comes, up to 25 s, so a message is on its way
 seconds — about 3,500 Worker requests a day, a few percent of the free plan. The relay passes each
 one on with `claude -p --cloud <session>`. It needs no open port or domain.
 
-Set it up in the menu: 🤖 Claude → 🛰 Relay → 📋 Install command, and run what it sends on the
+Set it up in the menu: 🤖 Assistant → ⚙️ Claude → 🛰 Relay → 📋 Install command, and run what it sends on the
 machine:
 
 ```sh
@@ -477,6 +477,28 @@ can claim; it is not proof — keep "Others too" where you trust people.
 Without a relay, or while it is down, everything works as before: a reply starts a new session that
 carries on, and the session tools say why another session cannot be reached. If the relay's Claude
 sign-in expires or it goes quiet, you hear once, and the session that answers instead says so too.
+
+### Codex on your machine
+
+The same relay can run the Codex CLI, signed in to your ChatGPT plan, as your assistant: 🤖
+Assistant → ⚙️ Codex → 📋 Install command sends the install command with `RELAY_CODEX=1`, which
+installs Codex from npm (it needs Node.js) instead of Claude Code. Then, once, on that machine:
+`codex login`, `codex mcp add telegram --url https://<your worker>/` and `codex mcp login telegram
+--no-browser`, and `sudo systemctl restart tg-relay`. With the relay online and running Codex,
+choose Codex in 🤖 Assistant.
+
+The relay says what it can run (`claude`, `codex`) and is handed only those jobs. A start runs
+`codex exec --json` in the background — three at most at once, one at a time per session — and
+tells the bot the thread's id as soon as Codex prints it; messages for that session (replies, the
+day's messages, `message_session`) wait for it and go in with `codex exec resume`. A start that fails,
+or that the relay does not pick up within minutes, is not handed to another provider: you hear why,
+once.
+
+Codex runs with your account on that machine, so the screen sets a sandbox policy: **Others** (the
+default) sandboxes whatever a third party stands behind — their message, their scene's wake, a
+session their words went into — **All** sandboxes everything, **None** nothing. A sandboxed run is
+read-only, in an empty directory (`~/.tg-relay/sandbox`); otherwise Codex has full access, from the
+working directory you set (your home by default).
 
 ## Limits
 

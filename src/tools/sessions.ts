@@ -53,7 +53,8 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
     {
       title: "Sessions the bot knows of",
       description:
-        "The user's assistant sessions the bot knows of (Claude Code cloud sessions, OpenAI agent sessions): " +
+        "The user's assistant sessions the bot knows of (Claude Code cloud sessions, OpenAI agent sessions, " +
+        "Codex on the user's machine): " +
         "started from Telegram, wrote through the bot, or " +
         "were messaged — what each was asked, where, and its latest message. Use it to find the session a " +
         "request belongs to before starting the same work again. Sessions it does not list exist too: ask the " +
@@ -149,7 +150,7 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
         const target = parseSession(args.to);
         if (!target)
           throw new ToolError(`"${args.to}" is not a session id or a claude.ai/code link.`);
-        // Only Claude Code sessions are reached through the relay.
+        // A Claude Code session needs the relay checked here; the other providers say for their own.
         const relayed = providerOf(target) === "claude";
         if (relayed) {
           const { online, line } = await stateLine(ctx);
@@ -198,6 +199,11 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
           );
         }
         if (routed.via !== "delivered") {
+          if (routed.via === "unreachable" && routed.reach === "offline" && !relayed) {
+            throw new ToolError(
+              "Not sent: the relay that runs that session on the user's machine is offline. Tell the user.",
+            );
+          }
           if (!relayed) throw new ToolError("Not sent: that session cannot be reached any more.");
           const reach = routed.via === "unreachable" ? routed.reach : "none";
           throw new ToolError(`Not sent. Relay: ${reach}. ${relayProblem(reach, ctx.user)}`);

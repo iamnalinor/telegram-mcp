@@ -79,7 +79,7 @@ export interface Routine {
   test_at: number | null;
 }
 
-/** A session the Worker runs itself (src/agents/openai.ts), under the id it gave it. */
+/** A session under an id the Worker gave it (src/agents/openai.ts, src/agents/codex.ts). */
 export interface AgentSession {
   id: string;
   user_id: number;
@@ -683,7 +683,8 @@ export class Store {
 
   /**
    * The menu asked the user to type a number (a limit) for `target`: `g:<chat>`,
-   * `q:<guest key>` or `s:<scene>`. One pending prompt per user; a newer one replaces it.
+   * `q:<guest key>` or `s:<scene>`; or a directory, `cw`: Codex's working one.
+   * One pending prompt per user; a newer one replaces it.
    */
   async setLimitPrompt(userId: number, target: string, promptMessageId: number): Promise<void> {
     await this.setMeta(`limit_prompt:${userId}`, `${target}:${promptMessageId}`);
@@ -1864,11 +1865,24 @@ export class Store {
    */
   private endAgentSessions(userId: number, provider: string | null): D1PreparedStatement[] {
     return [
+      // Only OpenAI's sessions hold tokens of that sign-in; Codex signs in on the user's machine.
+      ...(provider === "codex"
+        ? []
+        : [
+            this.db
+              .prepare(
+                "UPDATE refresh_sessions SET revoked = 1 WHERE user_id = ? AND client_name = ? AND revoked = 0",
+              )
+              .bind(userId, AGENTS_SIGN_IN),
+          ]),
+      // What the relay was still to run for them is not run.
       this.db
         .prepare(
-          "UPDATE refresh_sessions SET revoked = 1 WHERE user_id = ? AND client_name = ? AND revoked = 0",
+          `UPDATE relay_jobs SET status = 'failed', error = 'its provider was removed'
+           WHERE user_id = ?1 AND status = 'queued' AND target_session IN (
+             SELECT id FROM agent_sessions WHERE user_id = ?1 AND (?2 IS NULL OR provider = ?2))`,
         )
-        .bind(userId, AGENTS_SIGN_IN),
+        .bind(userId, provider),
       this.db
         .prepare("DELETE FROM agent_sessions WHERE user_id = ?1 AND (?2 IS NULL OR provider = ?2)")
         .bind(userId, provider),
@@ -1991,6 +2005,27 @@ export class Store {
       .bind(id, what)
       .run();
     return (result.meta.changes ?? 0) > 0;
+  }
+
+  /**
+   * A session that never came to be (its start failed): what is queued for it
+   * fails, and so do the starts in the log that went to it.
+   */
+  async failAgentSession(userId: number, session: string, error: string): Promise<void> {
+    await this.db.batch([
+      this.db
+        .prepare(
+          `UPDATE relay_jobs SET status = 'failed', error = ?
+           WHERE user_id = ? AND target_session = ? AND status = 'queued'`,
+        )
+        .bind(error, userId, session),
+      this.db
+        .prepare(
+          `UPDATE fires SET status = 'failed'
+           WHERE user_id = ? AND session_id = ? AND status IN ('started', 'relayed')`,
+        )
+        .bind(userId, session),
+    ]);
   }
 
   /** The message whose start made the session, if a start in the log did. */
@@ -2326,7 +2361,7 @@ export class Store {
         `INSERT INTO relays (user_id, token_hash, created_at) VALUES (?1, ?2, ?3)
          ON CONFLICT (user_id) DO UPDATE SET token_hash = excluded.token_hash,
            created_at = excluded.created_at, last_seen = NULL, login_failed_at = NULL,
-           offline_noticed_at = NULL`,
+           offline_noticed_at = NULL, runners = NULL`,
       )
       .bind(userId, tokenHash, nowSeconds())
       .run();

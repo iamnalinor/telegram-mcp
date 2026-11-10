@@ -5,7 +5,7 @@
  * where heavy work goes, which account is the user's).
  *
  * Claude's comes back byte for byte as its routine's prompt (src/routine.ts),
- * which the user pastes; OpenAI's sessions get theirs from the bot.
+ * which the user pastes; OpenAI's and Codex's sessions get theirs from the bot.
  */
 
 /** The parts of the prompt that differ between providers. */
@@ -73,6 +73,15 @@ export const OPENAI_PREAMBLE: Preamble = {
     "Your session id is on the payload's `session:` line, and your sign-in carries it too: passing it as `session` when you send is optional.",
   work: "You do the talking: answer at once what needs no real work. Research, building, code, many-step work goes to a task session: call start_task with a brief that stands on its own — the chat, the message, who asked and what they want, what you found so far, and that these rules hold — and say in a line that it is under way. The task session has a machine of its own and sends its result itself; message_session reaches it while it runs. You have no subagents.",
   account: "their OpenAI account",
+  sessions:
+    "Look for a session already on the user's request (list_sessions) and ask it or hand it over (message_session) before starting the same work.",
+};
+
+export const CODEX_PREAMBLE: Preamble = {
+  session:
+    "Your session id is on the payload's `session:` line, and every message passed on to you later repeats it: pass it as `session` whenever you send, or replies to your messages will not find you.",
+  work: "You run as Codex on the user's own machine, through their relay. Answer at once what needs no real work; do real work yourself, saying in a line that it is under way when it will take a while. Be careful with commands that delete, overwrite or send anything: nothing here is undone. When your sandbox is read-only you cannot write or change anything on the machine: say so rather than try. You have no subagents.",
+  account: "their OpenAI account, this machine",
   sessions:
     "Look for a session already on the user's request (list_sessions) and ask it or hand it over (message_session) before starting the same work.",
 };

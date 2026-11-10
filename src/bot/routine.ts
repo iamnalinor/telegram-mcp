@@ -1,12 +1,13 @@
 /**
  * Setting up the user's assistant from the private chat — Claude's routine,
- * or an OpenAI API key — and its test start.
+ * or an OpenAI API key — and its test start; Codex's test start too.
  *
  * Tokens and keys arrive as ordinary messages. Such a message — or anything
  * else that looks like a key (src/secrets.ts) — never reaches storage: the
  * webhook hands it here first, and it is deleted from the chat.
  */
 
+import { codex } from "../agents/codex";
 import { loadOpenAI, MODELS, openai, saveOpenAI } from "../agents/openai";
 import { isAllowed } from "../env";
 import { fire, firePayload, loadRoutine, parseRoutine, saveRoutine } from "../routine";
@@ -43,7 +44,7 @@ export function resetTestStarts(): void {
 async function testAllowed(
   ctx: BotContext,
   user: User,
-  provider: "claude" | "openai",
+  provider: "claude" | "openai" | "codex",
 ): Promise<boolean> {
   const last = lastTest.get(`${provider}:${user.id}`);
   if (last !== undefined && Date.now() - last < TEST_COOLDOWN_MS) {
@@ -103,6 +104,23 @@ export async function testOpenAI(ctx: BotContext, user: User, messageId: number)
   const minutes = result.retryAfter ? Math.ceil(result.retryAfter / 60) : undefined;
   await say(ctx, user.id, t.fireFailed(result.reason, minutes, "openai"));
   return false;
+}
+
+/** Start a Codex session once, as a check, on the relay's machine. */
+export async function testCodex(ctx: BotContext, user: User, messageId: number): Promise<void> {
+  const t = texts(user.language_code);
+  if (!(await testAllowed(ctx, user, "codex"))) return;
+  const result = await codex.start(ctx, user.id, {
+    kind: "test",
+    chat: user.id,
+    message: messageId,
+  });
+  if (result.ok) {
+    await say(ctx, user.id, t.testStarted(null));
+    return;
+  }
+  lastTest.delete(`codex:${user.id}`);
+  await say(ctx, user.id, t.fireFailed(result.reason, undefined, "codex"));
 }
 
 /**

@@ -5,7 +5,8 @@
  *
  * Claude (src/agents/claude.ts): its routine starts sessions, its relay passes
  * messages on. OpenAI (src/agents/openai.ts): the Worker runs Agents API
- * sessions itself, under ids it gives them.
+ * sessions itself, under ids it gives them. Codex (src/agents/codex.ts): the
+ * user's relay runs it on their machine, under ids the Worker gives them.
  */
 
 import type { RelayJob, Store } from "../store";
@@ -80,8 +81,9 @@ export type StartRequest =
   /** A start from the bot's menu, to check the setup: it answers "ok" in the private chat. */
   | { kind: "test"; chat: number; message: number };
 
+/** `relay`: the relay that would run it is not there (Codex). */
 export type StartFailure =
-  "none" | "broken" | "token" | "missing" | "paused" | "limit" | "quota" | "other";
+  "none" | "broken" | "token" | "missing" | "paused" | "limit" | "quota" | "relay" | "other";
 
 /** Why a provider's API did not take something, and when to try again. */
 export interface Failure {

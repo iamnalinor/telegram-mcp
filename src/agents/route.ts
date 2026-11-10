@@ -10,6 +10,7 @@
  */
 
 import { claude } from "./claude";
+import { codex } from "./codex";
 import { openai } from "./openai";
 import {
   providerOf,
@@ -22,7 +23,7 @@ import {
   type StartRequest,
 } from "./types";
 
-const PROVIDERS: Partial<Record<ProviderKind, Provider>> = { claude, openai };
+const PROVIDERS: Record<ProviderKind, Provider> = { claude, codex, openai };
 
 /** The provider the holder's new sessions start with: the one they chose, Claude by default. */
 export async function activeProvider(

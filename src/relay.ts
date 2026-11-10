@@ -6,10 +6,11 @@
  * Codex for the user, if it has it: each job names its runner.
  *
  *   GET  /relay/install.sh           the installer, see src/relayScript.ts
- *   GET  /relay/jobs?wait=25&runners=claude,codex
+ *   GET  /relay/jobs?wait=25&runners=claude,codex&busy=codex
  *                                    the relay asks for work it can run (Bearer:
- *                                    its token; no runners: Claude only); the
- *                                    answer waits up to that long for a job
+ *                                    its token; no runners: Claude only), less
+ *                                    what it has no room for now; the answer
+ *                                    waits up to that long for a job
  *   POST /relay/jobs/<id>/started    a Codex start tells its thread's id: {thread}
  *   POST /relay/jobs/<id>            …and the relay reports how it went: {ok, error}
  *
@@ -88,11 +89,10 @@ export function relayState(row: RelayRow | null, now = nowSeconds()): RelayState
   return row.last_seen !== null && row.last_seen >= now - ONLINE_SECONDS ? "online" : "offline";
 }
 
+export type CodexRelayState = "none" | "online" | "offline" | "nocodex";
+
 /** The relay's state for Codex: Claude's sign-in does not matter, Codex being there does. */
-function codexRelayState(
-  row: RelayRow | null,
-  now = nowSeconds(),
-): "none" | "online" | "offline" | "nocodex" {
+export function codexRelayState(row: RelayRow | null, now = nowSeconds()): CodexRelayState {
   if (!row) return "none";
   if (row.last_seen === null || row.last_seen < now - ONLINE_SECONDS) return "offline";
   return relayRuns(row).includes("codex") ? "online" : "nocodex";
@@ -159,9 +159,10 @@ export async function handleRelay(
     // A relay (re)started after a new sign-in: give it a chance before calling it broken again.
     const start = params.get("start") === "1";
     if (start && relay.login_failed_at) await store.setRelayLogin(relay.user_id, null);
-    // Signed out of Claude: its jobs wait, and Codex's still go.
+    // Signed out of Claude: its jobs wait, and Codex's still go. Busy: they wait, and do not expire.
+    const busy = (params.get("busy") ?? "").split(",");
     const kinds = relayRuns({ ...relay, runners: stored }).filter(
-      (kind) => kind !== "claude" || !relay.login_failed_at || start,
+      (kind) => (kind !== "claude" || !relay.login_failed_at || start) && !busy.includes(kind),
     );
     if (!kinds.length) return Response.json([]);
     const wait = Math.min(
@@ -224,7 +225,13 @@ export async function handleRelay(
   if (job.runner === "codex-start" && thread) {
     await store.setAgentThread(relay.user_id, job.target_session, thread);
   }
-  if (job.status === "done") {
+  if (job.status === "done" && job.runner === "codex-start" && !thread) {
+    // Done, yet no thread was ever told: nothing can follow it.
+    const session = await store.getAgentSession(relay.user_id, job.target_session);
+    if (!session?.external_id) {
+      await fallBack(await botFor(), { ...job, error: "Codex told no thread id" }, "failed");
+    }
+  } else if (job.status === "done") {
     if (job.runner === "claude-continue" && relay.login_failed_at) {
       await store.setRelayLogin(relay.user_id, null);
     }

@@ -1,13 +1,16 @@
 /**
  * What becomes of a job the relay (src/relay.ts) could not pass on: it goes
  * the way it would have without a relay — a new session, told why, through
- * the same routing as everything else (src/agents/route.ts).
+ * the same routing as everything else (src/agents/route.ts). A Codex start
+ * that did not go through is not tried elsewhere: the user hears of it.
  */
 
+import { codexStartFailed } from "../agents/codex";
 import { wakeFallback } from "../scenes/wake";
 import { BOT_ACCOUNT, type GuestReply, type RelayJob } from "../store";
 import type { BotContext } from "./context";
 import { startGuest } from "./guest";
+import { texts } from "./texts";
 import { launch } from "./triggers";
 
 /**
@@ -19,6 +22,24 @@ export async function fallBack(
   job: RelayJob,
   why: "login" | "offline" | "failed",
 ): Promise<void> {
+  // A start, or a message for a thread its start never made: what waited on it fails too.
+  if (
+    job.runner === "codex-start" ||
+    (job.runner === "codex-resume" &&
+      !(await ctx.store.getAgentSession(job.user_id, job.target_session))?.external_id)
+  ) {
+    const { tell, error } = await codexStartFailed(ctx.store, job);
+    if (!tell) return;
+    const t = texts((await ctx.store.getUser(job.user_id))?.language);
+    await ctx.api
+      .call("sendMessage", {
+        chat_id: job.user_id,
+        text: t.codexStartFailed(error),
+        parse_mode: "HTML",
+      })
+      .catch(() => undefined);
+    return;
+  }
   if (job.chat_id === null || job.message_id === null) return;
   if (job.kind === "scene") {
     // The session the scene knew is out of reach: a new one reads the scene.
