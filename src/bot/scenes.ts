@@ -59,6 +59,8 @@ export type Answer = {
   applied?: boolean;
   said?: boolean;
   noRule?: boolean;
+  /** Why the event was dropped though a rule may well have taken it: for a source nobody answers. */
+  lost?: string;
 };
 
 /** What a scene's I/O needs; tools pass their own context, which has these too. */
@@ -385,7 +387,7 @@ async function attempt(
     // Before anything is drawn: stale and forged presses count against the limit too.
     if (attempt === 0 && limited(incoming)) {
       if (!(await allow(ctx.sceneLimit, `${sceneId}:${incoming.user.id}`))) {
-        return { text: t.sceneTooFast };
+        return { text: t.sceneTooFast, lost: "too fast: the member's events are over the limit" };
       }
     }
     const owner = await ownerOf(ctx, row);
@@ -446,7 +448,7 @@ async function attempt(
       result = { refused: "broken", detail: String(error) };
     }
     if ("refused" in result) {
-      if (result.refused === "full") return { text: t.sceneFull };
+      if (result.refused === "full") return { text: t.sceneFull, lost: result.detail };
       await recordError(ctx, row, event.user, "rule", result.detail);
       return { text: t.sceneFailed };
     }
@@ -468,7 +470,7 @@ async function attempt(
       try {
         drawn = screens(next, owner);
       } catch (error) {
-        if (error instanceof RenderError) return { text: t.sceneFull };
+        if (error instanceof RenderError) return { text: t.sceneFull, lost: error.message };
         await recordError(
           ctx,
           row,
@@ -508,7 +510,7 @@ async function attempt(
       return { applied: true };
     }
   }
-  return { text: t.sceneFailed };
+  return { text: t.sceneFailed, lost: `the scene kept changing; tried ${ATTEMPTS} times` };
 }
 
 /** What the event asked for besides the state: answers now, the rest after the commit. */
@@ -815,6 +817,44 @@ function later(ctx: SceneContext, sceneId: number): void {
   if (ctx.defer) ctx.defer(work);
 }
 
+/** How many ended scenes one revoke or sign-out redraws; the daily run takes the rest. */
+const ENDED_DRAWS = 10;
+
+/**
+ * Access went (a revoke, leaving the group, /disconnect): the store ended the
+ * owner's scenes there, and their buttons come off now, after the reply. What
+ * Telegram keeps quiet, a failure here, or more than a few scenes is left to
+ * the daily run.
+ */
+async function drawEnded(ctx: SceneContext, owner: number, chatId?: number): Promise<void> {
+  const work = (async () => {
+    for (const scene of await ctx.store.undrawnScenesOf(owner, ENDED_DRAWS, chatId)) {
+      await drawOwed(ctx, scene);
+    }
+  })().catch((error: unknown) =>
+    console.error(JSON.stringify({ event: "scene_end_draw_failed", owner, error: String(error) })),
+  );
+  if (ctx.defer) ctx.defer(work);
+  else await work;
+}
+
+/** Revoke the user's access to a group; their scenes there end with it. */
+export async function revokeAccess(
+  ctx: SceneContext,
+  userId: number,
+  chatId: number,
+): Promise<boolean> {
+  const gone = await ctx.store.revokeGrant(userId, chatId);
+  await drawEnded(ctx, userId, chatId);
+  return gone;
+}
+
+/** Sign out every assistant of the user; their scenes end with it. */
+export async function signOutAll(ctx: SceneContext, userId: number): Promise<void> {
+  await ctx.store.bumpTokenVersion(userId);
+  await drawEnded(ctx, userId);
+}
+
 /** For the daily run: draw a finished scene whose last drawing is still owed. */
 export async function drawFinished(ctx: SceneContext, sceneId: number): Promise<void> {
   await drawOwed(ctx, sceneId);
@@ -1002,11 +1042,19 @@ export async function sceneVote(ctx: BotContext, answer: PollAnswer): Promise<vo
   if (!answer.user) return;
   const link = await ctx.store.sceneByLink("poll", answer.poll_id);
   if (!link) return;
-  await applyEvent(ctx, link.scene_id, {
+  const user = actorOf(answer.user);
+  const result = await applyEvent(ctx, link.scene_id, {
     on: "vote",
-    user: actorOf(answer.user),
+    user,
     event: { options: answer.option_ids },
   });
+  // Nobody sees the answer to a vote: one the scene dropped is kept for the session instead.
+  if (result.lost) {
+    const row = await ctx.store.getScene(link.scene_id);
+    if (row) {
+      await recordError(ctx, row, user, "vote", `the vote was lost: ${result.lost}`);
+    }
+  }
 }
 
 /** New totals of a scene's poll. */

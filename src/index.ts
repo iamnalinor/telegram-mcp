@@ -212,6 +212,19 @@ export default {
     const purged = await core.store.purge(cutoff);
     console.log(JSON.stringify({ event: "retention_purge", purged, cutoff }));
 
+    // Claims of users no longer allowed go; a holder who left a group quietly
+    // must not keep it from the others. Before the scenes: the ones a revoke
+    // ends here are drawn below.
+    for (const claim of await core.store.someClaudeChats(40)) {
+      if (!isAllowed(core.config, claim.user_id)) await core.store.dropClaudeChats(claim.user_id);
+      else if (
+        claim.chat_id < 0 &&
+        (await stillMember(core, claim.chat_id, claim.user_id)) === false
+      ) {
+        await core.store.revokeGrant(claim.user_id, claim.chat_id);
+      }
+    }
+
     // Scenes nobody touched within retention end (their buttons go, where Telegram
     // still lets the bot edit); finished ones go a retention later.
     // A finished scene whose last drawing Telegram held back is drawn now.
@@ -239,18 +252,6 @@ export default {
     for (const userId of await core.store.routineUsers()) {
       if (!isAllowed(core.config, userId)) await core.store.deleteRoutine(userId);
     }
-    // Claims of users no longer allowed go; a holder who left a group quietly
-    // must not keep it from the others.
-    for (const claim of await core.store.someClaudeChats(40)) {
-      if (!isAllowed(core.config, claim.user_id)) await core.store.dropClaudeChats(claim.user_id);
-      else if (
-        claim.chat_id < 0 &&
-        (await stillMember(core, claim.chat_id, claim.user_id)) === false
-      ) {
-        await core.store.revokeGrant(claim.user_id, claim.chat_id);
-      }
-    }
-
     const origin = await core.store.getMeta("public_origin");
     if (origin) {
       await ensureWebhook(core.api, core.config, core.store, origin).catch((error: unknown) =>

@@ -329,7 +329,9 @@ refused press writes nothing, and a press that changes nothing writes nothing (e
 mark the scene as in use). `log()` and `wake()` write one more row each; a scene keeps its latest 200
 events. Edits keep to one a second per message. Up to 20 active scenes per person per chat; a scene
 nobody used for `RETENTION_DAYS` ends and is deleted a retention later, and its messages are kept as
-long as it is. Scenes end when you lose access to the group or `/disconnect`.
+long as it is. Scenes end, and their messages lose their buttons, when you lose access to the group
+or `/disconnect`. A vote the scene could not take (too fast, a full state) shows as an error in
+`get_scene`, since nobody sees the answer to a vote.
 
 **Saved scenes.** Every scene Claude creates is saved in your library, as written, under a name
 from its title (`counter`, `кто-идёт`, `हिंदी-क्विज़`, `counter-2` when the name is taken; `save_as`
@@ -348,7 +350,9 @@ them, on purpose. They are your own, and go only with `delete_saved_scene`, or w
 
 Scenes were tested against a fake Bot API only. On a live bot, check: the ephemeral reply to a press
 (`whisper`), poll updates reaching the bot, `setChatMemberTag` (`tag`, needs the bot to be an admin
-with that right), and how fast Telegram lets a busy scene be edited.
+with that right), and how fast Telegram lets a busy scene be edited. An existing deployment asks
+Telegram for poll updates only once it registers the webhook again: on the next visit to the
+Worker's page, or the daily cron.
 
 ## Memory
 

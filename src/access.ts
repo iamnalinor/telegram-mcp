@@ -168,7 +168,10 @@ export class Access {
     return true;
   }
 
-  /** Remove this user's grant; the last grant on a chat takes the chat's history with it. */
+  /**
+   * Remove this user's grant; the last grant on a chat takes the chat's history with it.
+   * Their scenes there end too; the buttons come off in the daily run.
+   */
   async drop(chatId: number): Promise<void> {
     await this.store.revokeGrant(this.userId, chatId);
   }

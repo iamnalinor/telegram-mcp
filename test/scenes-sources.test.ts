@@ -85,6 +85,41 @@ describe("other sources", () => {
     expect(state().votes).toHaveLength(1);
   });
 
+  const errors = () =>
+    (
+      h.db.raw
+        .query("SELECT data FROM scene_events WHERE scene_id = ? AND name = 'error'")
+        .all(scene) as { data: string }[]
+    ).map((row) => JSON.parse(row.data) as { action: string; description: string });
+
+  it("a vote the scene could not take leaves an error for the session", async () => {
+    h.db.raw
+      .query("UPDATE scenes SET state = ? WHERE id = ?")
+      .run(JSON.stringify({ votes: ["x".repeat(8170)], totals: null, said: [], moods: {} }), scene);
+    await h.update({
+      poll_answer: { poll_id: "P1", user: { ...BOB, is_bot: false }, option_ids: [0] },
+    });
+    expect(state().votes).toHaveLength(1);
+    const [error, ...more] = errors();
+    expect(more).toEqual([]);
+    expect(error.action).toBe("vote");
+    expect(error.description).toContain("over 8192 bytes");
+  });
+
+  it("a vote refused for being too fast leaves an error too", async () => {
+    h.env.SCENE_LIMIT = {
+      limit: () => Promise.resolve({ success: false }),
+    };
+    await h.update({
+      poll_answer: { poll_id: "P1", user: { ...BOB, is_bot: false }, option_ids: [0] },
+    });
+    expect(state().votes).toEqual([]);
+    const [error, ...more] = errors();
+    expect(more).toEqual([]);
+    expect(error.action).toBe("vote");
+    expect(error.description).toContain("too fast");
+  });
+
   it("an anonymous vote is ignored", async () => {
     await h.update({ poll_answer: { poll_id: "P1", voter_chat: TEAM, option_ids: [1] } });
     expect(state().votes).toEqual([]);

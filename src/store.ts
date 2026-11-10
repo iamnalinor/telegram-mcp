@@ -2731,10 +2731,11 @@ export class Store {
       .run();
   }
 
+  /** Scenes ended in bulk; their buttons are owed (drawEnded, or the daily run, takes them off). */
   private finishScenesStatement(where: string, values: unknown[]): D1PreparedStatement {
     return this.db
       .prepare(
-        `UPDATE scenes SET status = 'finished', version = version + 1, updated = ?
+        `UPDATE scenes SET status = 'finished', version = version + 1, updated = ?, dirty = 1
          WHERE status = 'active' AND ${where}`,
       )
       .bind(nowSeconds(), ...values);
@@ -2766,6 +2767,18 @@ export class Store {
     const { results } = await this.db
       .prepare("SELECT id FROM scenes WHERE status = 'finished' AND dirty = 1 LIMIT ?")
       .bind(limit)
+      .all<{ id: number }>();
+    return results.map((row) => row.id);
+  }
+
+  /** The owner's finished scenes whose last drawing is owed, in one chat or everywhere. */
+  async undrawnScenesOf(owner: number, limit: number, chatId?: number): Promise<number[]> {
+    const { results } = await this.db
+      .prepare(
+        `SELECT id FROM scenes WHERE status = 'finished' AND dirty = 1 AND owner = ?1
+         AND (?2 IS NULL OR chat_id = ?2) LIMIT ?3`,
+      )
+      .bind(owner, chatId ?? null, limit)
       .all<{ id: number }>();
     return results.map((row) => row.id);
   }

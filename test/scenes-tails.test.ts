@@ -158,4 +158,61 @@ describe("a scene's tails", () => {
     await h.say(dm(ALICE), ALICE, "/disconnect");
     expect(status()).toBe("finished");
   });
+
+  const keyboardGone = () => {
+    const edits = h.telegram
+      .called("editMessageText")
+      .filter((call) => call.params.message_id === scene.message);
+    expect(edits.at(-1)?.params.reply_markup).toEqual({ inline_keyboard: [] });
+  };
+
+  it("/disconnect takes the buttons off the user's scenes", async () => {
+    await h.say(dm(ALICE), ALICE, "/disconnect");
+    keyboardGone();
+  });
+
+  it("revoking access takes the buttons off the scenes there", async () => {
+    await h.update({
+      callback_query: {
+        id: "rv",
+        from: { ...ALICE, is_bot: false },
+        data: `rv:${TEAM.id}`,
+        message: { message_id: 50, date: 1, chat: dm(ALICE) },
+      },
+    });
+    expect(status()).toBe("finished");
+    keyboardGone();
+  });
+
+  it("leaving the group takes the buttons off the scenes there", async () => {
+    await h.say(TEAM, ALICE, "", { left_chat_member: { ...ALICE, is_bot: false } });
+    keyboardGone();
+  });
+
+  it("revoking one group leaves the scenes in another alone", async () => {
+    const other = { id: -1005555555555, title: "Other chat", type: "group" };
+    await h.addBot(other, ALICE);
+    const result = await h.tool(alice, "create_scene", { chat: other.id, definition: COUNTER });
+    const kept = Number(/Scene (\d+)/.exec(result.text)![1]);
+    const keptMessage = Number(/as #(\d+)/.exec(result.text)![1]);
+    await h.say(TEAM, ALICE, "", { left_chat_member: { ...ALICE, is_bot: false } });
+    keyboardGone();
+    const row = h.db.raw.query("SELECT status FROM scenes WHERE id = ?").get(kept) as {
+      status: string;
+    };
+    expect(row.status).toBe("active");
+    const touched = h.telegram
+      .called("editMessageText")
+      .filter((call) => call.params.chat_id === other.id && call.params.message_id === keptMessage);
+    expect(touched).toHaveLength(0);
+  });
+
+  it("an ended scene Telegram keeps quiet loses its buttons in the daily run", async () => {
+    h.db.raw.exec(`UPDATE scenes SET quiet_until = ${Date.now() + 3_600_000}`);
+    await h.say(dm(ALICE), ALICE, "/disconnect");
+    expect(h.telegram.called("editMessageText")).toHaveLength(0);
+    h.db.raw.exec(`UPDATE scenes SET quiet_until = 0`);
+    await daily();
+    keyboardGone();
+  });
 });
