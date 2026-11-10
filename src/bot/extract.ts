@@ -127,6 +127,12 @@ function describeNonText(message: Message): string {
   if (message.poll) {
     return `[poll] ${message.poll.question} — ${message.poll.options.map((o) => o.text).join(" / ")}`;
   }
+  if (message.checklist) {
+    const tasks = message.checklist.tasks.map(
+      (task) => `${task.completion_date ? "[x]" : "[ ]"} ${task.text}`,
+    );
+    return [`[checklist] ${message.checklist.title}`, ...tasks].join("\n");
+  }
   if (message.forum_topic_created) return `[topic created: ${message.forum_topic_created.name}]`;
   if (message.forum_topic_edited?.name)
     return `[topic renamed: ${message.forum_topic_edited.name}]`;
@@ -156,6 +162,7 @@ export function hasContent(message: Message): boolean {
     message.location ||
     message.contact ||
     message.poll ||
+    message.checklist ||
     message.rich_message ||
     message.widget,
   );

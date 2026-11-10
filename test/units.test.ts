@@ -329,6 +329,19 @@ describe("extract", () => {
     expect(stored.as_chat).toBe(false);
   });
 
+  it("reads a checklist as text", () => {
+    const stored = toStored(
+      msg({
+        checklist: {
+          title: "Hackathon",
+          tasks: [{ text: "Pick one", completion_date: 1 }, { text: "Find a designer" }],
+        },
+      }),
+      BOT,
+    );
+    expect(stored.text).toBe("[checklist] Hackathon\n[x] Pick one\n[ ] Find a designer");
+  });
+
   it("keeps the inline bot and whether the message was posted as the chat", () => {
     const inline = toStored(
       msg({

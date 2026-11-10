@@ -108,6 +108,7 @@ export interface Message {
   location?: { latitude: number; longitude: number };
   contact?: { phone_number: string; first_name: string; last_name?: string };
   poll?: { question: string; options: { text: string }[] };
+  checklist?: { title: string; tasks: { text: string; completion_date?: number }[] };
   chat_shared?: ChatShared;
   forum_topic_created?: { name: string };
   forum_topic_edited?: { name?: string };
