@@ -27,7 +27,7 @@ import { nowSeconds } from "../crypto";
 import { isAllowed } from "../env";
 import { guestEnvelope } from "../agents/envelopes";
 import { activeProvider } from "../agents/route";
-import type { Delivery } from "../agents/types";
+import { providerOf, type Delivery } from "../agents/types";
 import { redactSecrets } from "../secrets";
 import { GUEST_BASE, type ClaudeChat, type GuestCall, type GuestReply } from "../store";
 import { displayName, type Message } from "../telegram/types";
@@ -186,8 +186,9 @@ export async function onGuestMessage(ctx: BotContext, message: Message): Promise
     excerpt: excerptOf(stored.text, ctx.bot),
     album: null,
   };
+  const active = await activeProvider(ctx, holder);
   const claimed = await ctx.store.beginFire(entry, {
-    user: (await activeProvider(ctx, holder)).limits.startsPerHour,
+    user: active.limits.startsPerHour,
     others: claim.others_limit,
   });
   if (claimed === "again") return;
@@ -225,15 +226,17 @@ export async function onGuestMessage(ctx: BotContext, message: Message): Promise
   }
   await ctx.store.setGuestMessage(id, sent.inline_message_id);
 
-  // Where it goes: the chat's session of the day; a reply to the bot's message
-  // there, to the chat's latest session however old.
+  // Where it goes: the chat's session of the day, if the provider the holder
+  // answers with now made it; a reply to the bot's message there, to the
+  // chat's latest session however old, whoever made it.
   const now = nowSeconds();
-  const session = await ctx.store.latestSession(
+  const latest = await ctx.store.latestSession(
     holder,
     [key],
     toOwn ? 0 : now - (now % DAY),
     byOther,
   );
+  const session = latest && (toOwn || providerOf(latest) === active.kind) ? latest : null;
   const into: Delivery | null = session
     ? {
         session,

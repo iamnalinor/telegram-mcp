@@ -183,6 +183,20 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
               }),
           },
         });
+        if (routed.via === "undelivered") {
+          const wait = routed.retryAfter
+            ? ` in ${Math.ceil(routed.retryAfter / 60)} min`
+            : " later";
+          // The session is still there: this is a passing failure, not the end of it.
+          throw new ToolError(
+            routed.reason === "limit"
+              ? `Not sent: the provider's rate limit is reached. Try again${wait}.`
+              : routed.reason === "quota"
+                ? "Not sent: the user's API key has no quota left. Tell the user."
+                : `Not sent: the provider did not take it now (${routed.reason}). The session still ` +
+                  "exists: try again later.",
+          );
+        }
         if (routed.via !== "delivered") {
           if (!relayed) throw new ToolError("Not sent: that session cannot be reached any more.");
           const reach = routed.via === "unreachable" ? routed.reach : "none";
@@ -273,7 +287,9 @@ function describe(session: KnownSession, where: (chatId: number) => string): str
  * Who stands behind a message, by the bot's records: a session started by
  * someone else's tag, or one others' replies were relayed into, speaks for
  * them whatever it says; one the bot did not start, or a caller that names no
- * session, is of unknown origin. The session id itself is the caller's word —
+ * session, is of unknown origin. A task session acts for whom the chat
+ * session that started it did then (src/tools/tasks.ts), and for others too
+ * once their messages went into it. The session id itself is the caller's word —
  * every assistant of the user's signs in the same way — so this narrows what
  * a label can claim; it is not proof.
  */
@@ -284,9 +300,14 @@ export async function originOf(
 ): Promise<RelayOrigin> {
   if (declared === "third_party") return "other";
   if (!from) return "unknown";
-  const start = await ctx.store.sessionStart(ctx.userId, from);
-  if (!start) return "unknown";
-  if (start.by_other) return "other";
+  // A task is started by a chat session, not from Telegram: it acts for whom that one did.
+  const inherited =
+    providerOf(from) === "claude"
+      ? null
+      : ((await ctx.store.getAgentSession(ctx.userId, from))?.origin ?? null);
+  const start = inherited ? null : await ctx.store.sessionStart(ctx.userId, from);
+  if (inherited === "other" || start?.by_other) return "other";
+  if (inherited === "unknown" || (!inherited && !start)) return "unknown";
   // Others' replies went into it: whatever it says now may be on their behalf.
   return (await ctx.store.sessionHeardOthers(ctx.userId, from)) ? "other" : "user";
 }

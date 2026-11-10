@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 21;
+const SCHEMA_VERSION = 22;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -232,8 +232,12 @@ const SCHEMA: string[] = [
 
   // Sessions the Worker runs itself, under ids it gives them (oa_…), and the
   // provider's own id for each. `token_exp`: when the MCP token it was handed
-  // runs out, so a delivery near that hands it a new one. `told`: what the
-  // user last heard of it from the provider's webhooks (failed, action).
+  // runs out, so a delivery near that hands it a new one; `signin` and
+  // `token_version`: what that token hangs on, so a session whose sign-in
+  // ended is not fed any more. `told`: what the user last heard of it from
+  // the provider's webhooks (failed, action). `origin`: whom a task's chat
+  // session acted for when it started it (src/tools/tasks.ts); null for
+  // sessions started from Telegram, whose start in `fires` says it.
   `CREATE TABLE IF NOT EXISTS agent_sessions (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,
@@ -242,8 +246,14 @@ const SCHEMA: string[] = [
     kind TEXT NOT NULL,
     token_exp INTEGER,
     created_at INTEGER NOT NULL,
-    told TEXT
+    told TEXT,
+    signin TEXT,
+    token_version INTEGER,
+    origin TEXT
   ) WITHOUT ROWID`,
+  // The hourly cap on tasks, and a provider's sessions found by its own id.
+  `CREATE INDEX IF NOT EXISTS agent_sessions_by_kind ON agent_sessions (user_id, kind, created_at)`,
+  `CREATE INDEX IF NOT EXISTS agent_sessions_by_provider ON agent_sessions (user_id, provider, external_id)`,
 
   // Chats where a tag starts the routine, and for whom: one user per chat,
   // whoever turned it on first. `others`: tags from other members count too.
@@ -548,6 +558,14 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
     alter: [
       "ALTER TABLE agent_configs ADD COLUMN hook TEXT",
       "ALTER TABLE agent_sessions ADD COLUMN told TEXT",
+    ],
+  },
+  {
+    target: 22,
+    alter: [
+      "ALTER TABLE agent_sessions ADD COLUMN signin TEXT",
+      "ALTER TABLE agent_sessions ADD COLUMN token_version INTEGER",
+      "ALTER TABLE agent_sessions ADD COLUMN origin TEXT",
     ],
   },
 ];

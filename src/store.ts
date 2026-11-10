@@ -90,7 +90,15 @@ export interface AgentSession {
   created_at: number;
   /** What the user last heard of it from the provider's webhooks. */
   told: "failed" | "action" | null;
+  /** The sign-in its MCP token hangs on, and the user's token version then. */
+  signin: string | null;
+  token_version: number | null;
+  /** A task's: whom the chat session that started it acted for. */
+  origin: RelayOrigin | null;
 }
+
+/** The sign-in the Worker's own sessions' MCP tokens hang on (src/oauth.ts `mintSessionToken`). */
+export const AGENTS_SIGN_IN = "OpenAI agents";
 
 export interface ClaudeChat {
   chat_id: number;
@@ -1818,15 +1826,13 @@ export class Store {
       .first<{ user_id: number; provider: string }>();
   }
 
-  /** One provider's settings go; the user's sessions with it are no longer reached. */
+  /** One provider's settings go, and the user's sessions with it end. */
   async deleteAgentConfig(userId: number, provider: string): Promise<void> {
     await this.db.batch([
       this.db
         .prepare("DELETE FROM agent_configs WHERE user_id = ? AND provider = ?")
         .bind(userId, provider),
-      this.db
-        .prepare("DELETE FROM agent_sessions WHERE user_id = ? AND provider = ?")
-        .bind(userId, provider),
+      ...this.endAgentSessions(userId, provider),
     ]);
   }
 
@@ -1834,9 +1840,28 @@ export class Store {
   async dropAgents(userId: number): Promise<void> {
     await this.db.batch([
       this.db.prepare("DELETE FROM agent_configs WHERE user_id = ?").bind(userId),
-      this.db.prepare("DELETE FROM agent_sessions WHERE user_id = ?").bind(userId),
+      ...this.endAgentSessions(userId, null),
       this.db.prepare("UPDATE users SET active_provider = NULL WHERE user_id = ?").bind(userId),
     ]);
+  }
+
+  /**
+   * The user's sessions with a provider (any, when null) end: no message is
+   * passed into them any more, and the sign-in their MCP tokens hang on is
+   * revoked, so a session still running loses the tools at once. The next
+   * session started gets a new sign-in.
+   */
+  private endAgentSessions(userId: number, provider: string | null): D1PreparedStatement[] {
+    return [
+      this.db
+        .prepare(
+          "UPDATE refresh_sessions SET revoked = 1 WHERE user_id = ? AND client_name = ? AND revoked = 0",
+        )
+        .bind(userId, AGENTS_SIGN_IN),
+      this.db
+        .prepare("DELETE FROM agent_sessions WHERE user_id = ?1 AND (?2 IS NULL OR provider = ?2)")
+        .bind(userId, provider),
+    ];
   }
 
   async agentUsers(): Promise<number[]> {
@@ -1866,21 +1891,58 @@ export class Store {
     return row?.any === 1;
   }
 
-  async addAgentSession(session: Omit<AgentSession, "created_at" | "told">): Promise<void> {
-    await this.db
+  /**
+   * A session about to be started, before the provider knows it
+   * (`external_id` null). With `cap`, only while fewer than `cap` sessions of
+   * its kind were started in the last hour: the count and the insert are one
+   * statement, so two starts at once cannot both slip under it. The same id
+   * again (a start retried) takes the row over. False when the cap is reached.
+   */
+  async reserveAgentSession(
+    session: Omit<AgentSession, "created_at" | "told" | "external_id">,
+    cap: number | null = null,
+  ): Promise<boolean> {
+    const now = nowSeconds();
+    const result = await this.db
       .prepare(
-        `INSERT INTO agent_sessions (id, user_id, provider, external_id, kind, token_exp, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO agent_sessions
+           (id, user_id, provider, kind, token_exp, signin, token_version, origin, created_at)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+         WHERE ?10 IS NULL OR (SELECT COUNT(*) FROM agent_sessions
+                                WHERE user_id = ?2 AND kind = ?4 AND created_at >= ?9 - 3600) < ?10
+         ON CONFLICT (id) DO UPDATE SET token_exp = excluded.token_exp,
+           signin = excluded.signin, token_version = excluded.token_version
+         WHERE agent_sessions.user_id = excluded.user_id`,
       )
       .bind(
         session.id,
         session.user_id,
         session.provider,
-        session.external_id,
         session.kind,
         session.token_exp,
-        nowSeconds(),
+        session.signin,
+        session.token_version,
+        session.origin,
+        now,
+        cap,
       )
+      .run();
+    return (result.meta.changes ?? 0) > 0;
+  }
+
+  /** The provider took the start: its own id for the session. */
+  async setAgentExternal(id: string, externalId: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE agent_sessions SET external_id = ? WHERE id = ?")
+      .bind(externalId, id)
+      .run();
+  }
+
+  /** A reserved start the provider refused: it never was. */
+  async dropReservedAgentSession(id: string): Promise<void> {
+    await this.db
+      .prepare("DELETE FROM agent_sessions WHERE id = ? AND external_id IS NULL")
+      .bind(id)
       .run();
   }
 
@@ -1892,21 +1954,7 @@ export class Store {
       .first<AgentSession>();
   }
 
-  /** How many sessions of this kind the user's agents started since `since`. */
-  async agentSessionsSince(userId: number, kind: "chat" | "task", since: number): Promise<number> {
-    const row = await this.db
-      .prepare(
-        "SELECT COUNT(*) AS n FROM agent_sessions WHERE user_id = ? AND kind = ? AND created_at >= ?",
-      )
-      .bind(userId, kind, since)
-      .first<{ n: number }>();
-    return row?.n ?? 0;
-  }
-
-  /**
-   * The user's session by the provider's own id. No index: only a failure or
-   * a stuck session asks, and the table keeps a retention's worth of rows.
-   */
+  /** The user's session by the provider's own id: a failure or a stuck session asks. */
   agentSessionByExternal(
     userId: number,
     provider: string,
@@ -1948,10 +1996,16 @@ export class Store {
       .first<{ chat_id: number; message_id: number }>();
   }
 
-  async setAgentTokenExp(id: string, tokenExp: number): Promise<void> {
+  /** The session was handed a new MCP token: when it runs out, and what it hangs on. */
+  async setAgentToken(
+    id: string,
+    token: { exp: number; signin: string; version: number },
+  ): Promise<void> {
     await this.db
-      .prepare("UPDATE agent_sessions SET token_exp = ? WHERE id = ?")
-      .bind(tokenExp, id)
+      .prepare(
+        "UPDATE agent_sessions SET token_exp = ?, signin = ?, token_version = ? WHERE id = ?",
+      )
+      .bind(token.exp, token.signin, token.version, id)
       .run();
   }
 
@@ -2388,15 +2442,17 @@ export class Store {
    * (the relay is gone), and taken ones never reported since `takenBefore`
    * (it restarted or lost the report).
    */
-  async expireJobs(queuedBefore: number, takenBefore: number): Promise<RelayJob[]> {
+  async expireJobs(queuedBefore: number, takenBefore: number, limit: number): Promise<RelayJob[]> {
     const { results } = await this.db
       .prepare(
         `UPDATE relay_jobs SET status = 'failed', error = CASE status
            WHEN 'queued' THEN 'the relay did not pick it up' ELSE 'the relay did not report back' END
-         WHERE (status = 'queued' AND created_at < ?) OR (status = 'taken' AND taken_at < ?)
+         WHERE id IN (SELECT id FROM relay_jobs
+                      WHERE (status = 'queued' AND created_at < ?1) OR (status = 'taken' AND taken_at < ?2)
+                      ORDER BY created_at LIMIT ?3)
          RETURNING *`,
       )
-      .bind(queuedBefore, takenBefore)
+      .bind(queuedBefore, takenBefore, limit)
       .all<RelayJob>();
     return results;
   }

@@ -45,6 +45,11 @@ const MAX_WAIT_SECONDS = 25;
 const WAIT_STEP_MS = 2000;
 /** Past the relay's own 300 s timeout per job: a taken job never reported is lost. */
 const TAKEN_EXPIRY_SECONDS = 420;
+/**
+ * Stale jobs one sweep takes: each may start a session, a dozen D1 queries
+ * and a fetch or two, and a cron run has a budget. The rest wait a few minutes.
+ */
+const SWEEP_LIMIT = 25;
 const ERROR_LIMIT = 500;
 
 export type RelayState = "none" | "online" | "offline" | "login";
@@ -171,7 +176,11 @@ export async function sweepRelays(
   fallBack: FallBack,
 ): Promise<void> {
   const now = nowSeconds();
-  const expired = await store.expireJobs(now - JOB_EXPIRY_SECONDS, now - TAKEN_EXPIRY_SECONDS);
+  const expired = await store.expireJobs(
+    now - JOB_EXPIRY_SECONDS,
+    now - TAKEN_EXPIRY_SECONDS,
+    SWEEP_LIMIT,
+  );
   if (!expired.length) return;
   const ctx = await botFor();
   const seen = new Set<number>();

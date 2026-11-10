@@ -120,7 +120,7 @@ describe("the access report", () => {
 
   it("nothing can wake without a routine", async () => {
     expect((await create(TRIAGE, { dry_run: true })).text).toContain(
-      "Nothing can wake you: the user has no routine set up",
+      "Nothing can wake you: the user has no assistant set up",
     );
   });
 

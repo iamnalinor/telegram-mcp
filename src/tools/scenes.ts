@@ -95,8 +95,8 @@ async function accessReport(
   const reach = await reachable(ctx, ctx.userId, session);
   if (reach !== true) {
     return reach === "broken"
-      ? "Nothing can wake you: the user's routine can no longer be read (they must send it again). The scene still runs; read it yourself."
-      : "Nothing can wake you: the user has no routine set up. The scene still runs; read it yourself.";
+      ? "Nothing can wake you: the user's assistant settings can no longer be read (they must send them again). The scene still runs; read it yourself."
+      : "Nothing can wake you: the user has no assistant set up to start sessions. The scene still runs; read it yourself.";
   }
   const acts = waking.filter((rule) => rule.on.startsWith("act:"));
   const members = waking.filter((rule) => !rule.on.startsWith("act:"));

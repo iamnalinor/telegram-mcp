@@ -31,7 +31,7 @@ import { isAllowed } from "../env";
 import { messageLink } from "../links";
 import { replyEnvelope } from "../agents/envelopes";
 import { activeProvider, route } from "../agents/route";
-import type { Delivery } from "../agents/types";
+import { providerOf, type Delivery } from "../agents/types";
 import { redactSecrets } from "../secrets";
 import { BOT_ACCOUNT, isGuestKey } from "../store";
 import { TelegramError } from "../telegram/api";
@@ -106,8 +106,9 @@ export async function maybeStart(
     excerpt: excerptOf(bodyOf(message), ctx.bot),
     album: message.media_group_id ?? null,
   };
+  const active = await activeProvider(ctx, holder);
   const claimed = await ctx.store.beginFire(entry, {
-    user: (await activeProvider(ctx, holder)).limits.startsPerHour,
+    user: active.limits.startsPerHour,
     others: claim.others_limit,
   });
   if (claimed === "again") return;
@@ -139,7 +140,8 @@ export async function maybeStart(
       return;
     }
     const day = await ctx.store.latestSession(holder, [chat.id], now - (now % DAY), byOther);
-    if (day) into = { session: day, kind: "day" };
+    // Only a session of the provider the holder answers with now: after a switch, a new one starts.
+    if (day && providerOf(day) === active.kind) into = { session: day, kind: "day" };
   }
 
   await launch(ctx, {
@@ -272,7 +274,13 @@ export async function launch(
   if (!quiet) {
     const { tell, where, t } = await holderVoice(ctx, p.holder, p.chat.id, p.chat.title);
     const minutes = routed.retryAfter ? Math.ceil(routed.retryAfter / 60) : undefined;
-    await tell(where + t.fireFailed(routed.reason, minutes, routed.provider));
+    // A session that is there but did not take it now: nothing new started in its place.
+    await tell(
+      where +
+        (routed.via === "undelivered"
+          ? t.deliverFailed(routed.reason, minutes)
+          : t.fireFailed(routed.reason, minutes, routed.provider)),
+    );
   }
   return false;
 }

@@ -212,11 +212,17 @@ const en = {
   modelSet: "Saved.",
   confirmDeleteOpenAI:
     "Remove the OpenAI key here? I will stop starting sessions with it. Revoke it on platform.openai.com too.",
-  openaiSaved: (deleted: boolean, active: boolean) =>
+  openaiSaved: (deleted: boolean) =>
     "✅ Saved your OpenAI key, kept only encrypted" +
-    (deleted ? ", and I deleted your message." : ".") +
-    (active ? " OpenAI answers for you now (🤖 Assistant to switch)." : ""),
+    (deleted ? ", and I deleted your message." : "."),
+  openaiActive: "OpenAI answers for you now (🤖 Assistant to switch).",
   openaiNotSaved: "⚠️ Could not save the key. Send it again in a minute.",
+  openaiNotActive: (first: boolean) =>
+    "The key is saved, but its test start did not go through, so OpenAI does not answer for you yet. " +
+    "Once a test in 🤖 Assistant → OpenAI works, choose OpenAI there" +
+    (first ? " and turn answering in this chat on." : "."),
+  secretTooLong:
+    "⚠️ That is longer than any OpenAI key or webhook secret: nothing saved. Copy it again, whole and alone.",
   webhookSaved: (deleted: boolean) =>
     "✅ Saved the webhook secret, kept only encrypted" +
     (deleted ? ", and I deleted your message." : "."),
@@ -310,6 +316,15 @@ const en = {
           none: "none is set up.",
           broken: "I can no longer read its token. Send the routine again.",
         }[reason],
+  deliverFailed: (reason: FireFailure, retryMinutes?: number) =>
+    "⚠️ Could not pass the message to its OpenAI session: " +
+    (reason === "token"
+      ? "the API key was refused. Send a new one."
+      : reason === "limit"
+        ? `the rate limit is reached. Try again in ${retryMinutes ?? 1} min.`
+        : reason === "quota"
+          ? "the key has no quota left. Check billing on platform.openai.com."
+          : "OpenAI's API did not take it. Try again later."),
   inChat: (title: string) => `«${escapeHtml(title)}»:`,
   tooManyStarts: "⚠️ Too many starts in the last hour; I start no more until it passes.",
   guestFailed: "⚠️ Could not start Claude.",
@@ -616,11 +631,17 @@ const ru: Texts = {
   modelSet: "Сохранено.",
   confirmDeleteOpenAI:
     "Удалить ключ OpenAI отсюда? Я перестану запускать с ним сессии. Отзови его и на platform.openai.com.",
-  openaiSaved: (deleted, active) =>
+  openaiSaved: (deleted) =>
     "✅ Ключ OpenAI сохранён, только в зашифрованном виде" +
-    (deleted ? ", а твоё сообщение я удалил." : ".") +
-    (active ? " Теперь тебе отвечает OpenAI (переключить — в 🤖 Ассистенте)." : ""),
+    (deleted ? ", а твоё сообщение я удалил." : "."),
+  openaiActive: "Теперь тебе отвечает OpenAI (переключить — в 🤖 Ассистенте).",
   openaiNotSaved: "⚠️ Не получилось сохранить ключ. Пришли его ещё раз через минуту.",
+  openaiNotActive: (first) =>
+    "Ключ сохранён, но тестовый запуск не прошёл, так что OpenAI тебе пока не отвечает. " +
+    "Когда тест в 🤖 Ассистент → OpenAI заработает, выбери там OpenAI" +
+    (first ? " и включи ответы в этом чате." : "."),
+  secretTooLong:
+    "⚠️ Это длиннее любого ключа или секрета вебхука OpenAI: ничего не сохранено. Скопируй его ещё раз, целиком и отдельно.",
   webhookSaved: (deleted) =>
     "✅ Секрет вебхука сохранён, только в зашифрованном виде" +
     (deleted ? ", а твоё сообщение я удалил." : "."),
@@ -708,6 +729,15 @@ const ru: Texts = {
           none: "она не задана.",
           broken: "я больше не могу прочитать её токен. Пришли рутину заново.",
         }[reason],
+  deliverFailed: (reason, retryMinutes) =>
+    "⚠️ Не получилось передать сообщение в его сессию OpenAI: " +
+    (reason === "token"
+      ? "API-ключ не принят. Пришли новый."
+      : reason === "limit"
+        ? `исчерпан лимит запросов. Попробуй через ${retryMinutes ?? 1} мин.`
+        : reason === "quota"
+          ? "у ключа закончилась квота. Проверь оплату на platform.openai.com."
+          : "API OpenAI его не принял. Попробуй позже."),
   inChat: (title) => `«${escapeHtml(title)}»:`,
   tooManyStarts: "⚠️ Слишком много запусков за последний час; новых не будет, пока он не пройдёт.",
   guestFailed: "⚠️ Не получилось запустить Claude.",

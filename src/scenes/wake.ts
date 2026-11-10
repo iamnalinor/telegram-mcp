@@ -252,7 +252,12 @@ async function wake(
       chat?.title ?? null,
     );
     const minutes = routed.retryAfter ? Math.ceil(routed.retryAfter / 60) : undefined;
-    await tell(where + t.fireFailed(routed.reason, minutes, routed.provider));
+    await tell(
+      where +
+        (routed.via === "undelivered"
+          ? t.deliverFailed(routed.reason, minutes)
+          : t.fireFailed(routed.reason, minutes, routed.provider)),
+    );
   }
 }
 

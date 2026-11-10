@@ -1,7 +1,9 @@
 /**
  * Where something for the user's assistant goes: into the session it belongs
  * to, through the provider that made that session, or — when that cannot
- * take it — to a new session of the holder's provider, told why.
+ * take it — to a new session of the holder's provider, told why. A session
+ * that is there but whose provider did not take it now (a rate limit, an
+ * outage) is not replaced: the caller says it failed.
  *
  * Callers keep their own books (the start's row in the log, reactions, who
  * hears of a failure); this only decides and passes it on.
@@ -49,6 +51,15 @@ export type Routed =
       detail: string;
       provider: ProviderKind;
     }
+  /** The session is there, but its provider did not take the message now; nothing started. */
+  | {
+      via: "undelivered";
+      session: string;
+      reason: StartFailure;
+      retryAfter?: number;
+      detail: string;
+      provider: ProviderKind;
+    }
   | { via: "unreachable"; reach: Reach };
 
 export async function route(ctx: AgentContext, intent: Intent): Promise<Routed> {
@@ -59,6 +70,17 @@ export async function route(ctx: AgentContext, intent: Intent): Promise<Routed> 
       ? await provider.deliver(ctx, intent.holder, intent.into)
       : ({ ok: false, reach: "none" } as const);
     if (delivered.ok) return { via: "delivered", session: intent.into.session, ask: delivered.ask };
+    if ("failed" in delivered) {
+      const { reason, retryAfter, detail } = delivered.failed;
+      return {
+        via: "undelivered",
+        session: intent.into.session,
+        reason,
+        ...(retryAfter ? { retryAfter } : {}),
+        detail,
+        provider: providerOf(intent.into.session),
+      };
+    }
     reach = delivered.reach;
   }
   if (!intent.start) return { via: "unreachable", reach: reach ?? "none" };

@@ -8,10 +8,10 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
-import { startTask } from "../agents/openai";
+import { CAPPED, startTask } from "../agents/openai";
 import { providerOf } from "../agents/types";
-import { nowSeconds } from "../crypto";
 import { text, ToolError, toolError, type ToolContext } from "./common";
+import { originOf } from "./sessions";
 
 const BRIEF_LIMIT = 8000;
 /** Each task is a costly session on the user's key: a runaway chat must not start dozens. */
@@ -53,19 +53,21 @@ export function registerTaskTools(server: McpServer, ctx: ToolContext): void {
         if (own?.kind !== "chat") {
           throw new ToolError("Only a chat session can start a task: do the work yourself.");
         }
-        const recent = await ctx.store.agentSessionsSince(ctx.userId, "task", nowSeconds() - 3600);
-        if (recent >= TASKS_PER_HOUR) {
-          throw new ToolError(
-            `${TASKS_PER_HOUR} tasks were started in the last hour: no more for now. Tell whoever asked.`,
-          );
-        }
         const result = await startTask(ctx, ctx.userId, ctx.user, {
           from,
+          // Whom this session acts for is the bot's to say, not the brief's: the task inherits it.
+          origin: await originOf(ctx, from, undefined),
           brief: args.brief,
           chat: args.chat ?? null,
           topic: args.topic ?? null,
           message: args.message ?? null,
+          cap: TASKS_PER_HOUR,
         });
+        if (result === CAPPED) {
+          throw new ToolError(
+            `${TASKS_PER_HOUR} tasks were started in the last hour: no more for now. Tell whoever asked.`,
+          );
+        }
         if (!result.ok) {
           throw new ToolError(
             `Not started (${result.reason}): OpenAI's API did not take it. Do it yourself if you can, ` +

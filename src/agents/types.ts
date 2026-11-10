@@ -83,9 +83,15 @@ export type StartRequest =
 export type StartFailure =
   "none" | "broken" | "token" | "missing" | "paused" | "limit" | "quota" | "other";
 
+/** Why a provider's API did not take something, and when to try again. */
+export interface Failure {
+  reason: StartFailure;
+  retryAfter?: number;
+  detail: string;
+}
+
 export type StartResult =
-  | { ok: true; sessionId: string; sessionUrl: string | null }
-  | { ok: false; reason: StartFailure; retryAfter?: number; detail: string };
+  { ok: true; sessionId: string; sessionUrl: string | null } | ({ ok: false } & Failure);
 
 /** A message for an existing session; the envelope may name its ask, so it is made from the id. */
 export interface Delivery {
@@ -97,7 +103,14 @@ export interface Delivery {
   envelope: (ask: string) => string | Promise<string>;
 }
 
-type Delivered = { ok: true; ask: string } | { ok: false; reach: Reach };
+/**
+ * Passed on; or the session cannot be reached (`reach`), and a new one may
+ * take it; or it is there but the provider did not take it now (`failed`: a
+ * rate limit, an outage), and nothing new starts — that would cost a session
+ * and fail the same way.
+ */
+type Delivered =
+  { ok: true; ask: string } | { ok: false; reach: Reach } | { ok: false; failed: Failure };
 
 export interface Provider {
   readonly kind: ProviderKind;

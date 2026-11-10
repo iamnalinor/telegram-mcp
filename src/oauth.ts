@@ -38,7 +38,7 @@ import { escapeHtml } from "./bot/texts";
 import { nowSeconds, randomId, sha256Base64Url, sign, verify } from "./crypto";
 import { isAllowed, type Config, type Env } from "./env";
 import { allow, clientIp, RETRY_AFTER_HEADERS } from "./limits";
-import type { Store } from "./store";
+import { AGENTS_SIGN_IN, type Store } from "./store";
 import { verifyLogin, type LoginUser } from "./telegram/login";
 
 const SCOPE = "telegram";
@@ -738,8 +738,6 @@ async function handleToken(request: Request, deps: OAuthDeps): Promise<Response>
 
 // --- public surface --------------------------------------------------------
 
-/** How the sign-in behind the Worker's own sessions' tokens is listed and revoked. */
-const AGENTS_CLIENT = "OpenAI agents";
 /**
  * Tokens for a session the Worker runs itself live this long: a session is
  * handed one when it starts and a new one when a message for it comes with
@@ -758,22 +756,24 @@ export async function mintSessionToken(
   deps: Pick<OAuthDeps, "config" | "store">,
   userId: number,
   session: string,
-): Promise<{ token: string; expiresAt: number }> {
+): Promise<{ token: string; expiresAt: number; signIn: string; version: number }> {
   const user = await deps.store.getUser(userId);
+  const version = user?.token_version ?? 0;
   const expiresAt = nowSeconds() + SESSION_TOKEN_TTL;
+  // Listed and revoked like any other sign-in; ending the user's agents revokes it too (src/store.ts).
   const signIn = await deps.store.workerSignIn(
     userId,
-    AGENTS_CLIENT,
+    AGENTS_SIGN_IN,
     nowSeconds() + REFRESH_TTL,
     randomId(),
   );
   const token = await sign<TokenBlob>(
     deps.config.signingKey,
     "access",
-    { u: userId, v: user?.token_version ?? 0, s: signIn, as: session },
+    { u: userId, v: version, s: signIn, as: session },
     SESSION_TOKEN_TTL,
   );
-  return { token, expiresAt };
+  return { token, expiresAt, signIn, version };
 }
 
 const RATE_LIMITED = new Set(["/register", "/auth/telegram"]);

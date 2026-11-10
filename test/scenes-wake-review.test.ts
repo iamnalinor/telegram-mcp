@@ -438,7 +438,7 @@ describe("the access report", () => {
 
   it("a routine that no longer decrypts wakes nobody", async () => {
     h.db.raw.exec("UPDATE routines SET token_enc = 'garbage'");
-    expect((await create()).report).toContain("routine can no longer be read");
+    expect((await create()).report).toContain("assistant settings can no longer be read");
   });
 
   it("who-expression rules are reported as conditional", async () => {

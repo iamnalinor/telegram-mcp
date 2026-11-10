@@ -10,7 +10,7 @@
 import { loadOpenAI, MODELS, openai, saveOpenAI } from "../agents/openai";
 import { isAllowed } from "../env";
 import { fire, firePayload, loadRoutine, parseRoutine, saveRoutine } from "../routine";
-import { openaiKey, webhookSecret } from "../secrets";
+import { openaiKey, TOO_LONG, webhookSecret } from "../secrets";
 import type { Message, User } from "../telegram/types";
 import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { texts } from "./texts";
@@ -27,11 +27,12 @@ function say(ctx: BotContext, chatId: number, text: string): Promise<unknown> {
 }
 
 /**
- * When each user's last test start went out, in this isolate. Every start is
- * a billed cloud session, and a retried webhook or a double tap must not make
- * two; this costs no write, and a different isolate is rare enough.
+ * When each user's last test start went out, per provider, in this isolate.
+ * Every start is a billed cloud session, and a retried webhook or a double
+ * tap must not make two; this costs no write, and a different isolate is rare
+ * enough. Setting up one provider right after the other tests both.
  */
-const lastTest = new Map<number, number>();
+const lastTest = new Map<string, number>();
 const TEST_COOLDOWN_MS = 60_000;
 
 export function resetTestStarts(): void {
@@ -39,13 +40,17 @@ export function resetTestStarts(): void {
 }
 
 /** False, and the user told so, when a test start went out less than a minute ago. */
-async function testAllowed(ctx: BotContext, user: User): Promise<boolean> {
-  const last = lastTest.get(user.id);
+async function testAllowed(
+  ctx: BotContext,
+  user: User,
+  provider: "claude" | "openai",
+): Promise<boolean> {
+  const last = lastTest.get(`${provider}:${user.id}`);
   if (last !== undefined && Date.now() - last < TEST_COOLDOWN_MS) {
     await say(ctx, user.id, texts(user.language_code).testTooSoon);
     return false;
   }
-  lastTest.set(user.id, Date.now());
+  lastTest.set(`${provider}:${user.id}`, Date.now());
   return true;
 }
 
@@ -57,7 +62,7 @@ export async function testRoutine(ctx: BotContext, user: User, messageId: number
     await say(ctx, user.id, t.fireFailed(routine));
     return;
   }
-  if (!(await testAllowed(ctx, user))) return;
+  if (!(await testAllowed(ctx, user, "claude"))) return;
   const result = await fire(
     routine.triggerId,
     routine.token,
@@ -68,7 +73,7 @@ export async function testRoutine(ctx: BotContext, user: User, messageId: number
     await say(ctx, user.id, t.testStarted(result.sessionUrl));
     return;
   }
-  lastTest.delete(user.id); // Nothing started: trying again at once is fine.
+  lastTest.delete(`claude:${user.id}`); // Nothing started: trying again at once is fine.
   console.error(
     JSON.stringify({ event: "routine_fire_failed", user: user.id, detail: result.detail }),
   );
@@ -76,15 +81,15 @@ export async function testRoutine(ctx: BotContext, user: User, messageId: number
   await say(ctx, user.id, t.fireFailed(result.reason, minutes));
 }
 
-/** Start an OpenAI session once, as a check, the same way. */
-export async function testOpenAI(ctx: BotContext, user: User, messageId: number): Promise<void> {
+/** Start an OpenAI session once, as a check, the same way. True when it started. */
+export async function testOpenAI(ctx: BotContext, user: User, messageId: number): Promise<boolean> {
   const t = texts(user.language_code);
   const config = await loadOpenAI(ctx.store, ctx.config.secretKey, user.id);
   if (typeof config === "string") {
     await say(ctx, user.id, t.fireFailed(config, undefined, "openai"));
-    return;
+    return false;
   }
-  if (!(await testAllowed(ctx, user))) return;
+  if (!(await testAllowed(ctx, user, "openai"))) return false;
   const result = await openai.start(ctx, user.id, {
     kind: "test",
     chat: user.id,
@@ -92,17 +97,19 @@ export async function testOpenAI(ctx: BotContext, user: User, messageId: number)
   });
   if (result.ok) {
     await say(ctx, user.id, t.testStarted(null));
-    return;
+    return true;
   }
-  lastTest.delete(user.id);
+  lastTest.delete(`openai:${user.id}`);
   const minutes = result.retryAfter ? Math.ceil(result.retryAfter / 60) : undefined;
   await say(ctx, user.id, t.fireFailed(result.reason, minutes, "openai"));
+  return false;
 }
 
 /**
  * A private message that holds a key: deleted, never stored. A trigger id
  * with a token sets the user's routine; an OpenAI key, their OpenAI setup;
  * either is followed by a test start. A webhook secret joins the OpenAI setup.
+ * A key longer than any real one is refused whole, never cut to fit.
  */
 export async function handleSecret(
   ctx: BotContext,
@@ -126,6 +133,10 @@ export async function handleSecret(
     !(await hasConnected(ctx, user.id))
   ) {
     await say(ctx, message.chat.id, t.secretDropped(deleted) + after);
+    return null;
+  }
+  if (key === TOO_LONG || hook === TOO_LONG) {
+    await say(ctx, message.chat.id, t.secretTooLong + after);
     return null;
   }
   // Answering in the private chat comes on with the first assistant; groups are turned on one by one.
@@ -155,11 +166,17 @@ export async function handleSecret(
       await say(ctx, message.chat.id, t.openaiNotSaved + after);
       return null;
     }
-    // Sent to be used: OpenAI answers from now on, until the user switches back.
-    await ctx.store.setActiveProvider(user.id, "openai");
-    if (first) await ctx.store.claimClaudeChat(user.id, user.id);
-    await say(ctx, message.chat.id, t.openaiSaved(deleted, true) + after);
-    await testOpenAI(ctx, user, message.message_id);
+    const active = (await ctx.store.getUser(user.id))?.active_provider === "openai";
+    await say(ctx, message.chat.id, t.openaiSaved(deleted) + after);
+    // Sent to be used: OpenAI answers from now on, until the user switches back — once the key
+    // has started a session. A key that does not must not take over from an assistant that works.
+    if (await testOpenAI(ctx, user, message.message_id)) {
+      if (!active) await ctx.store.setActiveProvider(user.id, "openai");
+      if (first) await ctx.store.claimClaudeChat(user.id, user.id);
+      if (!active) await say(ctx, message.chat.id, t.openaiActive);
+    } else if (!active) {
+      await say(ctx, message.chat.id, t.openaiNotActive(first));
+    }
     return null;
   }
   try {

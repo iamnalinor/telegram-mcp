@@ -22,12 +22,29 @@ export function redactSecrets(text: string | null): string | null {
   return text === null ? null : text.replace(KEY, "[key removed]");
 }
 
+/**
+ * What an API's error may echo back — a bearer token, any `sk-…` key, a
+ * signing secret — removed before it is logged or shown. Wider than
+ * `redactSecrets`: this is for the API's words, not people's.
+ */
+export function redactCredentials(text: string): string {
+  return redactSecrets(text)
+    .replace(/\bBearer\s+[^\s"',;]+/gi, "Bearer [removed]")
+    .replace(/\bsk-[0-9A-Za-z_*.-]{8,}/g, "[key removed]")
+    .replace(/\bwhsec_[0-9A-Za-z+/=]+/g, "[key removed]");
+}
+
+/** A key longer than any OpenAI issues: a paste gone wrong, refused whole rather than cut short. */
+export const TOO_LONG = Symbol("too long");
+
 /** An OpenAI key in the message, if there is one. */
-export function openaiKey(text: string): string | null {
-  return /\bsk-(?:proj|svcacct)-[0-9A-Za-z_-]{20,400}/.exec(text)?.[0] ?? null;
+export function openaiKey(text: string): string | typeof TOO_LONG | null {
+  const key = /\bsk-(?:proj|svcacct)-[0-9A-Za-z_-]{20,}/.exec(text)?.[0] ?? null;
+  return key && key.length > 400 ? TOO_LONG : key;
 }
 
 /** An OpenAI webhook signing secret in the message, if there is one. */
-export function webhookSecret(text: string): string | null {
-  return /\bwhsec_[0-9A-Za-z+/=]{16,200}/.exec(text)?.[0] ?? null;
+export function webhookSecret(text: string): string | typeof TOO_LONG | null {
+  const secret = /\bwhsec_[0-9A-Za-z+/=]{16,}/.exec(text)?.[0] ?? null;
+  return secret && secret.length > 200 ? TOO_LONG : secret;
 }
