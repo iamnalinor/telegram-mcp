@@ -167,7 +167,9 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
       description:
         "A message the bot runs by itself: state, screens and rules; presses, votes and replies change it " +
         "without you, and you are woken only where a rule calls wake(). For something a group taps, votes on " +
-        "or plays, or a control panel for your work. Call scene_guide before your first scene; take a preset.\n" +
+        "or plays (a game, a sign-up, a vote you need counted, a shared checklist), or a control panel for your " +
+        "work — prefer it to send_message buttons with a wait_for_reply loop, or to an HTML file. One question " +
+        "to one person stays ask_user. Call scene_guide before your first scene; take a preset.\n" +
         "Shape: {title, brief (your note for when it wakes you), state, let?, view: {text, buttons}, rules: " +
         "[{on, when?, who?, do?, say?}]}. on: press:<name>, vote, reply, reaction, act:<name>. who: anyone | " +
         'owner | expression. do: "path = expr", "+=", actions toast() alert() post() show() log() wake() ' +
