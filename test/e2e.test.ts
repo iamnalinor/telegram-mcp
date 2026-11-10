@@ -183,6 +183,29 @@ describe("groups", () => {
     expectFenced(found.text, ALICE.id);
   });
 
+  it("finds today's message when an older one in the window has a higher id", async () => {
+    await h.addBot(TEAM, ALICE);
+    // Ids need not grow with time: a group that became a supergroup starts again from 1.
+    const now = Math.floor(Date.now() / 1000);
+    const yesterday = now - (now % 86_400) - 1;
+    await h.say(TEAM, ALICE, "@test_mcp_bot what happened here?", {
+      reply_to_message: {
+        message_id: 9001,
+        date: yesterday,
+        chat: TEAM,
+        from: { id: BOB.id, is_bot: false, first_name: "Bob" },
+        text: "the migration failed on step 3",
+      },
+      entities: [{ type: "mention", offset: 0, length: 13 }],
+    });
+
+    const alice = (await h.connect(ALICE)).access_token;
+    const found = await h.tool(alice, "search_messages", { mentions_only: true, since: "2d" });
+    expect(found.text).toContain("what happened here?");
+    const recent = await h.tool(alice, "get_recent_messages", { chat: TEAM.id, since: "2d" });
+    expect(recent.text).toContain("what happened here?");
+  });
+
   it("files topic messages under their topic, without treating the topic root as a reply", async () => {
     const FORUM = { ...TEAM, is_forum: true };
     await h.addBot(FORUM, ALICE);

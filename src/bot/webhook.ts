@@ -40,8 +40,9 @@ import {
 import { BOT_ACCOUNT, type Guard } from "../store";
 import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { handleAssistantButton, handleChatShared, handleCommand, handleRevoke } from "./commands";
-import { handleMemoryUndo, handleMenu } from "./menu";
+import { handleMemoryUndo, handleMenu, takeLimitAnswer } from "./menu";
 import { onGuestMessage } from "./guest";
+import { handleScenePress, sceneReaction, scenePoll, sceneReply, sceneVote } from "./scenes";
 import { handleSecret } from "./routine";
 import { maybeStart } from "./triggers";
 import { parseCommand, realReply, toStored, topicName, topicOf } from "./extract";
@@ -138,7 +139,25 @@ async function onMessage(
     return null;
   }
 
+  // A number typed for the menu (a limit) is the bot's to take, never a task for Claude.
+  if (message.chat.type === "private" && message.from && message.reply_to_message) {
+    const taken = await takeLimitAnswer(ctx, { ...message, from: message.from });
+    if (taken) return taken === "asked" ? null : taken;
+  }
+
   const command = parseCommand(message, ctx.bot);
+  // A reply a scene takes is the scene's: it starts no session. A command, a
+  // forward or a message via an inline bot is never a scene's.
+  if (
+    message.reply_to_message &&
+    !command &&
+    !message.forward_origin &&
+    !message.via_bot &&
+    (await sceneReply(ctx, message))
+  ) {
+    return null;
+  }
+
   // A start that fails must not lose the update: it is told to the user, not retried.
   await maybeStart(ctx, message, command).catch((error: unknown) =>
     console.error(JSON.stringify({ event: "trigger_failed", error: String(error) })),
@@ -287,6 +306,8 @@ async function onCallback(ctx: BotContext, query: CallbackQuery): Promise<Webhoo
   const menu = /^m:([\w:-]{1,60})$/.exec(data);
   if (menu) return handleMenu(ctx, query, menu[1]);
 
+  if (data.startsWith("s:")) return handleScenePress(ctx, query);
+
   const press = /^cb:(\d+)\.(\d+)$/.exec(data);
   if (press) return handleAssistantButton(ctx, query, Number(press[1]), Number(press[2]));
 
@@ -301,16 +322,20 @@ async function onCallback(ctx: BotContext, query: CallbackQuery): Promise<Webhoo
 async function onReaction(ctx: BotContext, update: MessageReactionUpdated): Promise<void> {
   const user = update.user;
   if (!user) return;
+  const emoji = update.new_reaction
+    .map((reaction) => (reaction.type === "emoji" ? reaction.emoji : `[${reaction.type}]`))
+    .filter(Boolean)
+    .join("");
+  // A scene finds its message by its link, whatever retention did to the stored copy.
+  if (emoji && !user.is_bot) {
+    await sceneReaction(ctx, update.chat.id, update.message_id, user, emoji);
+  }
   const stored = await ctx.store.getMessage(
     { account_id: BOT_ACCOUNT, chat_id: update.chat.id },
     update.message_id,
   );
   if (!stored?.outgoing) return;
 
-  const emoji = update.new_reaction
-    .map((reaction) => (reaction.type === "emoji" ? reaction.emoji : `[${reaction.type}]`))
-    .filter(Boolean)
-    .join("");
   if (!emoji) {
     await ctx.store.deleteReaction(update.chat.id, update.message_id, user.id);
     return;
@@ -502,6 +527,14 @@ async function dispatch(ctx: BotContext, update: Update): Promise<WebhookReply |
     return null;
   }
   if (update.widget_query) return onWidgetQuery(ctx, update.widget_query);
+  if (update.poll_answer) {
+    await sceneVote(ctx, update.poll_answer);
+    return null;
+  }
+  if (update.poll) {
+    await scenePoll(ctx, update.poll);
+    return null;
+  }
   return null;
 }
 

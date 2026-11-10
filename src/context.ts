@@ -25,10 +25,15 @@ export async function base(env: Env): Promise<Base> {
   return { config, store: new Store(env.DB), api: new TelegramApi(config.botToken) };
 }
 
-export async function botContext(core: Base, origin: string): Promise<BotContext> {
+export async function botContext(
+  core: Base,
+  origin: string,
+  extra: Pick<BotContext, "defer" | "sceneLimit"> = {},
+): Promise<BotContext> {
   const me = await botIdentity(core.api);
   return {
     ...core,
+    ...extra,
     origin,
     bot: {
       id: me.id,

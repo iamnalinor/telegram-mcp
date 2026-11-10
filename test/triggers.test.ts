@@ -362,9 +362,9 @@ describe("in a group", () => {
   it("lets the holder set the others' limit, and tells them quietly once it is reached", async () => {
     h.telegram.members.set(`${TEAM.id}:${BOB.id}`, "member");
     await press(ALICE, `m:goy:${TEAM.id}`);
-    const screen = await press(ALICE, `m:gl:${TEAM.id}`); // 20 → 50
+    const screen = await press(ALICE, `m:gn:${TEAM.id}:50`); // 20 → 50, from the picker
     expect(String(screen!.text)).toContain("up to 50 times an hour");
-    await press(ALICE, `m:gl:${TEAM.id}`); // → 5
+    await press(ALICE, `m:gn:${TEAM.id}:5`);
     for (let i = 0; i < 8; i++) await h.say(TEAM, BOB, `${BOT} hi ${i}`);
     expect(h.fires).toHaveLength(5);
     const notices = h.telegram

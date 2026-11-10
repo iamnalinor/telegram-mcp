@@ -25,6 +25,8 @@ export interface Env {
   MCP_LIMIT?: RateLimit;
   /** Upload and download links, keyed by client IP. */
   FILE_LIMIT?: RateLimit;
+  /** Scene events, keyed by scene and person. */
+  SCENE_LIMIT?: RateLimit;
 }
 
 export interface Config {

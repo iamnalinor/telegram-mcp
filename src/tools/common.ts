@@ -35,6 +35,8 @@ export interface ToolContext {
   /** Public origin of the Worker, for upload and download links. */
   origin: string;
   bot: { id: number; username: string; aliases?: string[]; canReadAll: boolean };
+  /** Work that may finish after the response (ExecutionContext.waitUntil); absent outside a request. */
+  defer?: (promise: Promise<unknown>) => void;
 }
 
 export function text(body: string) {

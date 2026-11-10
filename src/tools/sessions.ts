@@ -260,7 +260,7 @@ function describe(session: KnownSession, where: (chatId: number) => string): str
  * every assistant of the user's signs in the same way — so this narrows what
  * a label can claim; it is not proof.
  */
-async function originOf(
+export async function originOf(
   ctx: ToolContext,
   from: string | null,
   declared: "user" | "third_party" | undefined,

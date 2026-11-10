@@ -218,3 +218,11 @@ export function splitPlain(text: string, limit = TELEGRAM_TEXT_LIMIT): string[] 
   for (let i = 0; i < text.length; i += limit) chunks.push(text.slice(i, i + limit));
   return chunks.length ? chunks : [""];
 }
+
+/**
+ * Text that must read literally inside Markdown (a rich message): every
+ * ASCII punctuation mark backslash-escaped, as CommonMark allows.
+ */
+export function escapeMarkdown(text: string): string {
+  return text.replace(/[\\`*_{}[\]()#+\-.!|<>~$&=:"']/g, "\\$&");
+}

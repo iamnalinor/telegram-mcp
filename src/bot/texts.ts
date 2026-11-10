@@ -209,7 +209,6 @@ const en = {
     }[reason],
   inChat: (title: string) => `«${escapeHtml(title)}»:`,
   tooManyStarts: "⚠️ Too many starts in the last hour; I start no more until it passes.",
-  guestAnswering: "✍️ Answering…",
   guestFailed: "⚠️ Could not start Claude.",
   buttonGuestChats: "🕊 Guest chats",
   guestChatsScreen: (lines: string[]) =>
@@ -274,6 +273,42 @@ const en = {
         : "",
   chatHeld: "Claude already answers here for someone else.",
   othersLimitButton: (limit: number) => `⏱ Others: up to ${limit}/h`,
+  limitPickerTitle: (subject: string, current: number) =>
+    `⏱ <b>${escapeHtml(subject)}</b>\n\nHow many times an hour, at most? Now: ${current}. Pick one, or type your own number (1–500).`,
+  limitPickerCustom: "✏️ Other number",
+  limitPrompt: (subject: string) => `Send a number from 1 to 500 for «${escapeHtml(subject)}».`,
+  limitInvalid: "A number from 1 to 500, please.",
+  sceneDenied: "Not now.",
+  sceneNotForYou: (name: string) => `This button is only for ${name}.`,
+  sceneNobody: "Nobody to answer right now: Claude is not connected.",
+  sceneResting: (minutes: number) => `Claude is resting. Try again in ${minutes} min.`,
+  sceneTooFast: "Not so fast.",
+  sceneStale: "This button is out of date.",
+  sceneOver: "This scene is over.",
+  sceneFull: "The scene is full: nothing more fits.",
+  sceneFailed: "That did not work. Try again.",
+  sceneWakesLimited: (title: string, minutes: number) =>
+    `😴 The scene «${escapeHtml(title)}» reached its wakes for this hour; the next can wake Claude in ${minutes} min (members see «Claude is resting»). Change it in 🎬 Scenes.`,
+  limitGone: "That is gone meanwhile: nothing to set.",
+  buttonScenes: (n: number) => `🎬 Scenes (${n})`,
+  scenesScreen: (title: string, lines: string[]) =>
+    `🎬 <b>Scenes in «${escapeHtml(title)}»</b>\n\nYour assistant's messages that run by themselves: buttons, votes, games.\n\n` +
+    (lines.length ? lines.join("\n") : "None running."),
+  sceneScreen: (p: {
+    title: string;
+    session: string | null;
+    events: number;
+    wakes: number;
+    limit: number;
+  }) =>
+    `🎬 <b>${escapeHtml(p.title)}</b>\n\nSet up by ` +
+    (p.session
+      ? `<a href="https://claude.ai/code/${escapeHtml(p.session)}">a session</a>`
+      : "your assistant") +
+    `.\nEvents logged: ${p.events}.\nWakes this hour: ${p.wakes} of ${p.limit}.`,
+  buttonSceneWakes: (limit: number) => `⏱ Wakes: up to ${limit}/h`,
+  buttonStopScene: "■ Stop",
+  sceneStopped: "Stopped: the buttons are gone.",
   othersLimited: (limit: number) =>
     `😴 Other members used up ${limit} starts this hour; theirs wait until it passes (they see 😴). Change the limit in 👥 Groups.`,
   routineFirst: "Set up 🤖 Claude on tag first.",
@@ -499,7 +534,6 @@ const ru: Texts = {
     }[reason],
   inChat: (title) => `«${escapeHtml(title)}»:`,
   tooManyStarts: "⚠️ Слишком много запусков за последний час; новых не будет, пока он не пройдёт.",
-  guestAnswering: "✍️ Отвечаю…",
   guestFailed: "⚠️ Не получилось запустить Claude.",
   buttonGuestChats: "🕊 Гостевые чаты",
   guestChatsScreen: (lines) =>
@@ -564,6 +598,36 @@ const ru: Texts = {
         : "",
   chatHeld: "Здесь Claude уже отвечает для другого человека.",
   othersLimitButton: (limit) => `⏱ Другим: до ${limit}/ч`,
+  limitPickerTitle: (subject, current) =>
+    `⏱ <b>${escapeHtml(subject)}</b>\n\nСколько раз в час, не больше? Сейчас: ${current}. Выбери или впиши своё число (1–500).`,
+  limitPickerCustom: "✏️ Другое число",
+  limitPrompt: (subject) => `Пришли число от 1 до 500 для «${escapeHtml(subject)}».`,
+  limitInvalid: "Нужно число от 1 до 500.",
+  sceneDenied: "Сейчас нельзя.",
+  sceneNotForYou: (name) => `Эта кнопка только для ${name}.`,
+  sceneNobody: "Сейчас некому ответить: Claude не подключён.",
+  sceneResting: (minutes) => `Claude отдыхает, попробуй через ${minutes} мин.`,
+  sceneTooFast: "Не так быстро.",
+  sceneStale: "Кнопка устарела.",
+  sceneOver: "Сцена завершена.",
+  sceneFull: "Сцена заполнена: больше не помещается.",
+  sceneFailed: "Не получилось, попробуй ещё раз.",
+  sceneWakesLimited: (title, minutes) =>
+    `😴 Сцена «${escapeHtml(title)}» исчерпала побудки на этот час; следующая сможет разбудить Claude через ${minutes} мин (участники видят «Claude отдыхает»). Меняется в 🎬 Сценах.`,
+  limitGone: "Этого уже нет: настраивать нечего.",
+  buttonScenes: (n) => `🎬 Сцены (${n})`,
+  scenesScreen: (title, lines) =>
+    `🎬 <b>Сцены в «${escapeHtml(title)}»</b>\n\nСообщения твоего ассистента, которые работают сами: кнопки, голосования, игры.\n\n` +
+    (lines.length ? lines.join("\n") : "Ни одной не идёт."),
+  sceneScreen: (p) =>
+    `🎬 <b>${escapeHtml(p.title)}</b>\n\nЗапустила ` +
+    (p.session
+      ? `<a href="https://claude.ai/code/${escapeHtml(p.session)}">сессия</a>`
+      : "твой ассистент") +
+    `.\nСобытий в журнале: ${p.events}.\nПобудок за час: ${p.wakes} из ${p.limit}.`,
+  buttonSceneWakes: (limit) => `⏱ Побудок: до ${limit}/ч`,
+  buttonStopScene: "■ Остановить",
+  sceneStopped: "Остановлена: кнопок больше нет.",
   othersLimited: (limit) =>
     `😴 Остальные участники исчерпали ${limit} запусков за час; их теги подождут, пока он пройдёт (они видят 😴). Лимит меняется в 👥 Группах.`,
   routineFirst: "Сначала настрой 🤖 Claude по тегу.",

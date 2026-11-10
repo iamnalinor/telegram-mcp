@@ -13,6 +13,10 @@ export interface BotContext {
   };
   /** The Worker's public origin, e.g. https://telegram-mcp.example.workers.dev */
   origin: string;
+  /** Work that may finish after the webhook has answered (ExecutionContext.waitUntil). */
+  defer?: (promise: Promise<unknown>) => void;
+  /** Scene events per scene and person: 10 in 10 seconds. */
+  sceneLimit?: RateLimit;
 }
 
 /**

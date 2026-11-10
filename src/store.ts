@@ -99,6 +99,8 @@ export interface FireEntry {
   excerpt: string;
   /** An album starts once, whichever of its items comes first. */
   album: string | null;
+  /** A scene's wake: its id, counted against the scene's own hourly limit. */
+  sceneId?: number;
 }
 
 export interface RelayRow {
@@ -129,9 +131,10 @@ export interface RelayJob {
   /**
    * reply: a Telegram reply to the session's message; day: a message for the
    * chat's session of the day; guest: a call from a chat the bot is not in
-   * (`message_id` is the call's id, `chat_id` 0); ask: from another session.
+   * (`message_id` is the call's id, `chat_id` 0); ask: from another session;
+   * scene: a scene's wake (`chat_id` is the scene's id, `message_id` the event's number).
    */
-  kind: "reply" | "day" | "guest" | "ask";
+  kind: "reply" | "day" | "guest" | "ask" | "scene";
   /** 1 when the sender waits for answer_session; a notice expects none. */
   wants_answer: number;
   answer: string | null;
@@ -381,6 +384,76 @@ export interface SearchQuery {
 const ALBUM_SPAN = 30;
 
 /** D1 refuses more than 100 bound parameters in one statement; a scope takes four. */
+/** A scene (src/bot/scenes.ts): its compiled definition, state and live messages. */
+export interface SceneRow {
+  id: number;
+  chat_id: number;
+  thread_id: number | null;
+  owner: number;
+  /** The owner's name as presses show it ("This button is only for …"), kept so no read is needed. */
+  owner_name: string | null;
+  /** The session that set the scene up, or the latest one the owner's wakes started. */
+  session_id: string | null;
+  /** The session third parties' wakes go to: never the owner's own. */
+  others_session_id: string | null;
+  agent: string | null;
+  title: string;
+  brief: string | null;
+  /** JSON of the compiled definition. */
+  def: string;
+  /** JSON of the state. */
+  state: string;
+  version: number;
+  status: "active" | "finished";
+  /** The view the main message shows. */
+  view: string;
+  /** JSON of `SceneMessage[]`: the live messages, the main one first. */
+  messages: string;
+  wake_limit: number;
+  /** Milliseconds: Telegram asked the bot to wait; no edits until then. */
+  quiet_until: number;
+  /** 1 when an edit is owed: it was held back to keep to one a second. */
+  dirty: number;
+  /** Milliseconds: the last edit. */
+  edited_at: number;
+  /** JSON of the times (seconds) of recent posts, for the per-minute limit. */
+  posts: string | null;
+  /** JSON of the scene's open poll: `{ message_id, poll_id }`. */
+  poll: string | null;
+  /** The last press committed: a redelivered update is not applied twice. */
+  last_query: string | null;
+  created: number;
+  updated: number;
+}
+
+export interface SceneMessage {
+  id: number;
+  view: string;
+}
+
+export interface SceneEventRow {
+  scene_id: number;
+  seq: number;
+  name: string;
+  user_id: number | null;
+  user_name: string | null;
+  data: string | null;
+  date: number;
+  woke: number;
+}
+
+export interface ScenePatch {
+  state?: string;
+  view?: string;
+  status?: "active" | "finished";
+  messages?: string;
+  dirty?: number;
+  edited_at?: number;
+  quiet_until?: number;
+  posts?: string;
+  last_query?: string;
+}
+
 export const MAX_SCOPES = 20;
 
 function toMessage(row: MessageRow): StoredMessage {
@@ -500,6 +573,9 @@ function personalOn(userParam: string): string {
   )`;
 }
 
+/** Events a scene keeps; older ones go as new ones come. */
+const SCENE_EVENTS_KEPT = 200;
+
 /** Tables of a group's own, keyed by chat id alone. */
 const GROUP_TABLES = [
   "grants",
@@ -541,6 +617,25 @@ export class Store {
       )
       .bind(key, value)
       .run();
+  }
+
+  /**
+   * The menu asked the user to type a number (a limit) for `target`: `g:<chat>`,
+   * `q:<guest key>` or `s:<scene>`. One pending prompt per user; a newer one replaces it.
+   */
+  async setLimitPrompt(userId: number, target: string, promptMessageId: number): Promise<void> {
+    await this.setMeta(`limit_prompt:${userId}`, `${target}:${promptMessageId}`);
+  }
+
+  /** What the prompt the user replied to was for, or null when it is not the pending one. */
+  async takeLimitPrompt(userId: number, promptMessageId: number): Promise<string | null> {
+    const value = await this.getMeta(`limit_prompt:${userId}`);
+    const match = value ? /^(.+):(\d+)$/.exec(value) : null;
+    return match && Number(match[2]) === promptMessageId ? match[1] : null;
+  }
+
+  async dropLimitPrompt(userId: number): Promise<void> {
+    await this.db.prepare("DELETE FROM meta WHERE key = ?").bind(`limit_prompt:${userId}`).run();
   }
 
   // --- users ---------------------------------------------------------------
@@ -595,6 +690,8 @@ export class Store {
       this.db
         .prepare("UPDATE refresh_sessions SET revoked = 1 WHERE user_id = ? AND revoked = 0")
         .bind(userId),
+      // No assistant of theirs is left to answer their scenes.
+      this.finishScenesStatement("owner = ?", [userId]),
     ]);
   }
 
@@ -652,6 +749,7 @@ export class Store {
   /** Forget a group entirely: the bot left, or nobody has access any more. */
   async deleteChat(chatId: number): Promise<void> {
     await this.db.batch([
+      ...this.dropScenesStatements("chat_id = ?", [chatId]),
       ...USER_CHAT_TABLES.map((table) =>
         this.db.prepare(`DELETE FROM ${table} WHERE chat_id = ?`).bind(chatId),
       ),
@@ -669,6 +767,14 @@ export class Store {
   /** A group became a supergroup and got a new id; carry everything over. */
   async migrateChat(from: number, to: number): Promise<void> {
     await this.db.batch([
+      // Scenes move along; a reply or reaction finds them by "<chat>:<message>".
+      this.db.prepare("UPDATE scenes SET chat_id = ?2 WHERE chat_id = ?1").bind(from, to),
+      this.db
+        .prepare(
+          `UPDATE OR IGNORE scene_links SET key = ?2 || ':' || substr(key, length(?1) + 2)
+           WHERE kind = 'message' AND substr(key, 1, length(?1) + 1) = ?1 || ':'`,
+        )
+        .bind(String(from), String(to)),
       ...[
         "grants",
         "button_presses",
@@ -772,6 +878,8 @@ export class Store {
       this.db
         .prepare("DELETE FROM claude_chats WHERE user_id = ? AND chat_id = ?")
         .bind(userId, chatId),
+      // Their scenes there end with their access.
+      this.finishScenesStatement("owner = ? AND chat_id = ?", [userId, chatId]),
       this.db.prepare("DELETE FROM grants WHERE user_id = ? AND chat_id = ?").bind(userId, chatId),
       ...this.purgeOrphanStatements(chatId),
     ]);
@@ -858,18 +966,21 @@ export class Store {
   }
 
   /**
-   * The lowest message id that can be dated at or after `since` in each chat.
-   * Ids grow within a chat, so a scan can start there. Chats with nothing
-   * since then get +Infinity (MAX_SAFE_INTEGER): nothing to scan.
+   * The lowest message id that can be dated at or after `since` in each chat:
+   * the lowest first id of the days from then on. Not the first of those days'
+   * alone — ids mostly grow with time, but not always: a group that became a
+   * supergroup counts from 1 again, and a replied-to message is stored late.
+   * Chats with nothing since then get +Infinity (MAX_SAFE_INTEGER): nothing to
+   * scan.
    */
   async idFloors(chats: ChatRef[], since: number[]): Promise<number[]> {
     if (!chats.length) return [];
-    const results = await this.db.batch<{ first_id: number }>(
+    const results = await this.db.batch<{ first_id: number | null }>(
       chats.map((chat, index) =>
         this.db
           .prepare(
-            `SELECT first_id FROM day_marks WHERE account_id = ? AND chat_id = ? AND day >= ?
-             ORDER BY day LIMIT 1`,
+            `SELECT MIN(first_id) AS first_id FROM day_marks
+             WHERE account_id = ? AND chat_id = ? AND day >= ?`,
           )
           .bind(chat.account_id, chat.chat_id, Math.floor(since[index] / DAY)),
       ),
@@ -1697,19 +1808,22 @@ export class Store {
    */
   async beginFire(
     fire: FireEntry,
-    limits: { user: number; others: number },
+    limits: { user: number; others: number; scene?: number },
   ): Promise<"claimed" | "again" | "limit"> {
     const now = nowSeconds();
     const result = await this.db
       .prepare(
-        `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at, from_name, excerpt, album)
-         SELECT ?1, ?2, ?3, ?4, 'pending', ?5, ?9, ?10, ?11
+        `INSERT INTO fires (chat_id, message_id, user_id, by_other, status, at, from_name, excerpt, album,
+           scene_id)
+         SELECT ?1, ?2, ?3, ?4, 'pending', ?5, ?9, ?10, ?11, ?12
          WHERE (SELECT COUNT(*) FROM fires WHERE user_id = ?3 AND at >= ?6
                 AND (status IN ('pending', 'started') OR (status = 'relayed' AND by_other = 1))) < ?7
            AND (?4 = 0 OR (SELECT COUNT(*) FROM fires
                 WHERE user_id = ?3 AND at >= ?6 AND chat_id = ?1 AND by_other = 1
                   AND status IN ('pending', 'started', 'relayed')) < ?8)
            AND (?11 IS NULL OR NOT EXISTS (SELECT 1 FROM fires WHERE chat_id = ?1 AND album = ?11))
+           AND (?12 IS NULL OR (SELECT COUNT(*) FROM fires WHERE user_id = ?3 AND scene_id = ?12
+                AND at >= ?6 AND status IN ('pending', 'started', 'relayed')) < ?13)
          ON CONFLICT (chat_id, message_id) DO NOTHING`,
       )
       .bind(
@@ -1724,6 +1838,8 @@ export class Store {
         fire.fromName,
         fire.excerpt,
         fire.album,
+        fire.sceneId ?? null,
+        limits.scene ?? 0,
       )
       .run();
     if ((result.meta.changes ?? 0) > 0) return "claimed";
@@ -1732,6 +1848,26 @@ export class Store {
       .bind(fire.chatId, fire.messageId, fire.album)
       .first();
     return seen ? "again" : "limit";
+  }
+
+  /** A start claimed for nothing (a waking rule that did not wake after all): as if never claimed. */
+  async dropFire(chatId: number, messageId: number): Promise<void> {
+    await this.db
+      .prepare("DELETE FROM fires WHERE chat_id = ? AND message_id = ? AND status = 'pending'")
+      .bind(chatId, messageId)
+      .run();
+  }
+
+  /** When the oldest start that counts against the user's hourly limit was made. */
+  async oldestStart(userId: number, since: number): Promise<number | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT MIN(at) AS at FROM fires WHERE user_id = ? AND at >= ?
+         AND status IN ('pending', 'started', 'relayed')`,
+      )
+      .bind(userId, since)
+      .first<{ at: number | null }>();
+    return row?.at ?? null;
   }
 
   async endFire(
@@ -1815,7 +1951,7 @@ export class Store {
   async recentStart(chatId: number, messageId: number, since: number): Promise<boolean> {
     const row = await this.db
       .prepare(
-        `SELECT 1 FROM fires WHERE chat_id = ? AND message_id < ? AND at >= ?
+        `SELECT 1 FROM fires WHERE chat_id = ? AND message_id < ? AND message_id > 0 AND at >= ?
          AND status IN ('pending', 'started') LIMIT 1`,
       )
       .bind(chatId, messageId, since)
@@ -1829,6 +1965,8 @@ export class Store {
    * kept apart, so a session the user works in never hears a third party.
    * Only a session started for that audience in these chats counts: a reply
    * passed into someone else's session must not make it theirs for the day.
+   * A session a scene woke was told to read the scene, not the chat: it is no
+   * chat's session of the day.
    */
   async latestSession(
     userId: number,
@@ -1840,9 +1978,9 @@ export class Store {
       .prepare(
         `SELECT f.session_id FROM fires f WHERE f.user_id = ?1 AND f.at >= ?2 AND f.by_other = ?3
          AND f.chat_id IN (${chatIds.map((_, i) => `?${i + 4}`).join(", ")})
-         AND f.status IN ('started', 'relayed') AND f.session_id IS NOT NULL
+         AND f.status IN ('started', 'relayed') AND f.session_id IS NOT NULL AND f.scene_id IS NULL
          AND EXISTS (SELECT 1 FROM fires s WHERE s.user_id = ?1 AND s.session_id = f.session_id
-                     AND s.status = 'started' AND s.by_other = ?3
+                     AND s.status = 'started' AND s.by_other = ?3 AND s.scene_id IS NULL
                      AND s.chat_id IN (${chatIds.map((_, i) => `?${i + 4}`).join(", ")}))
          ORDER BY f.at DESC, f.message_id DESC LIMIT 1`,
       )
@@ -2084,7 +2222,8 @@ export class Store {
   async sessionHeardOthers(userId: number, sessionId: string): Promise<boolean> {
     const row = await this.db
       .prepare(
-        "SELECT 1 FROM relay_jobs WHERE user_id = ? AND target_session = ? AND origin != 'user' LIMIT 1",
+        // A scene's wake from the session's own act is no third party's word.
+        "SELECT 1 FROM relay_jobs WHERE user_id = ? AND target_session = ? AND origin != 'user' AND kind != 'scene' LIMIT 1",
       )
       .bind(userId, sessionId)
       .first();
@@ -2341,7 +2480,14 @@ export class Store {
 
   async purge(cutoff: number): Promise<number> {
     const results = await this.db.batch([
-      this.db.prepare("DELETE FROM messages WHERE date < ?").bind(cutoff),
+      // A scene's messages stay while the scene does: they are drawn and reacted to.
+      this.db
+        .prepare(
+          `DELETE FROM messages WHERE date < ? AND NOT (account_id = 0 AND EXISTS (
+             SELECT 1 FROM scene_links l
+             WHERE l.kind = 'message' AND l.key = messages.chat_id || ':' || messages.message_id))`,
+        )
+        .bind(cutoff),
       this.db.prepare("DELETE FROM button_presses WHERE date < ?").bind(cutoff),
       this.db.prepare("DELETE FROM reactions WHERE date < ?").bind(cutoff),
       this.db.prepare("DELETE FROM upload_nonces WHERE expires_at < ?").bind(nowSeconds()),
@@ -2369,5 +2515,406 @@ export class Store {
       ),
     ]);
     return results[0].meta.changes ?? 0;
+  }
+
+  // --- scenes --------------------------------------------------------------
+
+  async createScene(row: {
+    chat_id: number;
+    thread_id: number | null;
+    owner: number;
+    owner_name: string;
+    session_id: string | null;
+    agent: string | null;
+    title: string;
+    brief: string | null;
+    def: string;
+    state: string;
+    wake_limit: number;
+  }): Promise<number> {
+    const now = nowSeconds();
+    const created = await this.db
+      .prepare(
+        `INSERT INTO scenes (chat_id, thread_id, owner, owner_name, session_id, agent, title, brief,
+           def, state, wake_limit, created, updated)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+      )
+      .bind(
+        row.chat_id,
+        row.thread_id,
+        row.owner,
+        row.owner_name,
+        row.session_id,
+        row.agent,
+        row.title,
+        row.brief,
+        row.def,
+        row.state,
+        row.wake_limit,
+        now,
+        now,
+      )
+      .first<{ id: number }>();
+    return created!.id;
+  }
+
+  getScene(id: number): Promise<SceneRow | null> {
+    return this.db.prepare("SELECT * FROM scenes WHERE id = ?").bind(id).first<SceneRow>();
+  }
+
+  /**
+   * Write what an event changed, if nobody else did in between: false when the
+   * version moved (the caller reads again and retries). A change of `state`
+   * counts as activity; drawing alone does not move `updated`.
+   */
+  async commitScene(id: number, version: number, patch: ScenePatch): Promise<boolean> {
+    const sets = Object.entries(patch)
+      .filter(([, value]) => value !== undefined)
+      .map(([column]) => `${column} = ?`);
+    const values: unknown[] = Object.values(patch).filter((value) => value !== undefined);
+    const result = await this.db
+      .prepare(
+        `UPDATE scenes SET ${[...sets, "version = version + 1", "updated = ?"].join(", ")}
+         WHERE id = ? AND version = ?`,
+      )
+      .bind(...values, nowSeconds(), id, version)
+      .run();
+    return (result.meta.changes ?? 0) > 0;
+  }
+
+  /** How the scene was drawn: no version change, nothing an event depends on. */
+  async markSceneDrawn(
+    id: number,
+    drawn: { dirty?: number; edited_at?: number; quiet_until?: number },
+  ): Promise<void> {
+    const entries = Object.entries(drawn).filter(([, value]) => value !== undefined);
+    if (!entries.length) return;
+    await this.db
+      .prepare(
+        `UPDATE scenes SET ${entries.map(([column]) => `${column} = ?`).join(", ")} WHERE id = ?`,
+      )
+      .bind(...entries.map(([, value]) => value), id)
+      .run();
+  }
+
+  /*
+   * What a scene's actions keep beside its state — recent posts, live
+   * messages, the open poll — changes by targeted statements, never by
+   * writing back a copy read earlier: two events at once must not lose
+   * one another's message or poll.
+   */
+
+  /** Count a post against the minute's limit, if it allows one more. */
+  async spendScenePost(id: number, perMinute: number): Promise<boolean> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const row = await this.db
+        .prepare("SELECT posts FROM scenes WHERE id = ?")
+        .bind(id)
+        .first<{ posts: string | null }>();
+      if (!row) return false;
+      const now = nowSeconds();
+      const recent = ((row.posts ? JSON.parse(row.posts) : []) as number[]).filter(
+        (at) => at > now - 60,
+      );
+      if (recent.length >= perMinute) return false;
+      const result = await this.db
+        .prepare("UPDATE scenes SET posts = ? WHERE id = ? AND posts IS ?")
+        .bind(JSON.stringify([...recent, now]), id, row.posts)
+        .run();
+      if ((result.meta.changes ?? 0) > 0) return true;
+    }
+    return false;
+  }
+
+  /** Add a live message, if the scene has room for it. */
+  async addLiveMessage(id: number, message: SceneMessage, limit: number): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE scenes SET messages = json_insert(messages, '$[#]', json(?)) WHERE id = ?
+         AND json_array_length(messages) < ?`,
+      )
+      .bind(JSON.stringify(message), id, limit)
+      .run();
+    return (result.meta.changes ?? 0) > 0;
+  }
+
+  /** A live message that is gone from the chat leaves the scene's list. */
+  async dropLiveMessage(id: number, messageId: number): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE scenes SET messages = (
+           SELECT json_group_array(json(value)) FROM json_each(scenes.messages)
+           WHERE json_extract(value, '$.id') != ?2)
+         WHERE id = ?1`,
+      )
+      .bind(id, messageId)
+      .run();
+  }
+
+  /** Take the scene's one poll slot; false when a poll is open already. */
+  async claimScenePoll(id: number, poll: string): Promise<boolean> {
+    const result = await this.db
+      .prepare("UPDATE scenes SET poll = ? WHERE id = ? AND poll IS NULL")
+      .bind(poll, id)
+      .run();
+    return (result.meta.changes ?? 0) > 0;
+  }
+
+  /** Put what the slot holds from `was` to `poll` (null frees it). */
+  async setScenePoll(id: number, was: string, poll: string | null): Promise<boolean> {
+    const result = await this.db
+      .prepare("UPDATE scenes SET poll = ? WHERE id = ? AND poll = ?")
+      .bind(poll, id, was)
+      .run();
+    return (result.meta.changes ?? 0) > 0;
+  }
+
+  async unlinkScene(kind: "message" | "poll", key: string): Promise<void> {
+    await this.db
+      .prepare("DELETE FROM scene_links WHERE kind = ? AND key = ?")
+      .bind(kind, key)
+      .run();
+  }
+
+  /**
+   * Take the owed redraw, in one statement: exactly one of those waiting gets
+   * the row, with the edit's time already set, so a commit after it waits its
+   * second. Null when nothing is owed, or Telegram asked for quiet.
+   */
+  async claimRedraw(id: number, now: number): Promise<SceneRow | null> {
+    return this.db
+      .prepare(
+        `UPDATE scenes SET dirty = 0, edited_at = ?2 WHERE id = ?1 AND dirty = 1 AND quiet_until <= ?2
+         RETURNING *`,
+      )
+      .bind(id, now)
+      .first<SceneRow>();
+  }
+
+  /** A scene in use, though its state did not change: the daily cleanup must not end it. */
+  async touchScene(id: number): Promise<void> {
+    await this.db
+      .prepare("UPDATE scenes SET updated = ? WHERE id = ?")
+      .bind(nowSeconds(), id)
+      .run();
+  }
+
+  private finishScenesStatement(where: string, values: unknown[]): D1PreparedStatement {
+    return this.db
+      .prepare(
+        `UPDATE scenes SET status = 'finished', version = version + 1, updated = ?
+         WHERE status = 'active' AND ${where}`,
+      )
+      .bind(nowSeconds(), ...values);
+  }
+
+  /** Scenes matching `where`, with their links and events. */
+  private dropScenesStatements(where: string, values: unknown[]): D1PreparedStatement[] {
+    return [
+      ...["scene_links", "scene_events"].map((table) =>
+        this.db
+          .prepare(`DELETE FROM ${table} WHERE scene_id IN (SELECT id FROM scenes WHERE ${where})`)
+          .bind(...values),
+      ),
+      this.db.prepare(`DELETE FROM scenes WHERE ${where}`).bind(...values),
+    ];
+  }
+
+  /** Active scenes nobody touched since `before`: the daily cleanup ends them. */
+  async idleScenes(before: number, limit: number): Promise<number[]> {
+    const { results } = await this.db
+      .prepare("SELECT id FROM scenes WHERE status = 'active' AND updated < ? LIMIT ?")
+      .bind(before, limit)
+      .all<{ id: number }>();
+    return results.map((row) => row.id);
+  }
+
+  /** Finished scenes whose last drawing is still owed (Telegram asked for quiet then). */
+  async undrawnScenes(limit: number): Promise<number[]> {
+    const { results } = await this.db
+      .prepare("SELECT id FROM scenes WHERE status = 'finished' AND dirty = 1 LIMIT ?")
+      .bind(limit)
+      .all<{ id: number }>();
+    return results.map((row) => row.id);
+  }
+
+  /** Scenes finished before `before` go, with their links and events. */
+  async dropFinishedScenes(before: number): Promise<void> {
+    await this.db.batch(this.dropScenesStatements("status = 'finished' AND updated < ?", [before]));
+  }
+
+  /** A scene and everything that leads to it or came of it. */
+  async deleteScene(id: number): Promise<void> {
+    await this.db.batch([
+      this.db.prepare("DELETE FROM scene_links WHERE scene_id = ?").bind(id),
+      this.db.prepare("DELETE FROM scene_events WHERE scene_id = ?").bind(id),
+      this.db.prepare("DELETE FROM scenes WHERE id = ?").bind(id),
+    ]);
+  }
+
+  async finishScene(id: number): Promise<void> {
+    await this.db
+      .prepare(
+        "UPDATE scenes SET status = 'finished', version = version + 1, updated = ? WHERE id = ? AND status = 'active'",
+      )
+      .bind(nowSeconds(), id)
+      .run();
+  }
+
+  /** How many scenes the user has running in a chat. */
+  async countScenesOf(owner: number, chatId: number): Promise<number> {
+    const row = await this.db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM scenes WHERE chat_id = ? AND status = 'active' AND owner = ?",
+      )
+      .bind(chatId, owner)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  /** Wakes from this scene since `since` (its starts), and when the oldest of them was. */
+  async sceneWakes(
+    owner: number,
+    sceneId: number,
+    since: number,
+  ): Promise<{ n: number; oldest: number | null }> {
+    const row = await this.db
+      .prepare(
+        `SELECT COUNT(*) AS n, MIN(at) AS oldest FROM fires WHERE user_id = ? AND scene_id = ?
+         AND at >= ? AND status IN ('pending', 'started', 'relayed')`,
+      )
+      .bind(owner, sceneId, since)
+      .first<{ n: number; oldest: number | null }>();
+    return row ?? { n: 0, oldest: null };
+  }
+
+  /** The oldest start that counts against the others' limit in a chat. */
+  async oldestOthersStart(userId: number, chatId: number, since: number): Promise<number | null> {
+    const row = await this.db
+      .prepare(
+        `SELECT MIN(at) AS at FROM fires WHERE user_id = ? AND chat_id = ? AND by_other = 1
+         AND at >= ? AND status IN ('pending', 'started', 'relayed')`,
+      )
+      .bind(userId, chatId, since)
+      .first<{ at: number | null }>();
+    return row?.at ?? null;
+  }
+
+  async sceneEventCount(sceneId: number): Promise<number> {
+    const row = await this.db
+      .prepare("SELECT COUNT(*) AS n FROM scene_events WHERE scene_id = ?")
+      .bind(sceneId)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  /**
+   * The session a scene's wakes go to, once a start made one: the owner's
+   * own, or (`others`) the one third parties' wakes go to.
+   */
+  async setSceneSession(id: number, sessionId: string, others: boolean): Promise<void> {
+    await this.db
+      .prepare(`UPDATE scenes SET ${others ? "others_session_id" : "session_id"} = ? WHERE id = ?`)
+      .bind(sessionId, id)
+      .run();
+  }
+
+  async setSceneWakeLimit(owner: number, id: number, limit: number): Promise<void> {
+    await this.db
+      .prepare("UPDATE scenes SET wake_limit = ? WHERE id = ? AND owner = ?")
+      .bind(limit, id, owner)
+      .run();
+  }
+
+  /** The user's active scenes in a chat, for the menu. */
+  async scenesOf(owner: number, chatId: number): Promise<{ id: number; title: string }[]> {
+    const { results } = await this.db
+      .prepare(
+        "SELECT id, title FROM scenes WHERE chat_id = ? AND status = 'active' AND owner = ? ORDER BY id",
+      )
+      .bind(chatId, owner)
+      .all<{ id: number; title: string }>();
+    return results;
+  }
+
+  async linkScene(
+    kind: "message" | "poll",
+    key: string,
+    sceneId: number,
+    view?: string,
+  ): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO scene_links (kind, key, scene_id, view) VALUES (?, ?, ?, ?)
+         ON CONFLICT (kind, key) DO UPDATE SET scene_id = excluded.scene_id, view = excluded.view`,
+      )
+      .bind(kind, key, sceneId, view ?? null)
+      .run();
+  }
+
+  sceneByLink(
+    kind: "message" | "poll",
+    key: string,
+  ): Promise<{ scene_id: number; view: string | null } | null> {
+    return this.db
+      .prepare("SELECT scene_id, view FROM scene_links WHERE kind = ? AND key = ?")
+      .bind(kind, key)
+      .first<{ scene_id: number; view: string | null }>();
+  }
+
+  /** Record an event for the session; the next number in the scene's log. */
+  async addSceneEvent(
+    sceneId: number,
+    event: {
+      name: string;
+      user_id: number | null;
+      user_name: string | null;
+      data: string | null;
+      woke?: boolean;
+    },
+  ): Promise<number> {
+    const [inserted] = await this.db.batch<{ seq: number }>([
+      this.db
+        .prepare(
+          `INSERT INTO scene_events (scene_id, seq, name, user_id, user_name, data, date, woke)
+           SELECT ?1, COALESCE(MAX(seq), 0) + 1, ?2, ?3, ?4, ?5, ?6, ?7 FROM scene_events
+           WHERE scene_id = ?1
+           RETURNING seq`,
+        )
+        .bind(
+          sceneId,
+          event.name,
+          event.user_id,
+          event.user_name,
+          event.data,
+          nowSeconds(),
+          event.woke ? 1 : 0,
+        ),
+      // A live scene keeps only its latest events: a log per press must not grow without end.
+      this.db
+        .prepare(
+          `DELETE FROM scene_events WHERE scene_id = ?1
+           AND seq <= (SELECT MAX(seq) FROM scene_events WHERE scene_id = ?1) - ?2`,
+        )
+        .bind(sceneId, SCENE_EVENTS_KEPT),
+    ]);
+    return inserted.results[0].seq;
+  }
+
+  async sceneEvents(sceneId: number, afterSeq: number, limit: number): Promise<SceneEventRow[]> {
+    const { results } = await this.db
+      .prepare("SELECT * FROM scene_events WHERE scene_id = ? AND seq > ? ORDER BY seq LIMIT ?")
+      .bind(sceneId, afterSeq, limit)
+      .all<SceneEventRow>();
+    return results;
+  }
+
+  /** The latest events, oldest of them first. */
+  async lastSceneEvents(sceneId: number, limit: number): Promise<SceneEventRow[]> {
+    const { results } = await this.db
+      .prepare("SELECT * FROM scene_events WHERE scene_id = ? ORDER BY seq DESC LIMIT ?")
+      .bind(sceneId, limit)
+      .all<SceneEventRow>();
+    return results.reverse();
   }
 }

@@ -16,6 +16,7 @@ import { registerGuestTools } from "./tools/guest";
 import { registerMemoryTools } from "./tools/memory";
 import { registerPersonalTools } from "./tools/personal";
 import { registerReadTools } from "./tools/read";
+import { registerSceneTools } from "./tools/scenes";
 import { registerSendTools } from "./tools/send";
 import { registerSessionTools } from "./tools/sessions";
 
@@ -37,5 +38,6 @@ export function createServer(ctx: ToolContext): McpServer {
   registerMemoryTools(server, ctx);
   registerSessionTools(server, ctx);
   registerGuestTools(server, ctx);
+  registerSceneTools(server, ctx);
   return server;
 }

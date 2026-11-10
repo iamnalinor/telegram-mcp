@@ -27,10 +27,15 @@
  *                 install command (new token), m:rloff turns it off
  *   m:gc:<id>     Claude in that group: on (taking it over from a holder who left) or off
  *   m:go:<id>     other members too: asks first; m:goy:<id> turns it on
- *   m:gl:<id>     their hourly limit: steps through 5, 10, 20, 50
+ *   m:gl:<id>     their hourly limit: a picker; m:gn:<id>:<n> sets it, m:gk:<id> asks
+ *                 for a number typed as a reply (see `takeLimitAnswer`)
  *   m:gs:<id>     the log of starts there
+ *   m:sc:<chat>   the user's running scenes in a chat (a group, or their private chat)
+ *   m:sv:<id>     one scene; m:sw / m:swn / m:swk its wakes an hour as for a limit,
+ *                 m:ss stops it
  *   m:gq          guest chats: where the bot was called without being a member
- *   m:q:<n>       one of them; m:qo / m:qoy / m:ql / m:qs as for a group, m:qx lets it go
+ *   m:q:<n>       one of them; m:qo / m:qoy / m:ql / m:qn / m:qk / m:qs as for a group,
+ *                 m:qx lets it go
  *
  * Every press is checked again: anyone can send any callback_data.
  */
@@ -40,12 +45,13 @@ import { formatTime } from "../format";
 import { isAllowed } from "../env";
 import { fallBack, relayState, relayToken, tokenHash } from "../relay";
 import { routinePrompt, tokenOf } from "../routine";
-import { GUEST_BASE } from "../store";
+import { GUEST_BASE, type SceneRow } from "../store";
 import { memoryTitle } from "../tools/memory";
 import { TelegramError } from "../telegram/api";
-import type { CallbackQuery, InlineKeyboardMarkup, User } from "../telegram/types";
+import type { CallbackQuery, InlineKeyboardMarkup, Message, User } from "../telegram/types";
 import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { testRoutine } from "./routine";
+import { endScene } from "./scenes";
 import { holderName, stillMember } from "./triggers";
 import { escapeHtml, formatDate, texts } from "./texts";
 
@@ -240,6 +246,7 @@ async function routineScreen(ctx: BotContext, user: User): Promise<Screen> {
       ? "broken"
       : "set";
   const here = (await ctx.store.getClaudeChat(user.id))?.user_id === user.id;
+  const scenes = (await ctx.store.scenesOf(user.id, user.id)).length;
   let test = "";
   // A day on, the test says nothing new — and its answer may be purged with the messages.
   if (state === "set" && row?.test_session && row.test_at && nowSeconds() - row.test_at < 86_400) {
@@ -266,6 +273,7 @@ async function routineScreen(ctx: BotContext, user: User): Promise<Screen> {
           ? [[button(t.buttonRelay(relayState(await ctx.store.getRelay(user.id))), "rl")]]
           : []),
         ...(state === "set" ? [[button(t.buttonGuestChats, "gq")]] : []),
+        ...(scenes ? [[button(t.buttonScenes(scenes), `sc:${user.id}`)]] : []),
         ...(row ? [[button(t.buttonDeleteRoutine, "cldel")]] : []),
         [button(t.buttonBack, "main")],
       ],
@@ -305,8 +313,53 @@ function guideScreen(user: User): Screen {
   };
 }
 
-/** What "Others too" may cost per hour in one chat; a press steps to the next. */
-const OTHERS_LIMITS = [5, 10, 20, 50];
+/** Hourly limits offered by a press; any other number from LIMIT_MIN to LIMIT_MAX is typed. */
+const LIMIT_PRESETS = [5, 20, 50, 100];
+const LIMIT_MIN = 1;
+const LIMIT_MAX = 500;
+
+/**
+ * Pick an hourly limit: the presets (the current one ticked), a number of
+ * one's own, or back. `set(n)` and `custom` are the screens those go to.
+ */
+function limitPicker(
+  t: ReturnType<typeof texts>,
+  subject: string,
+  current: number,
+  back: string,
+  set: (n: number) => string,
+  custom: string,
+): Screen {
+  return {
+    text: t.limitPickerTitle(subject, current),
+    reply_markup: {
+      inline_keyboard: [
+        LIMIT_PRESETS.map((n) => button(n === current ? `✓ ${n}` : String(n), set(n))),
+        [button(t.limitPickerCustom, custom)],
+        [button(t.buttonBack, back)],
+      ],
+    },
+  };
+}
+
+/** A limit typed or pressed, if it is one the menu takes. */
+function limitOf(raw: string): number | null {
+  if (!/^\d{1,3}$/.test(raw.trim())) return null;
+  const n = Number(raw.trim());
+  return n >= LIMIT_MIN && n <= LIMIT_MAX ? n : null;
+}
+
+/** Ask for a number as a reply; the answer comes back through `takeLimitAnswer`. */
+async function askLimit(ctx: BotContext, user: User, target: string, subject: string) {
+  const t = texts(user.language_code);
+  const sent = await ctx.api.call<Message>("sendMessage", {
+    chat_id: user.id,
+    text: t.limitPrompt(subject),
+    parse_mode: "HTML",
+    reply_markup: { force_reply: true, input_field_placeholder: `${LIMIT_MIN}–${LIMIT_MAX}` },
+  });
+  await ctx.store.setLimitPrompt(user.id, target, sent.message_id);
+}
 
 async function groupScreen(
   ctx: BotContext,
@@ -320,6 +373,7 @@ async function groupScreen(
   const heldBy = claim && !on ? await holderName(ctx, claim.user_id) : null;
   // With privacy mode on, a group where the bot is no admin shows it only mentions and replies.
   const blind = on && !ctx.bot.canReadAll && !(await ctx.store.getChat(chatId))?.bot_is_admin;
+  const scenes = (await ctx.store.scenesOf(user.id, chatId)).length;
   return {
     text:
       t.groupScreen({
@@ -342,6 +396,7 @@ async function groupScreen(
           ? [[button(t.othersLimitButton(claim.others_limit), `gl:${chatId}`)]]
           : []),
         ...(on ? [[button(t.startsButton, `gs:${chatId}`)]] : []),
+        ...(scenes ? [[button(t.buttonScenes(scenes), `sc:${chatId}`)]] : []),
         [button(t.buttonChatMemory, `mv:${chatId}`)],
         [button(t.buttonRevoke, `rv:${chatId}`)],
         [button(t.buttonBack, "groups")],
@@ -387,6 +442,54 @@ async function startsScreen(
       (lines.length ? t.startsScreen(title, lines) : t.startsEmpty(title)) +
       (limited ? `\n\n${t.startsLimited(limited)}` : ""),
     reply_markup: { inline_keyboard: [[button(t.buttonBack, back)]] },
+  };
+}
+
+/** Where a chat's scenes are listed from: the group's screen, or Claude's for the private chat. */
+const chatBack = (user: User, chatId: number) => (chatId === user.id ? "cl" : `g:${chatId}`);
+
+async function chatTitle(ctx: BotContext, user: User, chatId: number): Promise<string> {
+  if (chatId === user.id) return texts(user.language_code).memoryOfMe;
+  return (await ctx.store.getChat(chatId))?.title ?? String(chatId);
+}
+
+async function scenesScreen(ctx: BotContext, user: User, chatId: number): Promise<Screen> {
+  const t = texts(user.language_code);
+  const scenes = await ctx.store.scenesOf(user.id, chatId);
+  return {
+    text: t.scenesScreen(
+      await chatTitle(ctx, user, chatId),
+      scenes.map((scene) => `▶ ${escapeHtml(scene.title)}`),
+    ),
+    reply_markup: {
+      inline_keyboard: [
+        ...scenes.map((scene) => [
+          button(`▶ ${Array.from(scene.title).slice(0, 50).join("")}`, `sv:${scene.id}`),
+        ]),
+        [button(t.buttonBack, chatBack(user, chatId))],
+      ],
+    },
+  };
+}
+
+async function sceneScreen(ctx: BotContext, user: User, scene: SceneRow): Promise<Screen> {
+  const t = texts(user.language_code);
+  const wakes = await ctx.store.sceneWakes(scene.owner, scene.id, nowSeconds() - 3600);
+  return {
+    text: t.sceneScreen({
+      title: scene.title,
+      session: scene.session_id,
+      events: await ctx.store.sceneEventCount(scene.id),
+      wakes: wakes.n,
+      limit: scene.wake_limit,
+    }),
+    reply_markup: {
+      inline_keyboard: [
+        [button(t.buttonSceneWakes(scene.wake_limit), `sw:${scene.id}`)],
+        [button(t.buttonStopScene, `ss:${scene.id}`)],
+        [button(t.buttonBack, `sc:${scene.chat_id}`)],
+      ],
+    },
   };
 }
 
@@ -613,8 +716,45 @@ async function render(
     };
   }
 
+  const list = /^sc:(-?\d+)$/.exec(name);
+  if (list) {
+    const chatId = Number(list[1]);
+    if (chatId !== user.id && !(await ctx.store.getGrant(user.id, chatId)))
+      return mainScreen(ctx, user);
+    return scenesScreen(ctx, user, chatId);
+  }
+  const sceneMenu = /^(sv|sw|swn|swk|ss):(\d{1,15})(?::(\d{1,4}))?$/.exec(name);
+  if (sceneMenu) {
+    const scene = await ctx.store.getScene(Number(sceneMenu[2]));
+    // Only one's own running scenes; anything else is gone as far as this menu goes.
+    if (!scene || scene.owner !== user.id || scene.status !== "active") {
+      return { ...(await mainScreen(ctx, user)), note: t.menuGone };
+    }
+    if (sceneMenu[1] === "ss") {
+      await endScene(ctx, scene.id);
+      return { ...(await scenesScreen(ctx, user, scene.chat_id)), note: t.sceneStopped };
+    }
+    if (sceneMenu[1] === "sw") {
+      return limitPicker(
+        t,
+        scene.title,
+        scene.wake_limit,
+        `sv:${scene.id}`,
+        (n) => `swn:${scene.id}:${n}`,
+        `swk:${scene.id}`,
+      );
+    }
+    if (sceneMenu[1] === "swk") await askLimit(ctx, user, `s:${scene.id}`, scene.title);
+    const preset = sceneMenu[1] === "swn" ? limitOf(sceneMenu[3] ?? "") : null;
+    if (preset !== null && LIMIT_PRESETS.includes(preset)) {
+      await ctx.store.setSceneWakeLimit(user.id, scene.id, preset);
+      return sceneScreen(ctx, user, { ...scene, wake_limit: preset });
+    }
+    return sceneScreen(ctx, user, scene);
+  }
+
   if (name === "gq") return guestChatsScreen(ctx, user);
-  const guest = /^(q|qo|qoy|ql|qs|qx):(\d{1,12})$/.exec(name);
+  const guest = /^(q|qo|qoy|ql|qn|qk|qs|qx):(\d{1,12})(?::(\d{1,4}))?$/.exec(name);
   if (guest) {
     const key = GUEST_BASE + Number(guest[2]);
     const chat = await ctx.store.guestChatByKey(key);
@@ -645,15 +785,28 @@ async function render(
     }
     if (guest[1] === "qoy") await ctx.store.setClaudeOthers(user.id, key, true);
     if (guest[1] === "ql") {
-      const next =
-        OTHERS_LIMITS[(OTHERS_LIMITS.indexOf(claim.others_limit) + 1) % OTHERS_LIMITS.length];
-      await ctx.store.setClaudeOthersLimit(user.id, key, next);
+      return limitPicker(
+        t,
+        title,
+        claim.others_limit,
+        `q:${chat.id}`,
+        (n) => `qn:${chat.id}:${n}`,
+        `qk:${chat.id}`,
+      );
+    }
+    if (guest[1] === "qk") {
+      await askLimit(ctx, user, `q:${key}`, title);
+      return guestChatScreen(user, chat, claim);
+    }
+    const preset = guest[1] === "qn" ? limitOf(guest[3] ?? "") : null;
+    if (preset !== null && LIMIT_PRESETS.includes(preset)) {
+      await ctx.store.setClaudeOthersLimit(user.id, key, preset);
     }
     claim = (await ctx.store.getClaudeChat(key)) ?? claim;
     return guestChatScreen(user, chat, claim);
   }
 
-  const group = /^(g|rv|gc|go|goy|gl|gs):(-?\d+)$/.exec(name);
+  const group = /^(g|rv|gc|go|goy|gl|gn|gk|gs):(-?\d+)(?::(\d{1,4}))?$/.exec(name);
   if (group) {
     const chatId = Number(group[2]);
     const grant = (await ctx.store.listGrants(user.id)).find((g) => g.chat_id === chatId);
@@ -685,13 +838,95 @@ async function render(
     }
     if (group[1] === "goy" && mine) await ctx.store.setClaudeOthers(user.id, chatId, true);
     if (group[1] === "gl" && mine) {
-      const next =
-        OTHERS_LIMITS[(OTHERS_LIMITS.indexOf(claim.others_limit) + 1) % OTHERS_LIMITS.length];
-      await ctx.store.setClaudeOthersLimit(user.id, chatId, next);
+      return limitPicker(
+        t,
+        title,
+        claim.others_limit,
+        `g:${chatId}`,
+        (n) => `gn:${chatId}:${n}`,
+        `gk:${chatId}`,
+      );
+    }
+    if (group[1] === "gk" && mine) await askLimit(ctx, user, `g:${chatId}`, title);
+    const preset = group[1] === "gn" ? limitOf(group[3] ?? "") : null;
+    if (preset !== null && mine && LIMIT_PRESETS.includes(preset)) {
+      await ctx.store.setClaudeOthersLimit(user.id, chatId, preset);
     }
     return { ...(await groupScreen(ctx, user, grant)), note };
   }
   return mainScreen(ctx, user);
+}
+
+/**
+ * A reply to the menu's prompt for a number (`askLimit`). A number in range
+ * sets the limit and shows the chat's screen anew; anything else asks again,
+ * and that question becomes the pending prompt. Null when the message answers
+ * no pending prompt: it goes its usual way.
+ */
+export async function takeLimitAnswer(
+  ctx: BotContext,
+  message: Message & { from: User },
+): Promise<WebhookReply | "asked" | null> {
+  const target = message.reply_to_message;
+  if (!target || target.from?.id !== ctx.bot.id) return null;
+  // A command sent as the reply is still a command.
+  if (message.text?.startsWith("/")) return null;
+  const user = message.from;
+  const pending = await ctx.store.takeLimitPrompt(user.id, target.message_id);
+  if (!pending) return null;
+  const t = texts(user.language_code);
+  const limit = limitOf(message.text ?? "");
+  if (limit === null) {
+    const sent = await ctx.api
+      .call<Message>("sendMessage", {
+        chat_id: user.id,
+        text: t.limitInvalid,
+        reply_markup: { force_reply: true, input_field_placeholder: `${LIMIT_MIN}–${LIMIT_MAX}` },
+      })
+      .catch(() => null);
+    if (sent) await ctx.store.setLimitPrompt(user.id, pending, sent.message_id);
+    return "asked";
+  }
+  await ctx.store.dropLimitPrompt(user.id);
+  const screen = await limitTarget(ctx, user, pending, limit);
+  // The scene ended, or the chat is no longer theirs: say so rather than nothing.
+  if (!screen) return { method: "sendMessage", chat_id: user.id, text: t.limitGone };
+  return {
+    method: "sendMessage",
+    chat_id: user.id,
+    text: screen.text,
+    parse_mode: "HTML",
+    link_preview_options: { is_disabled: true },
+    reply_markup: screen.reply_markup,
+  };
+}
+
+/** Set a typed limit on what the prompt was for, if it is still the user's; its screen. */
+async function limitTarget(
+  ctx: BotContext,
+  user: User,
+  target: string,
+  limit: number,
+): Promise<Screen | null> {
+  const match = /^([gqs]):(-?\d+)$/.exec(target);
+  if (!match) return null;
+  const key = Number(match[2]);
+  if (match[1] === "s") {
+    const scene = await ctx.store.getScene(key);
+    if (!scene || scene.owner !== user.id || scene.status !== "active") return null;
+    await ctx.store.setSceneWakeLimit(user.id, key, limit);
+    return sceneScreen(ctx, user, { ...scene, wake_limit: limit });
+  }
+  const claim = await ctx.store.getClaudeChat(key);
+  if (claim?.user_id !== user.id) return null;
+  await ctx.store.setClaudeOthersLimit(user.id, key, limit);
+  const updated = { ...claim, others_limit: limit };
+  if (match[1] === "q") {
+    const chat = await ctx.store.guestChatByKey(key);
+    return chat ? guestChatScreen(user, chat, updated) : null;
+  }
+  const grant = (await ctx.store.listGrants(user.id)).find((g) => g.chat_id === key);
+  return grant ? groupScreen(ctx, user, grant) : null;
 }
 
 /**

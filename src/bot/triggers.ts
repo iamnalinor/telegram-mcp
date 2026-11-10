@@ -20,6 +20,10 @@
  * times an hour; a message posted as a channel or the chat is always someone
  * else's. Each start goes into the chat's log in the menu; failures go to the
  * holder's private chat, never into the chat itself.
+ *
+ * Scenes (src/scenes/wake.ts) keep the same promise: the owner's wakes go to
+ * the session that made the scene, other members' to one of their own, and a
+ * session a scene woke is no chat's session of the day.
  */
 
 import { nowSeconds } from "../crypto";
@@ -38,7 +42,7 @@ import { escapeHtml, texts } from "./texts";
 /** A reply this long after a wait ended is a new task, not the answer. */
 const AWAIT_GRACE = 60;
 /** Starts in all, per user per hour: Anthropic allows a routine about 30. */
-const USER_PER_HOUR = 30;
+export const USER_PER_HOUR = 30;
 /** How much of the message the log keeps. */
 const EXCERPT_LENGTH = 20;
 /** A private-chat message this soon after a start is read by that session. */
@@ -200,7 +204,12 @@ export async function maybeStart(
 }
 
 /** Messages to the holder's private chat, in their language, naming the chat when it is a group. */
-async function holderVoice(ctx: BotContext, holder: number, chatId: number, title: string | null) {
+export async function holderVoice(
+  ctx: Pick<BotContext, "store" | "api">,
+  holder: number,
+  chatId: number,
+  title: string | null,
+) {
   const owner = await ctx.store.getUser(holder);
   const t = texts(owner?.language);
   const tell = (text: string) =>

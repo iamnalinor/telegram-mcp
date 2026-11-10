@@ -239,6 +239,11 @@ allowlist.
 | `answer_session`      | Answer a session that asked you                                            |
 | `get_guest_call`      | Read a call from a chat the bot is not in                                  |
 | `answer_guest`        | Answer it, by editing the bot's one message there                          |
+| `scene_guide`         | The scene language in brief, and ready scenes to adapt (see Scenes)        |
+| `create_scene`        | A message the bot runs by itself: state, screens, rules; or a dry run      |
+| `get_scene`           | A scene's state, its creator's note and its latest events                  |
+| `update_scene`        | Change a scene's state, fire one of its `act:` rules, or finish it         |
+| `wait_for_scene`      | Wait for the next event a scene logs or wakes Claude with                  |
 
 Every send returns a `t.me` link Claude can hand you. Buttons are recorded when pressed;
 reactions on the bot's messages are recorded too (in groups, that needs the bot to be an admin).
@@ -258,6 +263,73 @@ What Telegram added in Bot API 10 is used where it helps:
   what the widget shows with `set_widget_state`.
 - **Polls**: quizzes with several right answers, a description, revoting, options added by
   members, hidden results, a closing time.
+
+## Scenes
+
+A scene is a message the bot runs by itself. Claude describes it once — its state, how the
+message looks, and rules for each press, vote, reply or reaction — and goes. From then on the
+Worker takes every event, changes the state, redraws the message and answers whoever pressed,
+without a session. Claude is woken only where its own rules call `wake()`.
+
+On it: a who's-coming list, a checklist, a board for a long task with Pause and Stop, a triage of
+findings that wakes Claude when you press Done, a pinned control panel, tic-tac-toe, a quiz, mafia
+with Claude as host. `scene_guide` hands out these as presets to adapt.
+
+```json
+{
+  "title": "Lunch?",
+  "state": { "yes": {} },
+  "view": {
+    "text": "**Coming:** {len(yes)} {join(values(yes))}",
+    "buttons": [
+      [
+        { "text": "Me", "press": "me" },
+        { "text": "Ask Claude", "press": "ask" }
+      ]
+    ]
+  },
+  "rules": [
+    { "on": "press:me", "do": ["yes[user.id] = user.name"] },
+    { "on": "press:ask", "who": "owner", "do": ["wake('ask')"] }
+  ]
+}
+```
+
+The rules are written in a small language of its own (paths, arithmetic, `?:`, a few dozen pure
+functions), parsed once when the scene is created and run with a step budget — never `eval`. Names
+and replies from the chat are shown as text, never as markup, and reach Claude fenced as data.
+
+**Who can press what.** Anyone in the chat can press a button whose rule says `anyone`; `owner`
+rules answer only you. Every press gets an answer: the rule's own, or why not ("not now", "only for
+@you", "out of date" for an old keyboard or forged button data, "not so fast" past 10 events in 10
+seconds per person).
+
+**Waking Claude.** A rule with `wake()` runs only if the wake may happen: it is your press, or the
+chat is a group where you hold Claude on tag with «Others too» on; your routine is set up (or the
+relay is up and knows the session to wake); and the limits allow it — the scene's own wakes an hour
+(10 by default; change it in the menu: chat → 🎬 Scenes) and the starts every tag shares. Otherwise
+the press is refused and nothing changes. The scene's own limit starts afresh if a scene is finished
+and created again; the shared limits do not.
+
+Like a group's sessions of the day, a scene keeps two audiences apart. Your wakes go into the
+session that made the scene, through the relay, or start your routine. Other members' wakes never go
+into that session: the first starts a session of its own for them, and later ones go there through
+the relay (or start the routine again without it). A session that drives its scene with
+`update_scene` `act` may wake only itself, and is never taken for you. Each wake is a start in the
+chat's log (📜 Starts, in a group where you hold Claude on tag).
+
+**Cost.** A press that changes something is one Worker request; it reads the scene's row and, for
+each of its live messages, the stored copy, and writes two rows: the scene and the redrawn message's
+record. A press within a second of the last edit writes two more when the held-back edit is made. A
+refused press writes nothing, and a press that changes nothing writes nothing (except once a day, to
+mark the scene as in use). `log()` and `wake()` write one more row each; a scene keeps its latest 200
+events. Edits keep to one a second per message. Up to 20 active scenes per person per chat; a scene
+nobody used for `RETENTION_DAYS` ends and is deleted a retention later, and its messages are kept as
+long as it is. Scenes end when you lose access to the group or `/disconnect`.
+
+Scenes were tested against a fake Bot API only. On a live bot, check: the ephemeral reply to a press
+(`whisper`), poll updates reaching the bot, `setChatMemberTag` (`tag`, needs the bot to be an admin
+with that right), and how fast Telegram lets a busy scene be edited.
 
 ## Memory
 
@@ -301,7 +373,7 @@ What starts a session:
   work in never hears a third party.
 - **Any chat the bot is not in** (guest mode): tag the bot there, or reply to its message. Telegram
   hands the bot that one message and the one it replied to — no history, no members — and lets it
-  post one message per call, which Claude then edits: «✍️ Answering…» at once, the answer when
+  post one message per call, which Claude then edits: Claude Code's «✻ Clauding…» at once, the answer when
   ready. Such a chat is connected like a group: the first call there by someone who may use the bot
   and has a routine binds the chat to them. From then on their routine answers there, and other
   people's calls count only if they turn "Others too" on for that chat (🤖 Claude on tag → 🕊 Guest
@@ -401,6 +473,8 @@ low:
 - `messages` has no secondary index (each index entry is one more billed row).
 - OAuth codes, tokens and file links are signed, not stored.
 - Command answers go back in the webhook response itself, without a separate Bot API call.
+- A scene writes two rows per press that changes it (the scene and its redrawn message), and nothing
+  for one that does not.
 
 Reads are cheaper but not free: a keyword search scans the stored messages of the chats and time
 window it covers (pass `since` and it starts at that day), so searching a very busy group hundreds

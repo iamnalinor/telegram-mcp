@@ -40,6 +40,8 @@ class FakeTelegram {
   chats = new Map<number, Record<string, unknown>>();
   files = new Map<string, { path: string; bytes: Uint8Array }>();
   privacyOn = false;
+  /** What the next die shows. */
+  diceValue = 4;
   /** Business connection id → the account it acts for. */
   businessOwners = new Map<string, { id: number; first_name: string }>();
   private nextId = 1000;
@@ -111,8 +113,13 @@ class FakeTelegram {
       }),
     );
     this.handlers.set("sendPoll", (params) =>
-      send(params, { poll: { question: params.question, options: [] } }),
+      send(params, { poll: { id: `poll-${this.nextId}`, question: params.question, options: [] } }),
     );
+    this.handlers.set("sendDice", (params) =>
+      send(params, { dice: { emoji: params.emoji ?? "🎲", value: this.diceValue } }),
+    );
+    this.handlers.set("stopPoll", () => ({ id: "x", question: "", options: [] }));
+    this.handlers.set("setChatMemberTag", () => true);
     this.handlers.set("copyMessage", () => ({ message_id: this.nextId++ }));
     this.handlers.set("editMessageText", () => true);
     this.handlers.set("editMessageReplyMarkup", () => true);
@@ -182,7 +189,12 @@ class FakeTelegram {
       return Response.json({ ok: true, result: handler(params) });
     } catch (error) {
       if (error instanceof TgError)
-        return Response.json({ ok: false, error_code: error.code, description: error.description });
+        return Response.json({
+          ok: false,
+          error_code: error.code,
+          description: error.description,
+          ...(error.parameters ? { parameters: error.parameters } : {}),
+        });
       throw error;
     }
   }
@@ -192,6 +204,7 @@ export class TgError extends Error {
   constructor(
     readonly code: number,
     readonly description: string,
+    readonly parameters?: { retry_after?: number },
   ) {
     super(description);
   }
@@ -540,6 +553,8 @@ export class Harness {
       body: JSON.stringify({ jsonrpc: "2.0", id: this.rpcId++, method, params }),
     });
     const raw = await response.text();
+    // A streamed answer runs the tool while the body is read: what it deferred settles now.
+    await Promise.allSettled(this.waits);
     const data = raw.includes("data:")
       ? raw
           .split("\n")

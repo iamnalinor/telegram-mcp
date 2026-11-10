@@ -38,6 +38,7 @@ import {
 import { botIdentity } from "./telegram/api";
 import type { WebhookInfo } from "./telegram/types";
 import type { ToolContext } from "./tools/common";
+import { drawFinished, endScene } from "./bot/scenes";
 import { stillMember } from "./bot/triggers";
 
 /**
@@ -92,7 +93,12 @@ ${row("Your Telegram ID", `send /start to <a href="https://t.me/${bot}">the bot<
   );
 }
 
-async function handleMcp(request: Request, env: Env, core: Base): Promise<Response> {
+async function handleMcp(
+  request: Request,
+  env: Env,
+  core: Base,
+  defer: (promise: Promise<unknown>) => void,
+): Promise<Response> {
   const deps = await oauthDeps(core, env);
   const authInfo = await authorizeMcpRequest(request, deps);
   if (authInfo instanceof Response) return authInfo;
@@ -108,10 +114,15 @@ async function handleMcp(request: Request, env: Env, core: Base): Promise<Respon
     name,
     client,
   });
+  // A scene's held-back redraw finishes after the answer is sent.
+  toolCtx.defer = defer;
   return handler.fetch(request, {
     authInfo: { ...authInfo, extra: { ...authInfo.extra, toolContext: toolCtx } },
   });
 }
+
+/** Scenes ended per daily run: each may be an edit, and a Worker run makes only so many calls. */
+const IDLE_SCENES_PER_RUN = 30;
 
 /** Must match the second cron in wrangler.jsonc. */
 const RELAY_SWEEP = "*/5 * * * *";
@@ -135,7 +146,15 @@ export default {
     }
 
     if (pathname === WEBHOOK_PATH) {
-      return handleWebhook(request, () => botContext(core, publicOrigin(request)), core);
+      return handleWebhook(
+        request,
+        () =>
+          botContext(core, publicOrigin(request), {
+            defer: (promise) => ctx.waitUntil(promise),
+            sceneLimit: env.SCENE_LIMIT,
+          }),
+        core,
+      );
     }
 
     if (isOAuthPath(pathname)) {
@@ -175,7 +194,7 @@ export default {
         !request.headers.has("authorization") &&
         (request.headers.get("accept") ?? "").includes("text/html");
       if (browser) return statusPage(request, core);
-      return handleMcp(request, env, core);
+      return handleMcp(request, env, core, (promise) => ctx.waitUntil(promise));
     }
 
     return new Response(null, { status: 404 });
@@ -192,6 +211,20 @@ export default {
     const cutoff = nowSeconds() - core.config.retentionDays * 86_400;
     const purged = await core.store.purge(cutoff);
     console.log(JSON.stringify({ event: "retention_purge", purged, cutoff }));
+
+    // Scenes nobody touched within retention end (their buttons go, where Telegram
+    // still lets the bot edit); finished ones go a retention later.
+    // A finished scene whose last drawing Telegram held back is drawn now.
+    const idle = await core.store.idleScenes(cutoff, IDLE_SCENES_PER_RUN);
+    const undrawn = await core.store.undrawnScenes(IDLE_SCENES_PER_RUN);
+    if (idle.length || undrawn.length) {
+      const bot = await botContext(core, (await core.store.getMeta("public_origin")) ?? "");
+      const failed = (scene: number) => (error: unknown) =>
+        console.error(JSON.stringify({ event: "scene_end_failed", scene, error: String(error) }));
+      for (const scene of idle) await endScene(bot, scene).catch(failed(scene));
+      for (const scene of undrawn) await drawFinished(bot, scene).catch(failed(scene));
+    }
+    await core.store.dropFinishedScenes(cutoff);
 
     // Someone taken off ALLOWED_USER_IDS keeps no personal chats here, even if Telegram stays quiet.
     for (const userId of await core.store.businessUsers()) {
