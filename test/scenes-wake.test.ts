@@ -121,7 +121,7 @@ describe("waking the session", () => {
     ).json<{ session: string; text: string }[]>();
     expect(jobs).toHaveLength(1);
     expect(jobs[0].session).toBe(SESSION);
-    const tag = /<(tg-\w+)>/.exec(jobs[0].text)![1];
+    const tag = /<(tg-[\w-]+)>/.exec(jobs[0].text)![1];
     const inside = jobs[0].text.slice(
       jobs[0].text.indexOf(`<${tag}>`),
       jobs[0].text.indexOf(`</${tag}>`),
@@ -206,7 +206,7 @@ describe("waking the session", () => {
     const [job] = await (
       await h.fetch("/relay/jobs", { headers: { authorization: `Bearer ${token}` } })
     ).json<{ text: string }[]>();
-    const tag = /\n<(tg-\w+)>\n/.exec(job.text)![1];
+    const tag = /\n<(tg-[\w-]+)>\n/.exec(job.text)![1];
     expect(tag).not.toBe("tg-x");
     expect(tag).not.toBe("tg-abc");
     const inside = job.text.slice(job.text.indexOf(`<${tag}>`), job.text.indexOf(`</${tag}>`));

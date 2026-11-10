@@ -40,6 +40,8 @@ class FakeTelegram {
   chats = new Map<number, Record<string, unknown>>();
   files = new Map<string, { path: string; bytes: Uint8Array }>();
   privacyOn = false;
+  /** What the next die shows. */
+  diceValue = 4;
   /** Business connection id → the account it acts for. */
   businessOwners = new Map<string, { id: number; first_name: string }>();
   private nextId = 1000;
@@ -111,8 +113,13 @@ class FakeTelegram {
       }),
     );
     this.handlers.set("sendPoll", (params) =>
-      send(params, { poll: { question: params.question, options: [] } }),
+      send(params, { poll: { id: `poll-${this.nextId}`, question: params.question, options: [] } }),
     );
+    this.handlers.set("sendDice", (params) =>
+      send(params, { dice: { emoji: params.emoji ?? "🎲", value: this.diceValue } }),
+    );
+    this.handlers.set("stopPoll", () => ({ id: "x", question: "", options: [] }));
+    this.handlers.set("setChatMemberTag", () => true);
     this.handlers.set("copyMessage", () => ({ message_id: this.nextId++ }));
     this.handlers.set("editMessageText", () => true);
     this.handlers.set("editMessageReplyMarkup", () => true);

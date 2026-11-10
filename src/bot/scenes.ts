@@ -376,7 +376,10 @@ async function attempt(
       else later(ctx, row.id);
     }
     const current: SceneRow = changed ? { ...row, ...patch, version: row.version + 1 } : row;
-    return { ...(await perform(ctx, current, event, result.effects, wake)), applied: true };
+    return {
+      ...(await perform(ctx, current, event, result.effects, wake, press?.query.id)),
+      applied: true,
+    };
   }
   return { text: t.sceneFailed };
 }
@@ -388,10 +391,20 @@ async function perform(
   event: SceneEvent,
   effects: Effect[],
   wake: Wake,
+  callbackId?: string,
 ): Promise<Answer> {
   let answer: Answer = {};
+  const out = new Outbox(ctx, row);
   for (const effect of effects) {
     switch (effect.kind) {
+      case "post":
+      case "poll":
+      case "close_poll":
+      case "dice":
+      case "tag":
+      case "whisper":
+        await out.send(effect, event, callbackId);
+        break;
       case "toast":
         answer = { text: effect.text };
         break;
@@ -429,11 +442,176 @@ async function perform(
       case "show":
       case "finish":
         break;
-      default:
-        await recordError(ctx, row, event.user, effect.kind, "not supported yet");
     }
   }
+  await out.save();
   return answer;
+}
+
+/** Posts a minute per scene; a die counts as one. */
+const POSTS_PER_MINUTE = 5;
+/** Live messages a scene may have, the main one included. */
+const LIVE_MESSAGES = 3;
+const DICE_EVENT = "dice";
+
+/**
+ * The actions that talk to Telegram, carried out after the commit. What
+ * Telegram refuses is recorded for the session to see; the state stays.
+ */
+class Outbox {
+  private posts: number[];
+  private messages: SceneMessage[];
+  private poll: { message_id: number; poll_id: string } | null;
+  private changed = false;
+  private readonly main: number | undefined;
+
+  constructor(
+    private readonly ctx: SceneContext,
+    private readonly row: SceneRow,
+  ) {
+    const now = nowSeconds();
+    this.posts = ((row.posts ? JSON.parse(row.posts) : []) as number[]).filter((t) => t > now - 60);
+    this.messages = loaded(row).messages;
+    this.poll = row.poll ? (JSON.parse(row.poll) as { message_id: number; poll_id: string }) : null;
+    this.main = this.messages[0]?.id;
+  }
+
+  private where(): Record<string, unknown> {
+    return {
+      chat_id: this.row.chat_id,
+      ...(this.row.thread_id ? { message_thread_id: this.row.thread_id } : {}),
+      ...(this.main
+        ? { reply_parameters: { message_id: this.main, allow_sending_without_reply: true } }
+        : {}),
+    };
+  }
+
+  /** One more post this minute, if the limit allows it. */
+  private spend(): boolean {
+    if (this.posts.length >= POSTS_PER_MINUTE) return false;
+    this.posts.push(nowSeconds());
+    this.changed = true;
+    return true;
+  }
+
+  private async keep(message: Message, text: string): Promise<void> {
+    const stored = toStored(message, this.ctx.bot);
+    stored.outgoing = true;
+    stored.mentions_bot = false;
+    stored.text = text || stored.text;
+    stored.sent_by = this.row.owner;
+    stored.session_id = this.row.session_id;
+    await this.ctx.store.insertMessage(stored, "always");
+  }
+
+  async send(effect: Effect, event: SceneEvent, callbackId: string | undefined): Promise<void> {
+    try {
+      await this.perform(effect, event, callbackId);
+    } catch (error) {
+      if (!(error instanceof TelegramError)) throw error;
+      await recordError(this.ctx, this.row, event.user, effect.kind, error.description);
+    }
+  }
+
+  private async perform(effect: Effect, event: SceneEvent, callbackId: string | undefined) {
+    const refuse = (why: string) => recordError(this.ctx, this.row, event.user, effect.kind, why);
+    switch (effect.kind) {
+      case "whisper": {
+        // An ephemeral reply to the press (Bot API 10.4): only the presser sees it.
+        if (!callbackId) return refuse("whisper() answers a press only");
+        await this.ctx.api.call("sendMessage", {
+          chat_id: this.row.chat_id,
+          text: effect.text,
+          ephemeral_message_parameters: { callback_query_id: callbackId },
+        });
+        return;
+      }
+      case "post": {
+        if (!this.spend()) return refuse(`at most ${POSTS_PER_MINUTE} posts a minute`);
+        if (effect.view) {
+          if (this.messages.length >= LIVE_MESSAGES) {
+            return refuse(`a scene has at most ${LIVE_MESSAGES} live messages`);
+          }
+          const sent = await sendView(this.ctx, this.row, effect.view, { replyTo: this.main });
+          this.messages.push({ id: sent.message_id, view: effect.view });
+          return;
+        }
+        // Sent as written: a member's name in it must not become markup.
+        const sent = await this.ctx.api.call<Message>("sendMessage", {
+          ...this.where(),
+          text: effect.text,
+          link_preview_options: { is_disabled: true },
+        });
+        await this.keep(sent, effect.text ?? "");
+        return;
+      }
+      case "poll": {
+        if (this.poll) return refuse("a scene has one open poll: close_poll() first");
+        if (!this.spend()) return refuse(`at most ${POSTS_PER_MINUTE} posts a minute`);
+        const sent = await this.ctx.api.call<Message & { poll?: { id: string } }>("sendPoll", {
+          ...this.where(),
+          question: effect.question,
+          options: effect.options.map((option) => ({ text: option })),
+          is_anonymous: effect.opts.anonymous === true,
+          allows_multiple_answers: effect.opts.multiple === true,
+        });
+        await this.keep(sent, `📊 ${effect.question}`);
+        if (sent.poll?.id) {
+          this.poll = { message_id: sent.message_id, poll_id: sent.poll.id };
+          await this.ctx.store.linkScene("poll", sent.poll.id, this.row.id);
+          this.changed = true;
+        }
+        return;
+      }
+      case "close_poll": {
+        if (!this.poll) return refuse("there is no open poll");
+        const poll = this.poll;
+        this.poll = null;
+        this.changed = true;
+        await this.ctx.api.call("stopPoll", {
+          chat_id: this.row.chat_id,
+          message_id: poll.message_id,
+        });
+        return;
+      }
+      case "dice": {
+        // A die's own event may not throw another: no chain of throws.
+        if (event.on === DICE_EVENT) return refuse("a dice event cannot throw dice");
+        if (!this.spend()) return refuse(`at most ${POSTS_PER_MINUTE} posts a minute`);
+        const sent = await this.ctx.api.call<Message & { dice?: { emoji: string; value: number } }>(
+          "sendDice",
+          { ...this.where(), emoji: effect.emoji },
+        );
+        await this.save();
+        if (sent.dice) {
+          await applyEvent(this.ctx, this.row.id, {
+            on: DICE_EVENT,
+            user: event.user,
+            event: { value: sent.dice.value, emoji: sent.dice.emoji },
+          });
+        }
+        return;
+      }
+      case "tag":
+        await this.ctx.api.call("setChatMemberTag", {
+          chat_id: this.row.chat_id,
+          user_id: effect.userId,
+          tag: effect.text,
+        });
+        return;
+    }
+  }
+
+  /** Posts, live messages and the open poll: kept beside the state, not part of it. */
+  async save(): Promise<void> {
+    if (!this.changed) return;
+    this.changed = false;
+    await this.ctx.store.updateSceneExtras(this.row.id, {
+      posts: JSON.stringify(this.posts),
+      messages: JSON.stringify(this.messages),
+      poll: this.poll ? JSON.stringify(this.poll) : null,
+    });
+  }
 }
 
 /** A failure the session should see in get_scene: an action Telegram refused, a rule that broke. */

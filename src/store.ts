@@ -2553,6 +2553,17 @@ export class Store {
       .run();
   }
 
+  /** What a scene's actions keep beside its state: recent posts, live messages, the open poll. */
+  async updateSceneExtras(
+    id: number,
+    extras: { posts: string; messages: string; poll: string | null },
+  ): Promise<void> {
+    await this.db
+      .prepare("UPDATE scenes SET posts = ?, messages = ?, poll = ? WHERE id = ?")
+      .bind(extras.posts, extras.messages, extras.poll, id)
+      .run();
+  }
+
   /** Take the owed redraw: true for exactly one of those who ask. */
   async claimRedraw(id: number): Promise<boolean> {
     const result = await this.db
