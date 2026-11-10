@@ -472,13 +472,30 @@ describe("schema upgrade", () => {
       ensureSchema(new SqliteD1Proxy(db).asD1()),
       ensureSchema(new SqliteD1Proxy(db).asD1()),
     ]);
-    expect(version(db)).toBe("18");
+    expect(version(db)).toBe("19");
     const stored = await new Store(db.asD1()).getMessage(
       { account_id: BOT_ACCOUNT, chat_id: -100 },
       7,
     );
     expect(stored?.as_chat).toBe(false);
     expect(stored?.via_bot).toBeNull();
+  });
+
+  it("gives a v18 database the scene library", async () => {
+    const { SqliteD1 } = await import("./sqlite-d1");
+    const { ensureSchema } = await import("../src/schema");
+    const db = new SqliteD1();
+    await ensureSchema(db.asD1());
+    db.raw
+      .exec(`ALTER TABLE scenes DROP COLUMN template_id; ALTER TABLE scenes DROP COLUMN template_version;
+      DROP TABLE scene_templates; DROP TABLE scene_template_history;
+      UPDATE meta SET value = '18' WHERE key = 'schema_version';`);
+    await ensureSchema(new SqliteD1Proxy(db).asD1());
+    expect(version(db)).toBe("19");
+    db.raw
+      .exec(`INSERT INTO scene_templates (owner, name, title, definition, created, updated, used)
+      VALUES (1, 'a', 'A', '{}', 1, 1, 1);
+      UPDATE scenes SET template_id = 1, template_version = 1;`);
   });
 
   it("brings a database made by schema v1 up to date", async () => {
@@ -494,7 +511,7 @@ describe("schema upgrade", () => {
     await ensureSchema(db.asD1());
     const columns = db.raw.query("PRAGMA table_info(users)").all() as { name: string }[];
     expect(columns.map((c) => c.name)).toContain("connected_at");
-    expect(version(db)).toBe("18");
+    expect(version(db)).toBe("19");
     expect(
       db.raw.query("SELECT name FROM sqlite_master WHERE name = 'refresh_sessions'").get(),
     ).not.toBeNull();
@@ -511,7 +528,7 @@ describe("schema upgrade", () => {
       ${V2_TABLES}`);
     // Two isolates racing on the upgrade: the table must be rebuilt once, not twice.
     await Promise.all([ensureSchema(db.asD1()), ensureSchema(new SqliteD1Proxy(db).asD1())]);
-    expect(version(db)).toBe("18");
+    expect(version(db)).toBe("19");
 
     const store = new Store(db.asD1());
     const ref = { account_id: BOT_ACCOUNT, chat_id: -100 };

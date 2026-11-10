@@ -244,6 +244,10 @@ allowlist.
 | `get_scene`           | A scene's state, its creator's note and its latest events                  |
 | `update_scene`        | Change a scene's state, fire one of its `act:` rules, or finish it         |
 | `wait_for_scene`      | Wait for the next event a scene logs or wakes Claude with                  |
+| `list_saved_scenes`   | Your saved scenes: every scene created is saved, to reuse or adapt         |
+| `get_saved_scene`     | A saved scene's definition, or one of its earlier versions                 |
+| `save_scene`          | Save a definition under a name, change a saved one (versioned), rename it  |
+| `delete_saved_scene`  | Delete a saved scene and its earlier versions                              |
 
 Every send returns a `t.me` link Claude can hand you. Buttons are recorded when pressed;
 reactions on the bot's messages are recorded too (in groups, that needs the bot to be an admin).
@@ -326,6 +330,21 @@ mark the scene as in use). `log()` and `wake()` write one more row each; a scene
 events. Edits keep to one a second per message. Up to 20 active scenes per person per chat; a scene
 nobody used for `RETENTION_DAYS` ends and is deleted a retention later, and its messages are kept as
 long as it is. Scenes end when you lose access to the group or `/disconnect`.
+
+**Saved scenes.** Every scene Claude creates is saved in your library, as written, under a name
+from its title (`counter`, `кто-идёт`, `हिंदी-क्विज़`, `counter-2` when the name is taken; `save_as`
+picks one). A definition already saved is not saved twice, nor is one that differs from a saved one
+only in its title or starting state: that is the same scene, started with other values. A later
+session lists the library before building a scene and starts one that fits with `create_scene`
+`template` (with `state` and `title` for that run), changes it for good with `save_scene` and the
+version it read — the 20 versions before it are kept — or copies and adapts it under a new name.
+
+Up to 100 saved scenes per person. What `save_scene` made, changed or renamed is kept on purpose; a
+new scene makes room only by dropping the auto-saved one unused the longest, and when all 100 were
+kept on purpose it runs without being saved. `save_scene` refuses a new name in a full library.
+Saved scenes are not Telegram history: they outlive `RETENTION_DAYS` and the scenes started from
+them, on purpose. They are your own, and go only with `delete_saved_scene`, or when you are taken off
+`ALLOWED_USER_IDS`. Built-in presets stay as they are.
 
 Scenes were tested against a fake Bot API only. On a live bot, check: the ephemeral reply to a press
 (`whisper`), poll updates reaching the bot, `setChatMemberTag` (`tag`, needs the bot to be an admin

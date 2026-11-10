@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 18;
+const SCHEMA_VERSION = 19;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -351,6 +351,8 @@ const SCHEMA: string[] = [
     posts TEXT,
     poll TEXT,
     last_query TEXT,
+    template_id INTEGER,
+    template_version INTEGER,
     created INTEGER NOT NULL,
     updated INTEGER NOT NULL
   )`,
@@ -376,6 +378,39 @@ const SCHEMA: string[] = [
     date INTEGER NOT NULL,
     woke INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (scene_id, seq)
+  ) WITHOUT ROWID`,
+
+  // Saved scenes: each user's library of definitions, as written (not
+  // compiled), to start again or change. create_scene saves every new one.
+  // `version` makes a change conditional on what its writer read; `used` is
+  // when one last started a scene, for making room in a full library, where
+  // only auto-saved ones go: `kept` marks those saved on purpose (save_scene).
+  // `shape` is a hash of the definition but for its title and state, which a
+  // start from a saved scene may change: a scene that differs only there is
+  // not saved again.
+  `CREATE TABLE IF NOT EXISTS scene_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    title TEXT NOT NULL,
+    brief TEXT,
+    definition TEXT NOT NULL,
+    version INTEGER NOT NULL DEFAULT 1,
+    uses INTEGER NOT NULL DEFAULT 0,
+    kept INTEGER NOT NULL DEFAULT 0,
+    shape TEXT,
+    created INTEGER NOT NULL,
+    updated INTEGER NOT NULL,
+    used INTEGER NOT NULL,
+    UNIQUE (owner, name)
+  )`,
+  // Earlier versions of each saved scene: the last few, to read or go back to.
+  `CREATE TABLE IF NOT EXISTS scene_template_history (
+    template_id INTEGER NOT NULL,
+    version INTEGER NOT NULL,
+    definition TEXT NOT NULL,
+    changed_at INTEGER NOT NULL,
+    PRIMARY KEY (template_id, version)
   ) WITHOUT ROWID`,
 
   // Who each personal chat is with, for listings and resolving names.
@@ -467,6 +502,13 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
       "ALTER TABLE scenes ADD COLUMN owner_name TEXT",
       "ALTER TABLE scenes ADD COLUMN last_query TEXT",
       "ALTER TABLE fires ADD COLUMN scene_id INTEGER",
+    ],
+  },
+  {
+    target: 19,
+    alter: [
+      "ALTER TABLE scenes ADD COLUMN template_id INTEGER",
+      "ALTER TABLE scenes ADD COLUMN template_version INTEGER",
     ],
   },
 ];
