@@ -955,18 +955,21 @@ export class Store {
   }
 
   /**
-   * The lowest message id that can be dated at or after `since` in each chat.
-   * Ids grow within a chat, so a scan can start there. Chats with nothing
-   * since then get +Infinity (MAX_SAFE_INTEGER): nothing to scan.
+   * The lowest message id that can be dated at or after `since` in each chat:
+   * the lowest first id of the days from then on. Not the first of those days'
+   * alone — ids mostly grow with time, but not always: a group that became a
+   * supergroup counts from 1 again, and a replied-to message is stored late.
+   * Chats with nothing since then get +Infinity (MAX_SAFE_INTEGER): nothing to
+   * scan.
    */
   async idFloors(chats: ChatRef[], since: number[]): Promise<number[]> {
     if (!chats.length) return [];
-    const results = await this.db.batch<{ first_id: number }>(
+    const results = await this.db.batch<{ first_id: number | null }>(
       chats.map((chat, index) =>
         this.db
           .prepare(
-            `SELECT first_id FROM day_marks WHERE account_id = ? AND chat_id = ? AND day >= ?
-             ORDER BY day LIMIT 1`,
+            `SELECT MIN(first_id) AS first_id FROM day_marks
+             WHERE account_id = ? AND chat_id = ? AND day >= ?`,
           )
           .bind(chat.account_id, chat.chat_id, Math.floor(since[index] / DAY)),
       ),
