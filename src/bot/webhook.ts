@@ -41,7 +41,7 @@ import { BOT_ACCOUNT, type Guard } from "../store";
 import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { handleAssistantButton, handleChatShared, handleCommand, handleRevoke } from "./commands";
 import { handleMemoryUndo, handleMenu, takeLimitAnswer } from "./menu";
-import { onGuestMessage } from "./guest";
+import { handleGuestPress, onGuestMessage } from "./guest";
 import {
   handleScenePress,
   revokeAccess,
@@ -314,6 +314,10 @@ async function onCallback(ctx: BotContext, query: CallbackQuery): Promise<Webhoo
   if (menu) return handleMenu(ctx, query, menu[1]);
 
   if (data.startsWith("s:")) return handleScenePress(ctx, query);
+
+  // A button answer_guest put on a guest call's message, with the revision of its keyboard.
+  const guest = /^g:([0-9a-z]{1,8}):(\d+)\.(\d+)$/.exec(data);
+  if (guest) return handleGuestPress(ctx, query, guest[1], Number(guest[2]), Number(guest[3]));
 
   const press = /^cb:(\d+)\.(\d+)$/.exec(data);
   if (press) return handleAssistantButton(ctx, query, Number(press[1]), Number(press[2]));

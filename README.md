@@ -242,7 +242,7 @@ allowlist.
 | `wait_for_session`    | Keep waiting for that session's answer                                     |
 | `answer_session`      | Answer a session that asked you                                            |
 | `get_guest_call`      | Read a call from a chat the bot is not in                                  |
-| `answer_guest`        | Answer it, by editing the bot's one message there                          |
+| `answer_guest`        | Answer it, by editing the bot's one message there: text, buttons, media    |
 | `scene_guide`         | The scene language in brief, and ready scenes to adapt (see Scenes)        |
 | `create_scene`        | A message the bot runs by itself: state, screens, rules; or a dry run      |
 | `get_scene`           | A scene's state, its creator's note and its latest events                  |
@@ -412,7 +412,16 @@ What starts a session:
 - **Any chat the bot is not in** (guest mode): tag the bot there, or reply to its message. Telegram
   hands the bot that one message and the one it replied to — no history, no members — and lets it
   post one message per call, which the session then edits: a placeholder at once, the answer when
-  ready. Such a chat is connected like a group: the first call there by someone who may use the bot
+  ready. That message can carry inline buttons (link, copy, or recorded presses: up to 200 a call,
+  a press on a replaced keyboard counts for nothing) and become a photo, video, GIF, audio or document
+  by URL — links and media https only, and none of them (nor copy buttons) on a call from someone
+  other than the holder, since a model acting for a third party must not be able to plant a link or
+  make Telegram fetch a URL. That restriction covers buttons, media and scenes only: a Markdown link
+  in the text is not blocked, so the model is told never to put a URL a third party supplied in the
+  text either. Or a scene can run on it (`create_scene` with `guest_call`, only on the holder's own
+  call and unless the message became media; its link buttons are https only there): presses, toasts, alerts, whispers, screens, wakes — but no post, poll or
+  die, since Telegram lets the bot send nothing else there, and no reply, reaction or vote reaches
+  it. Such a chat is connected like a group: the first call there by someone who may use the bot
   and has an assistant set up binds the chat to them. From then on their assistant answers there,
   and other people's calls count only if they turn "Others too" on for that chat (🤖 Assistant →
   🕊 Guest chats: others, their hourly limit, the log of starts, disconnect) — under the same rules

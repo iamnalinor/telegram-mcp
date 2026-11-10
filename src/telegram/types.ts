@@ -208,6 +208,8 @@ export interface CallbackQuery {
   id: string;
   from: User;
   message?: Message;
+  /** Instead of `message`: a press on an inline message, such as a guest call's answer. */
+  inline_message_id?: string;
   data?: string;
 }
 

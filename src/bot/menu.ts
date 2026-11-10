@@ -77,7 +77,7 @@ import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { fallBack } from "./fallback";
 import { OPENAI_WEBHOOK_PATH } from "./openaiWebhook";
 import { testCodex, testOpenAI, testRoutine } from "./routine";
-import { endScene, revokeAccess, signOutAll } from "./scenes";
+import { endScene, releaseChat, revokeAccess, signOutAll } from "./scenes";
 import { holderName, stillMember } from "./triggers";
 import { escapeHtml, formatDate, sessionRef, texts } from "./texts";
 
@@ -1092,7 +1092,7 @@ async function render(
     }
     const title = chat.title ?? `#${chat.id}`;
     if (guest[1] === "qx") {
-      await ctx.store.releaseClaudeChat(user.id, key);
+      await releaseChat(ctx, user.id, key);
       return { ...(await guestChatsScreen(ctx, user)), note: t.guestReleased };
     }
     if (guest[1] === "qs") return startsScreen(ctx, user, key, title, `q:${chat.id}`);
