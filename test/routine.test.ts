@@ -147,7 +147,7 @@ describe("the menu", () => {
 
     await press("m:clset");
     const ask = h.telegram.called("sendMessage").at(-1)!.params;
-    expect((ask.reply_markup as { force_reply: boolean }).force_reply).toBe(true);
+    expect(ask.reply_markup).toBeUndefined();
 
     await h.say(dm(ALICE), ALICE, `${TRIGGER} ${TOKEN}`);
     screen = await press("m:cl");
