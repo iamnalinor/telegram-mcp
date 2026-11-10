@@ -519,6 +519,22 @@ describe("what the bot reads now", () => {
         },
       ]),
     ).toBe("Title\nHello world!\na | b\n1. one");
+    expect(
+      richText([
+        {
+          type: "paragraph",
+          text: ["E = ", { type: "mathematical_expression", expression: "mc^2" }],
+        },
+        { type: "mathematical_expression", expression: "\\int x" },
+        {
+          type: "paragraph",
+          text: [{ type: "custom_emoji", custom_emoji_id: "1", alternative_text: "🔥" }, " hot"],
+        },
+        { type: "pullquote", text: "Ship it", credit: "Ann" },
+        { type: "buttons", buttons: [{ text: "Yes" }, { text: "No" }] },
+        { type: "paragraph", text: ["Tap ", { type: "button", button: { text: "here" } }] },
+      ]),
+    ).toBe("E = $mc^2$\n$\\int x$\n🔥 hot\nShip it — Ann\nYes | No\nTap here");
 
     await h.say(dm(ALICE), ALICE, "", {
       text: undefined,
