@@ -11,10 +11,13 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
+import { sessionEnvelope } from "../agents/envelopes";
+import { route } from "../agents/route";
+import { parseSession, sessionId, sessionLink } from "../agents/types";
 import { Fence, formatTime } from "../format";
-import { enqueue, parseSession, relayProblem, relayState, sessionEnvelope } from "../relay";
+import { relayProblem, relayState } from "../relay";
 import { isGuestKey, type KnownSession, type RelayOrigin } from "../store";
-import { sessionArg, sessionId, text, ToolError, toolError, type ToolContext } from "./common";
+import { sessionArg, text, ToolError, toolError, type ToolContext } from "./common";
 
 const SHOWN = 20;
 const PREVIEW = 160;
@@ -23,7 +26,8 @@ const WAIT_POLL_MS = 2000;
 const TEXT_LIMIT = 8000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const link = (id: string) => `https://claude.ai/code/${id}`;
+/** A session as the user can open it, or its id where it has no page. */
+const link = (id: string) => sessionLink(id) ?? id;
 const clip = (value: string) => {
   const flat = value.replace(/\s+/g, " ").trim();
   return flat.length > PREVIEW ? `${flat.slice(0, PREVIEW - 1)}…` : flat;
@@ -149,29 +153,35 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
         if (from === target) throw new ToolError("That is this session.");
         const origin = await originOf(ctx, from, args.on_behalf_of);
         const expectAnswer = args.expect_answer;
-        const ask = await enqueue(
-          ctx.store,
-          {
-            user_id: ctx.userId,
-            target_session: target,
-            origin,
-            from_session: from,
-            chat_id: null,
-            message_id: null,
-            thread_id: null,
-            wants_answer: expectAnswer ? 1 : 0,
-            kind: "ask",
-          },
-          (id) =>
-            sessionEnvelope({
-              user: ctx.user,
-              ask: id,
+        const routed = await route(ctx, {
+          holder: ctx.userId,
+          into: {
+            session: target,
+            job: {
               origin,
-              fromSession: from,
-              text: args.text,
-              expectAnswer,
-            }),
-        );
+              from_session: from,
+              chat_id: null,
+              message_id: null,
+              thread_id: null,
+              wants_answer: expectAnswer ? 1 : 0,
+              kind: "ask",
+            },
+            envelope: (id) =>
+              sessionEnvelope({
+                user: ctx.user,
+                ask: id,
+                origin,
+                fromSession: from,
+                text: args.text,
+                expectAnswer,
+              }),
+          },
+        });
+        if (routed.via !== "delivered") {
+          const reach = routed.via === "unreachable" ? routed.reach : "none";
+          throw new ToolError(`Not sent. Relay: ${reach}. ${relayProblem(reach, ctx.user)}`);
+        }
+        const ask = routed.ask;
         const sent = `Queued for ${link(target)} as ${ask}.`;
         if (!expectAnswer) return text(`${sent} A notice: no answer will come.`);
         const seconds = args.wait_seconds ?? WAIT_MAX_SECONDS;

@@ -40,6 +40,7 @@ import type { WebhookInfo } from "./telegram/types";
 import type { ToolContext } from "./tools/common";
 import { drawFinished, endScene } from "./bot/scenes";
 import { stillMember } from "./bot/triggers";
+import { fallBack } from "./bot/fallback";
 
 /**
  * One handler per isolate — it outlives requests. The server inside is built
@@ -174,8 +175,13 @@ export default {
     }
 
     if (pathname.startsWith("/relay/")) {
-      const response = await handleRelay(request, pathname, core.store, publicOrigin(request), () =>
-        botContext(core, publicOrigin(request)),
+      const response = await handleRelay(
+        request,
+        pathname,
+        core.store,
+        publicOrigin(request),
+        () => botContext(core, publicOrigin(request)),
+        fallBack,
       );
       if (response) return response;
     }
@@ -203,8 +209,10 @@ export default {
   async scheduled(event, env) {
     const core = await base(env);
     if (event.cron === RELAY_SWEEP) {
-      await sweepRelays(core.store, async () =>
-        botContext(core, (await core.store.getMeta("public_origin")) ?? ""),
+      await sweepRelays(
+        core.store,
+        async () => botContext(core, (await core.store.getMeta("public_origin")) ?? ""),
+        fallBack,
       );
       return;
     }

@@ -6,6 +6,7 @@
 
 import { z } from "zod";
 
+import { sessionId } from "../agents/types";
 import { AccessError, telegramChat, type Access, type ChatView } from "../access";
 import type { Config } from "../env";
 import { messageLink } from "../links";
@@ -117,21 +118,12 @@ export const topicArg = z
     "Forum topic (thread) id, from list_chats or a message's header. Omit for General / non-forum chats.",
   );
 
-/** `cse_…` (the environment) and `session_…` (links, get_session) name the same session. */
-const SESSION_ID = /^(?:session|cse)_([0-9A-Za-z]{16,64})$/;
-
 // Lenient on purpose: a malformed id is dropped rather than costing the user the message.
 export const sessionArg = z
   .string()
   .max(100)
   .optional()
   .describe("Your Claude Code session id (cse_… or session_…), if you are a cloud session.");
-
-/** One spelling in storage: session_…, as in claude.ai/code links. Anything else is dropped. */
-export function sessionId(value: string | undefined): string | null {
-  const match = value ? SESSION_ID.exec(value) : null;
-  return match ? `session_${match[1]}` : null;
-}
 
 /** A subagent's name: plain enough to travel in a start payload and a relayed line. */
 const AGENT_NAME = /^[\w.:-]{1,64}$/;

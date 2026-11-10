@@ -4,10 +4,19 @@
  * interpolated value goes through `escapeHtml`.
  */
 
+import { sessionLink } from "../agents/types";
 import type { RelayState } from "../relay";
 
 export function escapeHtml(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+/** A session under `label`: a link where it has a page, else the label and its id. */
+export function sessionRef(id: string, label: string): string {
+  const link = sessionLink(id);
+  return link
+    ? `<a href="${escapeHtml(link)}">${label}</a>`
+    : `${label} <code>${escapeHtml(id)}</code>`;
 }
 
 const en = {
@@ -302,9 +311,7 @@ const en = {
     limit: number;
   }) =>
     `🎬 <b>${escapeHtml(p.title)}</b>\n\nSet up by ` +
-    (p.session
-      ? `<a href="https://claude.ai/code/${escapeHtml(p.session)}">a session</a>`
-      : "your assistant") +
+    (p.session ? sessionRef(p.session, "a session") : "your assistant") +
     `.\nEvents logged: ${p.events}.\nWakes this hour: ${p.wakes} of ${p.limit}.`,
   buttonSceneWakes: (limit: number) => `⏱ Wakes: up to ${limit}/h`,
   buttonStopScene: "■ Stop",
@@ -621,9 +628,7 @@ const ru: Texts = {
     (lines.length ? lines.join("\n") : "Ни одной не идёт."),
   sceneScreen: (p) =>
     `🎬 <b>${escapeHtml(p.title)}</b>\n\nЗапустила ` +
-    (p.session
-      ? `<a href="https://claude.ai/code/${escapeHtml(p.session)}">сессия</a>`
-      : "твой ассистент") +
+    (p.session ? sessionRef(p.session, "сессия") : "твой ассистент") +
     `.\nСобытий в журнале: ${p.events}.\nПобудок за час: ${p.wakes} из ${p.limit}.`,
   buttonSceneWakes: (limit) => `⏱ Побудок: до ${limit}/ч`,
   buttonStopScene: "■ Остановить",

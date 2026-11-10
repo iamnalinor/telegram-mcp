@@ -25,7 +25,9 @@
 
 import { nowSeconds } from "../crypto";
 import { isAllowed } from "../env";
-import { enqueue, guestEnvelope, relayState } from "../relay";
+import { guestEnvelope } from "../agents/envelopes";
+import { activeProvider } from "../agents/route";
+import type { Delivery } from "../agents/types";
 import { redactSecrets } from "../secrets";
 import { GUEST_BASE, type ClaudeChat, type GuestCall, type GuestReply } from "../store";
 import { displayName, type Message } from "../telegram/types";
@@ -35,8 +37,6 @@ import { spinnerLine } from "./spinner";
 import { texts } from "./texts";
 import { excerptOf, holderName, launch } from "./triggers";
 
-/** Starts in all, per user per hour, as in src/bot/triggers.ts. */
-const USER_PER_HOUR = 30;
 const DAY = 86_400;
 
 /** What Telegram calls the chat: its title, or the person's name in a private one. */
@@ -187,7 +187,7 @@ export async function onGuestMessage(ctx: BotContext, message: Message): Promise
     album: null,
   };
   const claimed = await ctx.store.beginFire(entry, {
-    user: USER_PER_HOUR,
+    user: activeProvider().limits.startsPerHour,
     others: claim.others_limit,
   });
   if (claimed === "again") return;
@@ -234,45 +234,46 @@ export async function onGuestMessage(ctx: BotContext, message: Message): Promise
     toOwn ? 0 : now - (now % DAY),
     byOther,
   );
-  const online = relayState(await ctx.store.getRelay(holder)) === "online";
-  if (session && online) {
-    await enqueue(
-      ctx.store,
-      {
-        user_id: holder,
-        target_session: session,
-        origin: byOther ? "other" : "user",
-        from_session: null,
-        chat_id: key,
-        message_id: id,
-        thread_id: null,
-        wants_answer: 0,
-        kind: "guest",
-      },
-      () =>
-        guestEnvelope({
-          user: { id: holder, username: owner?.username ?? null, name: owner?.first_name ?? null },
-          call: id,
-          chat: title,
-          sender: { id: from.id, name: displayName(from) },
-          byUser: !byOther,
-        }),
-    );
-    await ctx.store.endFire(key, id, { status: "relayed", sessionId: session });
-    return;
-  }
-  await startGuest(ctx, holder, id, toOwn ? session : null);
+  const into: Delivery | null = session
+    ? {
+        session,
+        job: {
+          origin: byOther ? "other" : "user",
+          from_session: null,
+          chat_id: key,
+          message_id: id,
+          thread_id: null,
+          wants_answer: 0,
+          kind: "guest",
+        },
+        envelope: () =>
+          guestEnvelope({
+            user: {
+              id: holder,
+              username: owner?.username ?? null,
+              name: owner?.first_name ?? null,
+            },
+            call: id,
+            chat: title,
+            sender: { id: from.id, name: displayName(from) },
+            byUser: !byOther,
+          }),
+      }
+    : null;
+  await startGuest(ctx, holder, id, toOwn ? session : null, into);
 }
 
 /**
- * Start a session on a guest call: the usual way, and when the relay could
- * not pass it on. `continues`: the session whose answer the call replies to.
+ * Route a guest call: into the chat's session (`into`), else a new session —
+ * the usual way, and when the relay could not pass it on. `continues`: the
+ * session whose answer the call replies to.
  */
 export async function startGuest(
   ctx: BotContext,
   userId: number,
   id: number,
   continues: string | null,
+  into?: Delivery | null,
 ): Promise<void> {
   const call = await ctx.store.getGuestCall(userId, id);
   if (!call) return;
@@ -285,6 +286,7 @@ export async function startGuest(
     byOther: call.by_other === 1,
     continues,
     guest: true,
+    into,
   });
   if (!started) {
     const t = texts((await ctx.store.getUser(userId))?.language);

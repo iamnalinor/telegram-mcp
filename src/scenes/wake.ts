@@ -19,12 +19,13 @@
  */
 
 import type { BotContext } from "../bot/context";
-import { excerptOf, holderVoice, USER_PER_HOUR } from "../bot/triggers";
+import { sceneEnvelope } from "../agents/envelopes";
+import { activeProvider, reachable, route } from "../agents/route";
+import type { Delivery } from "../agents/types";
+import { excerptOf, holderVoice } from "../bot/triggers";
 import { nowSeconds } from "../crypto";
 import { isAllowed } from "../env";
 import { messageLink } from "../links";
-import { enqueue, relayState, sceneEnvelope } from "../relay";
-import { fire, loadRoutine, scenePayload } from "../routine";
 import type { RelayOrigin, SceneRow } from "../store";
 import type { Actor } from "./engine";
 
@@ -70,12 +71,7 @@ export async function gateWake(
   if (!source && byOther && !othersAllowed) return { ok: false, answer: "not_for_you" };
 
   if (!isAllowed(ctx.config, scene.owner)) return { ok: false, answer: "nobody" };
-  const relay = relayState(await ctx.store.getRelay(scene.owner));
-  const reachable = relay === "online" && targetOf(scene, byOther && !source) !== null;
-  if (
-    !reachable &&
-    typeof (await loadRoutine(ctx.store, ctx.config.secretKey, scene.owner)) === "string"
-  ) {
+  if ((await reachable(ctx, scene.owner, targetOf(scene, byOther && !source))) !== true) {
     return { ok: false, answer: "nobody" };
   }
 
@@ -94,7 +90,7 @@ export async function gateWake(
   };
   // The scene's limit is counted in the same statement that claims the start: wakes at once cannot all pass.
   const claimed = await ctx.store.beginFire(entry, {
-    user: USER_PER_HOUR,
+    user: activeProvider().limits.startsPerHour,
     others: claim?.others_limit ?? 0,
     scene: scene.wake_limit,
   });
@@ -151,106 +147,113 @@ export async function deliverWake(
 ): Promise<void> {
   const others = gate.byOther && !gate.source;
   const target = gate.source ? scene.session_id : targetOf(scene, others);
-  const relay = relayState(await ctx.store.getRelay(scene.owner));
-  if (relay === "online" && target) {
-    const owner = await ctx.store.getUser(scene.owner);
-    const chat = await ctx.store.getChat(scene.chat_id);
-    const main = (JSON.parse(scene.messages) as { id: number }[])[0]?.id;
-    const link = main
-      ? messageLink(
-          {
-            type: scene.chat_id > 0 ? "private" : (chat?.type ?? "supergroup"),
-            chat_id: scene.chat_id,
-            username: chat?.username ?? null,
-          },
-          main,
-          scene.thread_id,
-          ctx.bot.username,
-        )
-      : null;
-    await enqueue(
-      ctx.store,
-      {
-        user_id: scene.owner,
-        target_session: target,
-        origin: gate.source ? gate.source.origin : gate.byOther ? "other" : "user",
-        from_session: gate.source?.session ?? null,
-        // A scene's job: the scene, the event's number, and the start it was claimed as.
-        chat_id: scene.id,
-        message_id: event.seq,
-        thread_id: gate.fireId,
-        wants_answer: 0,
-        kind: "scene",
-      },
-      () =>
-        sceneEnvelope({
-          user: {
-            id: scene.owner,
-            username: owner?.username ?? null,
-            name: owner?.first_name ?? null,
-          },
-          scene: { id: scene.id, title: scene.title, brief: scene.brief },
-          event: event.name,
-          seq: event.seq,
-          chat: { id: scene.chat_id, title: chat?.title ?? null },
-          messageLink: link,
-          sender: event.actor,
-          by: gate.source ? "session" : gate.byOther ? "other" : "user",
-          ownSession: !others,
-        }),
-    );
-    await ctx.store.endFire(scene.chat_id, gate.fireId, { status: "relayed", sessionId: target });
-    return;
-  }
   const by = gate.source ? "session" : gate.byOther ? "other" : "user";
-  const started = await wakeByRoutine(ctx, scene.id, event.seq, by);
-  await ctx.store.endFire(
-    scene.chat_id,
-    gate.fireId,
-    started ? { status: "started", sessionId: started } : { status: "failed" },
-  );
+  const into: Delivery | null = target
+    ? {
+        session: target,
+        job: {
+          origin: gate.source ? gate.source.origin : gate.byOther ? "other" : "user",
+          from_session: gate.source?.session ?? null,
+          // A scene's job: the scene, the event's number, and the start it was claimed as.
+          chat_id: scene.id,
+          message_id: event.seq,
+          thread_id: gate.fireId,
+          wants_answer: 0,
+          kind: "scene",
+        },
+        envelope: async () => {
+          const owner = await ctx.store.getUser(scene.owner);
+          const chat = await ctx.store.getChat(scene.chat_id);
+          const main = (JSON.parse(scene.messages) as { id: number }[])[0]?.id;
+          const link = main
+            ? messageLink(
+                {
+                  type: scene.chat_id > 0 ? "private" : (chat?.type ?? "supergroup"),
+                  chat_id: scene.chat_id,
+                  username: chat?.username ?? null,
+                },
+                main,
+                scene.thread_id,
+                ctx.bot.username,
+              )
+            : null;
+          return sceneEnvelope({
+            user: {
+              id: scene.owner,
+              username: owner?.username ?? null,
+              name: owner?.first_name ?? null,
+            },
+            scene: { id: scene.id, title: scene.title, brief: scene.brief },
+            event: event.name,
+            seq: event.seq,
+            chat: { id: scene.chat_id, title: chat?.title ?? null },
+            messageLink: link,
+            sender: event.actor,
+            by,
+            ownSession: !others,
+          });
+        },
+      }
+    : null;
+  await wake(ctx, scene, event.seq, by, gate.fireId, into);
 }
 
 /**
- * Start the owner's routine on a scene's wake; the new session's id, or null
- * when nothing started (the owner hears why, at most once an hour for others').
- * The new session takes that audience's wakes from then on.
+ * Route a scene's wake claimed as start `fireId`: into the session it belongs
+ * to (`into`), else a new session of the owner's, which takes that audience's
+ * wakes from then on. When nothing starts the owner hears why, at most once an
+ * hour for others'. The start's row in the log says how it went.
  */
-async function wakeByRoutine(
+async function wake(
   ctx: WakeContext,
-  sceneId: number,
+  scene: SceneRow,
   seq: number,
   by: "user" | "other" | "session",
-): Promise<string | null> {
-  const scene = await ctx.store.getScene(sceneId);
-  if (!scene || !isAllowed(ctx.config, scene.owner)) return null;
-  const chat = await ctx.store.getChat(scene.chat_id);
-  const { tell, where, t } = await holderVoice(
-    ctx,
-    scene.owner,
-    scene.chat_id,
-    chat?.title ?? null,
-  );
+  fireId: number,
+  into?: Delivery | null,
+): Promise<void> {
+  const routed = await route(ctx, {
+    holder: scene.owner,
+    into,
+    start: { kind: "scene", scene: scene.id, seq, by },
+  });
+  if (routed.via === "delivered") {
+    await ctx.store.endFire(scene.chat_id, fireId, {
+      status: "relayed",
+      sessionId: routed.session,
+    });
+    return;
+  }
+  if (routed.via === "started") {
+    // A session's own act keeps its session; the others' wakes never take the owner's.
+    if (by !== "session") await ctx.store.setSceneSession(scene.id, routed.session, by === "other");
+    await ctx.store.endFire(scene.chat_id, fireId, {
+      status: "started",
+      sessionId: routed.session,
+    });
+    return;
+  }
   const quiet =
     by === "other" &&
     (await ctx.store.othersFailedSince(scene.owner, scene.chat_id, nowSeconds() - HOUR));
-  const routine = await loadRoutine(ctx.store, ctx.config.secretKey, scene.owner);
-  if (typeof routine === "string") {
-    if (!quiet) await tell(where + t.fireFailed(routine));
-    return null;
-  }
-  const result = await fire(routine.triggerId, routine.token, scenePayload(scene.id, seq, by));
-  if (!result.ok) {
+  await ctx.store.endFire(scene.chat_id, fireId, { status: "failed" });
+  if (routed.via === "unreachable") return;
+  if (routed.reason !== "none" && routed.reason !== "broken") {
     console.error(
-      JSON.stringify({ event: "scene_wake_failed", user: scene.owner, detail: result.detail }),
+      JSON.stringify({ event: "scene_wake_failed", user: scene.owner, detail: routed.detail }),
     );
-    const minutes = result.retryAfter ? Math.ceil(result.retryAfter / 60) : undefined;
-    if (!quiet) await tell(where + t.fireFailed(result.reason, minutes));
-    return null;
   }
-  // A session's own act keeps its session; the others' wakes never take the owner's.
-  if (by !== "session") await ctx.store.setSceneSession(scene.id, result.sessionId, by === "other");
-  return result.sessionId;
+  if (!quiet) {
+    const chat = await ctx.store.getChat(scene.chat_id);
+    const { tell, where, t } = await holderVoice(
+      ctx,
+      scene.owner,
+      scene.chat_id,
+      chat?.title ?? null,
+    );
+    const minutes = routed.retryAfter ? Math.ceil(routed.retryAfter / 60) : undefined;
+    await tell(where + t.fireFailed(routed.reason, minutes));
+  }
 }
 
 /**
@@ -271,14 +274,11 @@ export async function wakeFallback(
   if (job.chat_id === null || job.message_id === null) return;
   const scene = await ctx.store.getScene(job.chat_id);
   const fireId = job.thread_id;
-  const end = async (outcome: Parameters<WakeContext["store"]["endFire"]>[2]) => {
-    if (scene && fireId !== null) await ctx.store.endFire(scene.chat_id, fireId, outcome);
-  };
-  if (!scene || scene.status !== "active" || !isAllowed(ctx.config, scene.owner)) {
-    await end({ status: "failed" });
+  if (!scene || fireId === null) return;
+  if (scene.status !== "active" || !isAllowed(ctx.config, scene.owner)) {
+    await ctx.store.endFire(scene.chat_id, fireId, { status: "failed" });
     return;
   }
   const by = job.from_session ? "session" : job.origin === "user" ? "user" : "other";
-  const started = await wakeByRoutine(ctx, scene.id, job.message_id, by);
-  await end(started ? { status: "started", sessionId: started } : { status: "failed" });
+  await wake(ctx, scene, job.message_id, by, fireId);
 }

@@ -43,17 +43,18 @@
 import { nowSeconds } from "../crypto";
 import { formatTime } from "../format";
 import { isAllowed } from "../env";
-import { fallBack, relayState, relayToken, tokenHash } from "../relay";
+import { relayState, relayToken, tokenHash } from "../relay";
 import { routinePrompt, tokenOf } from "../routine";
 import { GUEST_BASE, type SceneRow } from "../store";
 import { memoryTitle } from "../tools/memory";
 import { TelegramError } from "../telegram/api";
 import type { CallbackQuery, InlineKeyboardMarkup, Message, User } from "../telegram/types";
 import { hasConnected, type BotContext, type WebhookReply } from "./context";
+import { fallBack } from "./fallback";
 import { testRoutine } from "./routine";
 import { endScene, revokeAccess, signOutAll } from "./scenes";
 import { holderName, stillMember } from "./triggers";
-import { escapeHtml, formatDate, texts } from "./texts";
+import { escapeHtml, formatDate, sessionRef, texts } from "./texts";
 
 export interface Screen {
   text: string;
@@ -433,9 +434,7 @@ async function startsScreen(
     (fire) =>
       `${STARTS_MARK[fire.status]} ${formatTime(fire.at).slice(5)} ${escapeHtml(fire.from_name ?? "?")}` +
       (fire.excerpt ? `: «${escapeHtml(fire.excerpt)}»` : "") +
-      (fire.session_id
-        ? ` — <a href="https://claude.ai/code/${escapeHtml(fire.session_id)}">${t.startsSession}</a>`
-        : ""),
+      (fire.session_id ? ` — ${sessionRef(fire.session_id, t.startsSession)}` : ""),
   );
   return {
     text:

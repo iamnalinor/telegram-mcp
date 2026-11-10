@@ -9,6 +9,7 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
+import { sessionId } from "../agents/types";
 import { telegramChat, type ChatView } from "../access";
 import { markdownToHtml, TELEGRAM_CAPTION_LIMIT, TELEGRAM_TEXT_LIMIT } from "../markdown";
 import type { StoredMessage } from "../store";
@@ -25,7 +26,6 @@ import {
   notPersonal,
   richAsPlain,
   sessionArg,
-  sessionId,
   storedButtons,
   text,
   ToolError,

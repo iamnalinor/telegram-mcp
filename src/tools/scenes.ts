@@ -10,8 +10,8 @@ import { z } from "zod";
 import { applyEvent, endScene, loaded, mergeState, startScene } from "../bot/scenes";
 import { Fence, formatTime, person } from "../format";
 import type { ChatView } from "../access";
-import { relayState } from "../relay";
-import { loadRoutine } from "../routine";
+import { reachable } from "../agents/route";
+import { sessionId } from "../agents/types";
 import { compile, DefinitionError, wakingRules, type Compiled } from "../scenes/definition";
 import { guide, PRESETS } from "../scenes/guide";
 import type { Value } from "../scenes/lang";
@@ -25,7 +25,6 @@ import {
   notPersonal,
   sentLink,
   sessionArg,
-  sessionId,
   text,
   ToolError,
   toolError,
@@ -93,10 +92,9 @@ async function accessReport(
   if (!waking.length) {
     return "Nothing in this scene wakes you: read it with get_scene or wait_for_scene.";
   }
-  const routine = await loadRoutine(ctx.store, ctx.config.secretKey, ctx.userId);
-  const relay = relayState(await ctx.store.getRelay(ctx.userId));
-  if (typeof routine === "string" && !(relay === "online" && session)) {
-    return routine === "broken"
+  const reach = await reachable(ctx, ctx.userId, session);
+  if (reach !== true) {
+    return reach === "broken"
       ? "Nothing can wake you: the user's routine can no longer be read (they must send it again). The scene still runs; read it yourself."
       : "Nothing can wake you: the user has no routine set up. The scene still runs; read it yourself.";
   }
