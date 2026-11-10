@@ -596,5 +596,12 @@ describe("the installer", () => {
       expect(check.exitCode).toBe(0);
     }
     expect(loop).toContain("runners=$RUNNERS");
+    // Sandboxed runs go inside bubblewrap, and only where it works; the user's own Codex config stays.
+    expect(loop).toContain('RUNNERS="$RUNNERS,codex-sandbox"');
+    expect(loop).toContain("--unshare-pid");
+    expect(loop).toContain("mcp_servers.tg_relay.url");
+    expect(script).toContain("packages bubblewrap");
+    expect(script).toContain("apparmor_parser -r /etc/apparmor.d/bwrap");
+    expect(script).not.toMatch(/^\s*codex mcp (?:remove|logout)/m);
   });
 });

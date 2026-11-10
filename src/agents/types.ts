@@ -51,8 +51,12 @@ export function sessionLink(id: string): string | null {
 /** What a provider needs from the bot. */
 export type AgentContext = { store: Store; config: Config };
 
-/** Why a message cannot reach an existing session now; "online" when it can. */
-export type Reach = "online" | "none" | "offline" | "login";
+/**
+ * Why a message cannot reach an existing session now; "online" when it can.
+ * `sandbox`: it would have to run sandboxed and the session does not, or the
+ * other way round (Codex) — a new session may take it.
+ */
+export type Reach = "online" | "none" | "offline" | "login" | "sandbox";
 
 interface ProviderStatus {
   /** Whether a new session can be started: set up, not set up, or set up but unreadable. */
@@ -81,9 +85,18 @@ export type StartRequest =
   /** A start from the bot's menu, to check the setup: it answers "ok" in the private chat. */
   | { kind: "test"; chat: number; message: number };
 
-/** `relay`: the relay that would run it is not there (Codex). */
+/** `relay`: the relay that would run it is not there; `sandbox`: it cannot sandbox it (Codex). */
 export type StartFailure =
-  "none" | "broken" | "token" | "missing" | "paused" | "limit" | "quota" | "relay" | "other";
+  | "none"
+  | "broken"
+  | "token"
+  | "missing"
+  | "paused"
+  | "limit"
+  | "quota"
+  | "relay"
+  | "sandbox"
+  | "other";
 
 /** Why a provider's API did not take something, and when to try again. */
 export interface Failure {

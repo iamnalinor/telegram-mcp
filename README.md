@@ -116,8 +116,9 @@ codex mcp add telegram --url https://telegram-mcp.<your-subdomain>.workers.dev/
 codex mcp login telegram
 ```
 
-Not on the machine that runs the relay for Codex (below): there each run gets its own sign-in, and
-the relay's installer removes this one.
+On the machine that runs the relay for Codex (below) this is not needed: each run gets its own
+sign-in there, under a server name of the relay's (`tg_relay`), and your own `telegram` stays as it
+is.
 
 ## Groups
 
@@ -485,13 +486,13 @@ sign-in expires or it goes quiet, you hear once, and the session that answers in
 
 The same relay can run the Codex CLI, signed in to your ChatGPT plan, as your assistant: 🤖
 Assistant → ⚙️ Codex → 📋 Install command sends the install command with `RELAY_CODEX=1`, which
-installs Codex from npm (it needs Node.js) instead of Claude Code. Then, once, on that machine:
+installs Codex from npm (it needs Node.js) instead of Claude Code, and bubblewrap for the sandbox. Then, once, on that machine:
 `codex login` and `sudo systemctl restart tg-relay`. With the relay online and running Codex,
 choose Codex in 🤖 Assistant.
 
 Codex is not signed in to the bot on that machine. Each job comes with an MCP token of its own,
 bound to its session and valid about as long as the run may last (an hour); the relay hands it to
-Codex in an environment variable (`-c mcp_servers.telegram.bearer_token_env_var=TG_MCP_TOKEN`),
+Codex in an environment variable (`-c mcp_servers.tg_relay.bearer_token_env_var=TG_MCP_TOKEN`),
 never on a command line or in the log. Whatever session id a run passes, its calls count as its
 own session, so a sandboxed run cannot speak as one of yours. The tokens hang on one sign-in,
 **Codex runs**, listed with the others; removing Codex or losing access revokes it. A Codex session
@@ -507,13 +508,33 @@ once.
 
 Codex runs with your account on that machine, so the screen sets a sandbox policy: **Others** (the
 default) sandboxes whatever a third party stands behind — their message, their scene's wake, a
-session their words went into — **All** sandboxes everything, **None** nothing. A sandboxed run
-cannot write and starts in an empty directory (`~/.tg-relay/sandbox`), but it is not isolated: it
-still runs as the relay's user and can read every file that user can, the relay's token in
-`~/.tg-relay` among them (the relay keeps it out of Codex's environment, not out of its reach).
-Run the relay as a user with nothing else to read if that matters. Otherwise Codex has full access,
-from the working directory you set (your home by default). The sandbox is set on every run,
-resumes included, and a job keeps the one it was queued with.
+session their words went into — **All** sandboxes everything, **None** nothing. Without the sandbox
+Codex has full access, from the working directory you set (your home by default).
+
+A sandboxed run is the whole `codex` process inside [bubblewrap](https://github.com/containers/bubblewrap),
+in a box of its session's own (`~/.tg-relay/sandbox/<session>`). It sees, read-only, the system's
+programs and libraries (`/usr`, `/bin`, `/lib*`), TLS roots, DNS and hosts files, a two-line
+`/etc/passwd`, and where Node and Codex are installed; and, writable, its own work directory and
+Codex home. Your home is an empty tmpfs: no files, SSH keys or the relay's token, and other
+processes are hidden (own PID namespace). It keeps the network — Codex needs the model and the bot
+— and its environment holds only `PATH`, `HOME`, `CODEX_HOME`, `LANG` and its MCP token (passed in a
+file descriptor, not on bwrap's command line). It does see your Codex login: there is no separate
+key, so `auth.json` is copied into the box for each run (a run can read it) and taken out after; a
+login the run refreshed is copied back if it is still the same account. Inside, Codex keeps its own
+read-only sandbox as a second layer where the machine allows a sandbox within a sandbox; the relay
+checks this when it starts, and where it does not work Codex runs with full access inside the box,
+bubblewrap being the boundary (checked with Codex 0.167: the nested sandbox works).
+
+A sandboxed thread lives in its box, apart from yours, and a session stays on the side it started
+on: a message that would run on the other side — a third party's reply to your thread, say — starts
+a new session that carries on, so their words never go into a thread that runs unsandboxed, and
+`message_session` from such a caller into it is refused. A job keeps the sandbox it was queued with.
+
+The installer checks that bubblewrap works (`bwrap --ro-bind / / true`). On Ubuntu 24.04 and later
+AppArmor may keep it from making a sandbox (`kernel.apparmor_restrict_unprivileged_userns=1`): the
+installer then prints a profile for `/usr/bin/bwrap` alone and the `apparmor_parser` command that
+loads it. Where bubblewrap does not work, the relay does not say it can sandbox, and sandboxed runs
+are refused — you hear why — never run without it. **None** turns the sandbox off for everyone.
 
 ## Limits
 

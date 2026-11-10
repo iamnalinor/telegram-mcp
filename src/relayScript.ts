@@ -6,18 +6,20 @@
  *
  * Run again without RELAY_TOKEN, it updates the relay and keeps its token.
  * It installs curl, jq and Claude Code if missing — with RELAY_CODEX=1, the
- * Codex CLI instead (from npm) — writes ~/.tg-relay/relay.sh and a systemd
- * service running it as the current user, and starts it. The relay only asks
- * the Worker for work, so it needs no open port, domain or public address.
- * Claude Code must be signed in once on that machine (`claude`, then /login)
- * — the relay writes to sessions as that account; Codex likewise (`codex
- * login`). Codex needs no sign-in to the bot: each run is handed a token of
- * its own with its job, bound to its session (src/relay.ts), and gets it in
- * an environment variable — never on a command line, never in the log.
+ * Codex CLI instead (from npm), and bubblewrap for sandboxed runs — writes
+ * ~/.tg-relay/relay.sh and a systemd service running it as the current user,
+ * and starts it. The relay only asks the Worker for work, so it needs no open
+ * port, domain or public address. Claude Code must be signed in once on that
+ * machine (`claude`, then /login) — the relay writes to sessions as that
+ * account; Codex likewise (`codex login`). Codex needs no sign-in to the bot:
+ * each run is handed a token of its own with its job, bound to its session
+ * (src/relay.ts), and gets it in an environment variable — never on a command
+ * line, never in the log.
  *
- * The relay says which of the two it has, and runs each job by its runner:
- * Claude's in turn, Codex's in the background — a few at a time, one per
- * session — while it keeps asking for work, which keeps it online.
+ * The relay says which of the two it has — and `codex-sandbox` when
+ * bubblewrap works there — and runs each job by its runner: Claude's in turn,
+ * Codex's in the background — a few at a time, one per session — while it
+ * keeps asking for work, which keeps it online.
  *
  * The shell's own `${…}` would clash with the template, so the scripts do
  * without it (where it must, it is spelled ${"$"}{…}).
@@ -60,12 +62,97 @@ claude_continue() { # job JSON
   echo "$(date -u +%FT%TZ) $id -> $session: $result"
 }
 
+# Sandboxed Codex runs go inside bubblewrap, each session in a box of its own: $DIR/sandbox/<session>,
+# holding its work directory and its Codex home (threads, so a resume finds them). In there the run
+# sees the system's programs and libraries, TLS roots, DNS, Node and Codex — read-only — and its box;
+# not this user's home, files or keys, the relay's token among them. It keeps the network: Codex
+# needs the model and the bot. It does see the Codex login, which it must use: copied in for the run
+# and taken out after it (a refreshed one goes back, if it is still the same account). Codex keeps
+# its own sandbox inside as a second layer when it works there, read-only; where it does not (no
+# nested user namespaces), bubblewrap is the boundary and Codex runs with full access inside it.
+# A machine where bubblewrap does not work cannot sandbox: the relay says so, and the bot does not
+# hand it sandboxed runs. Nothing falls back to running unsandboxed.
+BWRAP=$(command -v bwrap 2>/dev/null || true)
+CODEX_AUTH="${"$"}{CODEX_HOME:-$HOME/.codex}/auth.json"
+# Where Codex and the Node that runs it live, resolved: those are bound in, and nothing else of home.
+CODEX_REAL=$(readlink -f "$(command -v codex 2>/dev/null)" 2>/dev/null || true)
+BOX_BINDS=()
+BOX_PATH=/usr/local/bin:/usr/bin:/bin
+case "$CODEX_REAL" in
+  *.js)
+    BOX_BINDS+=(--ro-bind "$(dirname "$(dirname "$CODEX_REAL")")" "$(dirname "$(dirname "$CODEX_REAL")")")
+    NODE_REAL=$(readlink -f "$(command -v node 2>/dev/null)" 2>/dev/null || true)
+    if [ -n "$NODE_REAL" ]; then
+      BOX_BINDS+=(--ro-bind "$(dirname "$(dirname "$NODE_REAL")")" "$(dirname "$(dirname "$NODE_REAL")")")
+      BOX_PATH="$(dirname "$NODE_REAL"):$BOX_PATH"
+    fi
+    ;;
+  ?*) BOX_BINDS+=(--ro-bind "$CODEX_REAL" "$CODEX_REAL") ;;
+esac
+# The sandbox_mode Codex keeps inside the box; empty: this machine cannot sandbox (set at the start).
+BOX_INNER=
+
+boxed() { # box directory, seconds, command…: runs it in the box; the run's token comes in on fd 3
+  local box=$1 seconds=$2
+  shift 2
+  timeout "$seconds" "$BWRAP" --die-with-parent --new-session --unshare-pid --unshare-ipc --unshare-uts --clearenv \
+    --setenv PATH "$BOX_PATH" --setenv HOME "$HOME" --setenv CODEX_HOME "$HOME/.codex" \
+    --setenv LANG "${"$"}{LANG:-C.UTF-8}" \
+    --ro-bind /usr /usr --ro-bind-try /bin /bin --ro-bind-try /sbin /sbin \
+    --ro-bind-try /lib /lib --ro-bind-try /lib64 /lib64 --ro-bind-try /lib32 /lib32 \
+    --ro-bind-try /etc/ssl /etc/ssl --ro-bind-try /etc/ca-certificates /etc/ca-certificates \
+    --ro-bind-try /etc/pki /etc/pki --ro-bind-try /etc/resolv.conf /etc/resolv.conf \
+    --ro-bind-try /etc/hosts /etc/hosts --ro-bind-try /etc/nsswitch.conf /etc/nsswitch.conf \
+    --ro-bind "$DIR/sandbox/passwd" /etc/passwd --ro-bind "$DIR/sandbox/group" /etc/group \
+    --proc /proc --dev /dev --tmpfs /tmp --tmpfs "$HOME" "${"$"}{BOX_BINDS[@]}" \
+    --bind "$box/codex" "$HOME/.codex" --bind "$box/work" "$HOME/work" --chdir "$HOME/work" \
+    --ro-bind-data 3 /run/tg-relay/token \
+    /bin/sh -c 'TG_MCP_TOKEN=$(cat /run/tg-relay/token) && export TG_MCP_TOKEN && exec "$@"' sh "$@"
+}
+
+# Whether this machine can sandbox Codex, and how: a run of Codex in a box, then its own sandbox in it.
+box_check() {
+  local box="$DIR/sandbox/check"
+  BOX_INNER=
+  [ -n "$BWRAP" ] && [ -n "$CODEX_REAL" ] || return 0
+  printf 'root:x:0:0::/root:/bin/sh\n%s:x:%s:%s::%s:/bin/sh\n' "$(id -un)" "$(id -u)" "$(id -g)" "$HOME" >"$DIR/sandbox/passwd"
+  printf 'root:x:0:\n%s:x:%s:\n' "$(id -gn)" "$(id -g)" >"$DIR/sandbox/group"
+  mkdir -p "$box/codex" "$box/work"
+  if ! boxed "$box" 60 "$CODEX_REAL" --version </dev/null >/dev/null 2>&1 3</dev/null; then
+    echo "bubblewrap does not work here: sandboxed Codex runs are refused (run the installer again to see why)" >&2
+    return 0
+  fi
+  if boxed "$box" 60 "$CODEX_REAL" sandbox -c 'sandbox_mode="read-only"' -- /bin/true </dev/null >/dev/null 2>&1 3</dev/null; then
+    BOX_INNER=read-only
+  else
+    BOX_INNER=danger-full-access
+  fi
+}
+
+# The user's Codex login, into a box for one run, and out after it. A login the run refreshed goes
+# back to the user, unless theirs changed meanwhile or it is another account: refreshing spends the
+# old one.
+box_login() { # box directory
+  [ -f "$CODEX_AUTH" ] || return 1
+  (umask 077 && cp "$CODEX_AUTH" "$1/codex/auth.json" && cp "$CODEX_AUTH" "$1/login.was")
+}
+box_logout() { # box directory
+  local box=$1 was now
+  if [ -f "$box/codex/auth.json" ] && ! cmp -s "$box/codex/auth.json" "$box/login.was" && cmp -s "$CODEX_AUTH" "$box/login.was"; then
+    was=$(jq -r '.tokens.account_id // empty' "$box/login.was" 2>/dev/null)
+    now=$(jq -r '.tokens.account_id // empty' "$box/codex/auth.json" 2>/dev/null)
+    if [ -n "$was" ] && [ "$was" = "$now" ]; then
+      (umask 077 && cp "$box/codex/auth.json" "$CODEX_AUTH.tg-relay" && mv -f "$CODEX_AUTH.tg-relay" "$CODEX_AUTH")
+    fi
+  fi
+  rm -f "$box/codex/auth.json" "$box/login.was"
+}
+
 # A Codex thread started or carried on here; run in the background, one at a time per session.
-# Sandboxed: it cannot write, and works in an empty directory, but it still reads whatever this
-# user can. Otherwise it has the machine, from the job's directory.
+# Sandboxed: in its box, above. Otherwise it has the machine, from the job's directory.
 CODEX_MAX=3
 codex_run() { # job JSON
-  local job=$1 id runner session thread model sandbox cwd token out err pid code told= msg result
+  local job=$1 id runner session thread model sandbox cwd token out err pid code told='' msg result box=''
   id=$(printf '%s' "$job" | jq -r .id)
   runner=$(printf '%s' "$job" | jq -r .runner)
   session=$(printf '%s' "$job" | jq -r .session)
@@ -80,13 +167,21 @@ codex_run() { # job JSON
       "" | "~") cwd=$HOME ;;
       "~/"*) cwd="$HOME/$(printf '%s' "$cwd" | cut -c3-)" ;;
     esac
-  else
-    sandbox=read-only
-    cwd="$DIR/sandbox"
-  fi
-  if [ ! -d "$cwd" ]; then
-    report "$id" "$(jq -cn --arg d "$cwd" '{ok:false, error:("no such directory: " + $d)}')"
+    if [ ! -d "$cwd" ]; then
+      report "$id" "$(jq -cn --arg d "$cwd" '{ok:false, error:("no such directory: " + $d)}')"
+      return
+    fi
+  elif [ -z "$BOX_INNER" ]; then
+    report "$id" '{"ok":false,"error":"this machine cannot sandbox Codex: bubblewrap does not work here (run the installer again to see why)"}'
     return
+  elif ! [[ $session =~ ^cx_[0-9a-f]{24}$ ]]; then
+    report "$id" '{"ok":false,"error":"not a session this relay can box"}'
+    return
+  else
+    box="$DIR/sandbox/$session"
+    sandbox=$BOX_INNER
+    cwd="$HOME/work"
+    mkdir -p "$box/codex" "$box/work"
   fi
   # The bot hands out one job of a session at a time; the lock is the second guard. Codex does not
   # get its descriptor (9>&-): whatever it leaves running must not hold the session's lock.
@@ -97,21 +192,33 @@ codex_run() { # job JSON
     report "$id" '{"ok":false,"error":"another run of this session still holds its lock on the relay"}'
     return
   fi
+  if [ -n "$box" ] && ! box_login "$box"; then
+    rm -f "$lock"
+    exec 9>&-
+    report "$id" "$(jq -cn --arg f "$CODEX_AUTH" '{ok:false, error:("no Codex login in " + $f + " for a sandboxed run: run codex login on the relay machine, with its credentials kept in a file")}')"
+    return
+  fi
   # The sandbox goes as config on a resume too: Codex applies it to the turn (checked with 0.167).
   local args=(--json --skip-git-repo-check -c 'approval_policy="never"' -c "sandbox_mode=\"$sandbox\"")
   [ -n "$model" ] && args+=(-m "$model")
-  # The bot's tools, with this run's token, going without asking.
+  # The bot's tools, with this run's token, going without asking. The server's name is the relay's
+  # own: a "telegram" of the user's in their Codex config stays as it is.
   [ -n "$token" ] && args+=(
-    -c "mcp_servers.telegram.url=\"$RELAY_ORIGIN/\""
-    -c 'mcp_servers.telegram.bearer_token_env_var="TG_MCP_TOKEN"'
-    -c 'mcp_servers.telegram.default_tools_approval_mode="approve"'
+    -c "mcp_servers.tg_relay.url=\"$RELAY_ORIGIN/\""
+    -c 'mcp_servers.tg_relay.bearer_token_env_var="TG_MCP_TOKEN"'
+    -c 'mcp_servers.tg_relay.default_tools_approval_mode="approve"'
   )
+  if [ "$runner" = codex-start ]; then
+    args=(exec "${"$"}{args[@]}" -C "$cwd" -- -)
+  else
+    args=(exec resume "${"$"}{args[@]}" -- "$thread" -)
+  fi
   out=$(mktemp)
   err=$(mktemp)
-  if [ "$runner" = codex-start ]; then
-    printf '%s' "$job" | jq -r .text | (cd "$cwd" && TG_MCP_TOKEN=$token exec timeout 3000 codex exec "${"$"}{args[@]}" -C "$cwd" -- - 9>&-) >"$out" 2>"$err" &
+  if [ -n "$box" ]; then
+    printf '%s' "$job" | jq -r .text | (boxed "$box" 3000 "$CODEX_REAL" "${"$"}{args[@]}" 3<<<"$token" 9>&-) >"$out" 2>"$err" &
   else
-    printf '%s' "$job" | jq -r .text | (cd "$cwd" && TG_MCP_TOKEN=$token exec timeout 3000 codex exec resume "${"$"}{args[@]}" -- "$thread" - 9>&-) >"$out" 2>"$err" &
+    printf '%s' "$job" | jq -r .text | (cd "$cwd" && TG_MCP_TOKEN=$token exec timeout 3000 codex "${"$"}{args[@]}" 9>&-) >"$out" 2>"$err" &
   fi
   pid=$!
   # The thread's id comes first: the bot holds messages for it until it has it.
@@ -136,6 +243,7 @@ codex_run() { # job JSON
     result=$(jq -cn --arg m "$msg" --arg err "$(tail -c 400 "$err")" --arg code "$code" --arg t "$thread" \
       '{ok:false, thread:$t, error:(if $m != "" then $m elif ($err | test("^\\s*$")) then "codex exited with " + $code else $err end)}')
   fi
+  [ -n "$box" ] && box_logout "$box"
   rm -f "$out" "$err" "$lock"
   exec 9>&-
   report "$id" "$result"
@@ -145,8 +253,12 @@ codex_run() { # job JSON
 # What this machine can run: the Worker hands out only those jobs.
 RUNNERS=
 command -v claude >/dev/null 2>&1 && RUNNERS=claude
-command -v codex >/dev/null 2>&1 && RUNNERS="$RUNNERS,codex"
 mkdir -p "$DIR/sandbox" "$DIR/locks"
+if [ -n "$CODEX_REAL" ]; then
+  RUNNERS="$RUNNERS,codex"
+  box_check
+  [ -n "$BOX_INNER" ] && RUNNERS="$RUNNERS,codex-sandbox"
+fi
 START=1
 while true; do
   # With as many Codex runs as it takes going, it asks for no more until one ends.
@@ -187,12 +299,16 @@ if [ -z "${"$"}{RELAY_TOKEN:-}" ]; then
   exit 1
 fi
 CODEX="${"$"}{RELAY_CODEX:-0}"
+BOX=
 have() { command -v "$1" >/dev/null 2>&1; }
+packages() { # names…: installs them with the system's package manager, if it knows one
+  if have apt-get; then sudo apt-get update -qq </dev/null && sudo apt-get install -y -qq "$@" </dev/null
+  elif have dnf; then sudo dnf install -y -q "$@" </dev/null
+  elif have yum; then sudo yum install -y -q "$@" </dev/null
+  else return 1; fi
+}
 if ! have curl || ! have jq; then
-  if have apt-get; then sudo apt-get update -qq </dev/null && sudo apt-get install -y -qq curl jq </dev/null
-  elif have dnf; then sudo dnf install -y -q curl jq </dev/null
-  elif have yum; then sudo yum install -y -q curl jq </dev/null
-  else echo "Install curl and jq, then run this again." >&2; exit 1; fi
+  packages curl jq || { echo "Install curl and jq, then run this again." >&2; exit 1; }
 fi
 export PATH="$HOME/.local/bin:$PATH"
 if [ "$CODEX" = 1 ]; then
@@ -204,8 +320,22 @@ if [ "$CODEX" = 1 ]; then
     npm install -g @openai/codex </dev/null || sudo npm install -g @openai/codex </dev/null
     have codex || { echo "Codex was installed but is not on PATH: add npm's global bin directory to PATH and run this again." >&2; exit 1; }
   fi
+  # Sandboxed runs go inside bubblewrap. Without a working one the relay refuses them, never runs
+  # them unsandboxed: what is wrong is said at the end.
+  have bwrap || packages bubblewrap || true
+  if ! have bwrap; then
+    BOX=missing
+  elif ! bwrap --ro-bind / / true 2>/dev/null; then
+    if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null)" = 1 ]; then BOX=apparmor; else BOX=broken; fi
+  else
+    BOX=ok
+  fi
 elif ! have claude; then
-  curl -fsSL https://claude.ai/install.sh | bash </dev/null
+  # Its installer from a file: piped into bash, the </dev/null that keeps it off the terminal would replace it.
+  CLAUDE_SETUP=$(mktemp)
+  curl -fsSL https://claude.ai/install.sh -o "$CLAUDE_SETUP"
+  bash "$CLAUDE_SETUP" </dev/null
+  rm -f "$CLAUDE_SETUP"
 fi
 # The service sees only these: where claude, codex and node are, and the usual.
 RUN_PATH=/usr/local/bin:/usr/bin:/bin
@@ -253,17 +383,55 @@ if have claude; then
   fi
 fi
 if have codex; then
-  # Each run now gets a sign-in of its own from the bot: a stored one, shared by every run, goes.
+  # Each run gets a sign-in of its own from the bot, under a name of the relay's: the user's own
+  # Codex config is left as it is, a "telegram" server in it included.
   if codex mcp get telegram >/dev/null 2>&1; then
-    codex mcp logout telegram >/dev/null 2>&1 || true
-    codex mcp remove telegram >/dev/null 2>&1 || true
-    echo "Removed Codex's stored connection to the bot: the relay gives each run its own."
+    echo "Your Codex config has an MCP server named telegram (an older version of this installer set it up)."
+    echo "The relay no longer uses it: each run gets its own. Keep it for your own use, or: codex mcp remove telegram"
   fi
   echo
   echo "Sign Codex in once, here, if it is not yet:"
   echo "  codex login                (without a browser: codex login --device-auth)"
   echo "  sudo systemctl restart tg-relay"
 fi
+case "$BOX" in
+  ok) echo; echo "bubblewrap works: sandboxed Codex runs go inside it." ;;
+  missing)
+    echo
+    echo "bubblewrap (bwrap) is not installed, and this could not install it. Until it is, sandboxed Codex"
+    echo "runs are refused (with the sandbox policy None nothing needs it). Install it, then run this again."
+    ;;
+  apparmor)
+    echo
+    echo "bubblewrap is installed, but AppArmor keeps it from making a sandbox here"
+    echo "(kernel.apparmor_restrict_unprivileged_userns=1). Until that is fixed, sandboxed Codex runs are refused."
+    echo "Allow it for bwrap alone, with this profile:"
+    echo
+    cat <<PROFILE
+sudo tee /etc/apparmor.d/bwrap >/dev/null <<'EOF'
+abi <abi/4.0>,
+include <tunables/global>
+
+profile bwrap $(command -v bwrap) flags=(unconfined) {
+  userns,
+
+  include if exists <local/bwrap>
+}
+EOF
+sudo apparmor_parser -r /etc/apparmor.d/bwrap
+sudo systemctl restart tg-relay
+PROFILE
+    echo
+    echo "(Or allow it for every program: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0)"
+    ;;
+  broken)
+    echo
+    echo "bubblewrap is installed but cannot make a sandbox here (bwrap --ro-bind / / true fails): unprivileged"
+    echo "user namespaces are likely off (sysctl user.max_user_namespaces, or kernel.unprivileged_userns_clone on"
+    echo "Debian). Until it works, sandboxed Codex runs are refused (with the sandbox policy None nothing needs it)."
+    echo "Then: sudo systemctl restart tg-relay"
+    ;;
+esac
 }
 main "$@"
 `;

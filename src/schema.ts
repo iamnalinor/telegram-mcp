@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 23;
+const SCHEMA_VERSION = 24;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -250,7 +250,8 @@ const SCHEMA: string[] = [
     told TEXT,
     signin TEXT,
     token_version INTEGER,
-    origin TEXT
+    origin TEXT,
+    sandboxed INTEGER
   ) WITHOUT ROWID`,
   // The hourly cap on tasks, and a provider's sessions found by its own id.
   `CREATE INDEX IF NOT EXISTS agent_sessions_by_kind ON agent_sessions (user_id, kind, created_at)`,
@@ -584,6 +585,7 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
       "ALTER TABLE relay_jobs ADD COLUMN params TEXT",
     ],
   },
+  { target: 24, alter: ["ALTER TABLE agent_sessions ADD COLUMN sandboxed INTEGER"] },
 ];
 
 const ready = new WeakMap<D1Database, Promise<void>>();

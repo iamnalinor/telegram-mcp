@@ -95,6 +95,8 @@ export interface AgentSession {
   token_version: number | null;
   /** A task's: whom the chat session that started it acted for. */
   origin: RelayOrigin | null;
+  /** A Codex thread's: 1 when it lives in the relay's sandbox, where only sandboxed runs reach it. */
+  sandboxed: number | null;
 }
 
 /** The sign-ins the Worker's own sessions' MCP tokens hang on (src/oauth.ts `mintSessionToken`). */
@@ -1927,15 +1929,17 @@ export class Store {
    * again (a start retried) takes the row over. False when the cap is reached.
    */
   async reserveAgentSession(
-    session: Omit<AgentSession, "created_at" | "told" | "external_id">,
+    session: Omit<AgentSession, "created_at" | "told" | "external_id" | "sandboxed"> & {
+      sandboxed?: boolean;
+    },
     cap: number | null = null,
   ): Promise<boolean> {
     const now = nowSeconds();
     const result = await this.db
       .prepare(
         `INSERT INTO agent_sessions
-           (id, user_id, provider, kind, token_exp, signin, token_version, origin, created_at)
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+           (id, user_id, provider, kind, token_exp, signin, token_version, origin, created_at, sandboxed)
+         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?11
          WHERE ?10 IS NULL OR (SELECT COUNT(*) FROM agent_sessions
                                 WHERE user_id = ?2 AND kind = ?4 AND created_at >= ?9 - 3600) < ?10
          ON CONFLICT (id) DO UPDATE SET token_exp = excluded.token_exp,
@@ -1953,6 +1957,7 @@ export class Store {
         session.origin,
         now,
         cap,
+        session.sandboxed === undefined ? null : Number(session.sandboxed),
       )
       .run();
     return (result.meta.changes ?? 0) > 0;

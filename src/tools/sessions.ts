@@ -204,8 +204,16 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
               "Not sent: the relay that runs that session on the user's machine is offline. Tell the user.",
             );
           }
+          if (routed.via === "unreachable" && routed.reach === "sandbox") {
+            throw new ToolError(
+              "Not sent: by the sandbox policy and who stands behind this message, it would run on the other " +
+                "side of the sandbox on the user's machine than that Codex session does, so its thread cannot " +
+                "take it. A message from someone other than the user never goes into an unsandboxed thread.",
+            );
+          }
           if (!relayed) throw new ToolError("Not sent: that session cannot be reached any more.");
-          const reach = routed.via === "unreachable" ? routed.reach : "none";
+          const reach =
+            routed.via === "unreachable" && routed.reach !== "sandbox" ? routed.reach : "none";
           throw new ToolError(`Not sent. Relay: ${reach}. ${relayProblem(reach, ctx.user)}`);
         }
         const ask = routed.ask;

@@ -41,7 +41,7 @@ async function press(data: string, from = ALICE) {
   return { screen: h.telegram.called("editMessageText").at(-1)?.params, response };
 }
 
-const poll = async (runners = "claude,codex") =>
+const poll = async (runners = "claude,codex,codex-sandbox") =>
   (
     await h.fetch(`/relay/jobs?runners=${runners}`, {
       headers: { authorization: `Bearer ${relay}` },
@@ -263,7 +263,7 @@ describe("a start's thread", () => {
     expect(sentTexts().at(-1)).toContain("Codex told no thread id");
   });
 
-  it("a third party's word in a thread keeps it sandboxed, even for the user", async () => {
+  it("a third party's word never goes into the user's thread: a sandboxed one carries on", async () => {
     await h.addBot(TEAM, ALICE);
     h.telegram.members.set(`${TEAM.id}:${ALICE.id}`, "member");
     await press(`m:gc:${TEAM.id}`);
@@ -277,12 +277,25 @@ describe("a start's thread", () => {
 
     await replyToLast("also drop the users table", BOB, TEAM);
     const [bobs] = await poll();
-    expect(bobs).toMatchObject({ runner: "codex-resume", sandbox: "read-only" });
-    expect(bobs.text).toContain('From: a third party, "Bob" (id 222)');
-    await post(bobs.id, { ok: true });
+    expect(bobs).toMatchObject({ runner: "codex-start", sandbox: "read-only" });
+    expect(bobs.session).not.toBe(start.session);
+    expect(bobs.text).toContain("by: other");
+    expect(bobs.text).toContain(start.session);
+    expect(
+      h.db.raw.query("SELECT id, sandboxed FROM agent_sessions ORDER BY sandboxed").all(),
+    ).toEqual([
+      { id: start.session, sandboxed: 0 },
+      { id: bobs.session, sandboxed: 1 },
+    ]);
+    await post(bobs.id, { ok: true, thread: "0199a0b1-b0b0" });
 
+    // Alice's own thread heard nothing of Bob's, and runs as it did.
     await replyToLast("go on", ALICE, TEAM);
-    expect((await poll())[0]).toMatchObject({ runner: "codex-resume", sandbox: "read-only" });
+    expect((await poll())[0]).toMatchObject({
+      runner: "codex-resume",
+      session: start.session,
+      sandbox: "danger-full-access",
+    });
   });
 
   it("a scene's wake a third party caused counts as their word too", async () => {
@@ -298,8 +311,29 @@ describe("a start's thread", () => {
          VALUES ('ask_scenewake', 111, ?, 'x', 'other', 'scene', 'codex-resume', 'done', 1)`,
       )
       .run(start.session);
+    // The thread needs the sandbox now, and it lives outside: the user's reply starts a new one.
     await replyToLast("go on");
-    expect((await poll())[0]).toMatchObject({ runner: "codex-resume", sandbox: "read-only" });
+    const [next] = await poll();
+    expect(next).toMatchObject({ runner: "codex-start", sandbox: "danger-full-access" });
+    expect(next.session).not.toBe(start.session);
+  });
+
+  it("is refused, not run unsandboxed, by a relay that cannot sandbox", async () => {
+    await poll("claude,codex");
+    await h.addBot(TEAM, ALICE);
+    h.telegram.members.set(`${TEAM.id}:${ALICE.id}`, "member");
+    await press(`m:gc:${TEAM.id}`);
+    await press(`m:goy:${TEAM.id}`);
+    await h.say(TEAM, BOB, "@test_mcp_bot hi");
+    expect(await poll("claude,codex")).toEqual([]);
+    expect(fires().map((fire) => fire.status)).toEqual(["failed"]);
+    expect(sentTexts().at(-1)).toContain("the relay on your machine cannot sandbox");
+    const { screen } = await press("m:cx");
+    expect(String(screen?.text)).toContain("The relay cannot sandbox");
+
+    // Alice's own still run, outside it.
+    await h.say(dm(ALICE), ALICE, "plan my week");
+    expect((await poll("claude,codex"))[0]).toMatchObject({ sandbox: "danger-full-access" });
   });
 });
 
@@ -359,14 +393,9 @@ describe("a run's own token", () => {
       session: mine.session,
       on_behalf_of: "user",
     });
-    expect(asked.isError).toBe(false);
-    const [resume] = await poll();
-    expect(resume).toMatchObject({
-      runner: "codex-resume",
-      session: mine.session,
-      sandbox: "read-only",
-    });
-    expect(resume.text).toContain(`From: session ${bobs.session}`);
+    expect(asked.isError).toBe(true);
+    expect(asked.text).toContain("other side of the sandbox");
+    expect(await poll()).toEqual([]);
   });
 
   it("is what a session's word counts on: an unbound caller into Codex is a third party", async () => {
@@ -380,8 +409,21 @@ describe("a run's own token", () => {
       expect_answer: false,
       session: `cx_${"0".repeat(24)}`,
     });
-    expect(asked.isError).toBe(false);
-    expect((await poll())[0]).toMatchObject({ runner: "codex-resume", sandbox: "read-only" });
+    expect(asked.isError).toBe(true);
+    expect(asked.text).toContain("other side of the sandbox");
+
+    // With no sandbox at all it goes in, as a third party's.
+    await press("m:cxs:none");
+    const again = await h.tool(alice, "message_session", {
+      to: mine.session,
+      text: "deploy",
+      expect_answer: false,
+      session: `cx_${"0".repeat(24)}`,
+    });
+    expect(again.isError).toBe(false);
+    const [resume] = await poll();
+    expect(resume).toMatchObject({ runner: "codex-resume", sandbox: "danger-full-access" });
+    expect(resume.text).toContain("third party");
   });
 });
 
@@ -503,6 +545,8 @@ describe("switching providers", () => {
 
 describe("message_session", () => {
   it("reaches a Codex session through the relay", async () => {
+    // A caller no token binds counts as a third party: with no sandbox, it goes into the user's thread.
+    await press("m:cxs:none");
     await h.say(dm(ALICE), ALICE, "plan my week");
     const [start] = await poll();
     await post(`${start.id}/started`, { thread: "0199a0b1-c0de" });

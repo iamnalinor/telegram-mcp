@@ -6,9 +6,10 @@
  * Codex for the user, if it has it: each job names its runner.
  *
  *   GET  /relay/install.sh           the installer, see src/relayScript.ts
- *   GET  /relay/jobs?wait=25&runners=claude,codex&busy=codex
+ *   GET  /relay/jobs?wait=25&runners=claude,codex,codex-sandbox&busy=codex
  *                                    the relay asks for work it can run (Bearer:
- *                                    its token; no runners: Claude only), less
+ *                                    its token; no runners: Claude only; with
+ *                                    codex-sandbox: Codex sandboxed too), less
  *                                    what it has no room for now; the answer
  *                                    waits up to that long for a job; a Codex
  *                                    job comes with its run's own MCP token,
@@ -79,6 +80,14 @@ const RUNS: Record<RunnerKind, readonly Runner[]> = {
   claude: ["claude-continue"],
   codex: ["codex-start", "codex-resume"],
 };
+
+/** Said along with the runners by a relay where bubblewrap works: it can run Codex sandboxed. */
+const SANDBOX = "codex-sandbox";
+
+/** Whether the relay can run Codex in its sandbox; without it, no sandboxed run starts there. */
+export function relaySandboxes(row: RelayRow | null): boolean {
+  return (row?.runners ?? "").split(",").includes(SANDBOX);
+}
 
 /** What the relay said it can run; one too old to say runs Claude only. */
 export function relayRuns(row: RelayRow | null): RunnerKind[] {
@@ -155,10 +164,12 @@ export async function handleRelay(
   if (pathname === "/relay/jobs" && request.method === "GET") {
     const params = new URL(request.url).searchParams;
     await store.touchRelay(relay.user_id, now);
-    // What it runs; a relay too old to say runs Claude only, and stays null.
+    // What it runs, and whether it sandboxes; a relay too old to say runs Claude only, and stays null.
     const said = params.get("runners");
     const runners =
-      said === null ? null : said.split(",").filter((kind) => Object.hasOwn(RUNS, kind));
+      said === null
+        ? null
+        : said.split(",").filter((kind) => Object.hasOwn(RUNS, kind) || kind === SANDBOX);
     const stored = runners === null ? null : runners.join(",");
     if (stored !== relay.runners) await store.setRelayRunners(relay.user_id, stored);
     // A relay (re)started after a new sign-in: give it a chance before calling it broken again.

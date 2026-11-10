@@ -10,20 +10,26 @@
  *
  * Settings, kept encrypted like OpenAI's though none is secret: the model
  * (null: Codex's own default), the sandbox policy and the working directory.
- * A sandboxed run cannot write and starts in an empty directory, but it still
- * reads whatever the relay's user can; otherwise Codex has the machine, from
- * the working directory. A resume is given the sandbox afresh each time
- * (`-c sandbox_mode`, which Codex applies to the turn), so a thread may run
- * sandboxed one turn and not the next. Policy `others` (the default) sandboxes
- * whatever a third party stands behind — their message, their scene's wake, a
- * session their words went into — `all` everything, `none` nothing.
+ * A sandboxed run goes inside bubblewrap on the relay (src/relayScript.ts):
+ * it sees its own directory, the system's programs and the Codex login, not
+ * the user's files. Otherwise Codex has the machine, from the working
+ * directory. Policy `others` (the default) sandboxes whatever a third party
+ * stands behind — their message, their scene's wake, a session their words
+ * went into — `all` everything, `none` nothing.
+ *
+ * A sandboxed thread lives in the sandbox, apart from the user's own: each
+ * session is one or the other for good (`agent_sessions.sandboxed`). A message
+ * that would run on the other side than its session starts a new session that
+ * carries on — so a third party's word never goes into a thread of the
+ * user's. A relay that cannot sandbox (no working bubblewrap) is not given
+ * sandboxed runs: they fail, and nothing runs unsandboxed in their place.
  *
  * A start that fails tells the user once, and the messages queued behind it
  * fail with it: nothing falls back to another provider.
  */
 
 import { bytesToHex, decrypt, encrypt, randomId } from "../crypto";
-import { codexRelayState, enqueue } from "../relay";
+import { codexRelayState, enqueue, relaySandboxes } from "../relay";
 import type { RelayJob, Store } from "../store";
 import { payloadOf } from "./claude";
 import { MODELS } from "./openai";
@@ -84,8 +90,8 @@ export function workdirOf(text: string): string | null {
 }
 
 /**
- * What the relay runs a job with. A sandboxed run gets the relay's empty
- * directory. Fixed when the job is queued: a job waiting in the queue keeps the
+ * What the relay runs a job with. A sandboxed run gets its session's box on
+ * the relay. Fixed when the job is queued: a job waiting in the queue keeps the
  * sandbox and directory it was enqueued with, whatever the settings say later.
  */
 function paramsOf(config: CodexConfig, sandboxed: boolean): string {
@@ -126,9 +132,14 @@ export const codex: Provider = {
   async start(ctx, holder, request) {
     const config = await loadCodex(ctx.store, ctx.config.secretKey, holder);
     if (typeof config === "string") return { ok: false, reason: config, detail: config };
-    const relay = codexRelayState(await ctx.store.getRelay(holder));
+    const row = await ctx.store.getRelay(holder);
+    const relay = codexRelayState(row);
     if (relay !== "online") return { ok: false, reason: "relay", detail: `relay ${relay}` };
     const by = byOf(request);
+    const boxed = sandboxed(config, by === "other");
+    if (boxed && !relaySandboxes(row)) {
+      return { ok: false, reason: "sandbox", detail: "the relay cannot sandbox" };
+    }
     const id = `cx_${bytesToHex(crypto.getRandomValues(new Uint8Array(12)))}`;
     await ctx.store.reserveAgentSession({
       id,
@@ -139,6 +150,7 @@ export const codex: Provider = {
       signin: null,
       token_version: null,
       origin: by,
+      sandboxed: boxed,
     });
     const prompt = assistantPrompt(await username(ctx, holder), CODEX_PREAMBLE);
     await ctx.store.enqueueJob({
@@ -154,7 +166,7 @@ export const codex: Provider = {
       wants_answer: 0,
       kind: request.kind === "guest" || request.kind === "scene" ? request.kind : "reply",
       runner: "codex-start",
-      params: paramsOf(config, sandboxed(config, by === "other")),
+      params: paramsOf(config, boxed),
     });
     return { ok: true, sessionId: id, sessionUrl: null };
   },
@@ -173,6 +185,9 @@ export const codex: Provider = {
       delivery.job.origin !== "user" ||
       row.origin !== "user" ||
       (await ctx.store.sessionHeardOthers(holder, row.id));
+    // The thread is where it started: one that needs the other side takes a new session.
+    const boxed = sandboxed(config, byOther);
+    if (boxed !== (row.sandboxed === 1)) return { ok: false, reach: "sandbox" };
     const ask = await enqueue(
       ctx.store,
       {
@@ -180,7 +195,7 @@ export const codex: Provider = {
         user_id: holder,
         target_session: row.id,
         runner: "codex-resume",
-        params: paramsOf(config, sandboxed(config, byOther)),
+        params: paramsOf(config, boxed),
       },
       // The id is said again: a long thread may have lost its first message to compaction.
       async (id) => `Your session id: ${row.id}\n${await delivery.envelope(id)}`,

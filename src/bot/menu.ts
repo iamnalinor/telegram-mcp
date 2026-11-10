@@ -67,7 +67,7 @@ import {
   type CodexConfig,
 } from "../agents/codex";
 import { loadOpenAI, MODELS, saveOpenAI } from "../agents/openai";
-import { codexRelayState, relayState, relayToken, tokenHash } from "../relay";
+import { codexRelayState, relaySandboxes, relayState, relayToken, tokenHash } from "../relay";
 import { routinePrompt, tokenOf } from "../routine";
 import { GUEST_BASE, type SceneRow } from "../store";
 import { memoryTitle } from "../tools/memory";
@@ -314,6 +314,7 @@ async function codexScreen(ctx: BotContext, user: User): Promise<Screen> {
       relay: codexRelayState(relay),
       seen: relay?.last_seen ? formatDate(relay.last_seen) : null,
       ...shown,
+      boxes: relaySandboxes(relay),
     }),
     reply_markup: {
       inline_keyboard: [

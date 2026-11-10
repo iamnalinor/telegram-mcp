@@ -269,6 +269,8 @@ const en = {
     model: string | null;
     sandbox: SandboxPolicy;
     workdir: string | null;
+    /** Whether the relay can sandbox: bubblewrap works there. */
+    boxes: boolean;
   }) =>
     "<b>Codex</b>\n\nThe Codex CLI on a machine of yours, signed in to your ChatGPT plan: I hand it starts and messages through the 🛰 relay, the same one Claude uses, and it works with that machine's files.\n\n" +
     {
@@ -283,9 +285,10 @@ const en = {
       ? "⚠️ I can no longer read the saved settings: the bot's token changed. Choose them again."
       : `Model: ${p.model ? `<code>${escapeHtml(p.model)}</code>` : "Codex's default"}. Working directory: ` +
         `${p.workdir ? `<code>${escapeHtml(p.workdir)}</code>` : "the relay's home"}.\n\n` +
-        "Sandbox — a sandboxed run cannot write anything and starts in an empty directory, but it can still read every file " +
-        "the relay's user can read on the machine (the relay's own token among them); outside it Codex can do whatever " +
-        "that user can:\n" +
+        "Sandbox — a sandboxed run goes inside bubblewrap on that machine. It sees its own empty directory, the system's " +
+        "programs and your Codex login (it runs on it, so it can read it too), and keeps the network; it does not see your " +
+        "files, keys or the relay's token, and its conversations are kept apart from yours. Codex's own read-only sandbox " +
+        "applies inside it too, where the machine allows. Outside it Codex can do whatever the relay's user can:\n" +
         (["all", "others", "none"] as const)
           .map(
             (policy) =>
@@ -297,7 +300,11 @@ const en = {
                 none: "None: nothing is sandboxed — anyone you let call me runs commands there.",
               }[policy],
           )
-          .join("\n")),
+          .join("\n") +
+        (p.relay === "online" && !p.boxes && p.sandbox !== "none"
+          ? "\n\n⚠️ The relay cannot sandbox: bubblewrap does not work on that machine. Sandboxed runs are refused " +
+            "until it does — run the install command there again, it says what is wrong."
+          : "")),
   buttonSandbox: (policy: SandboxPolicy, current: boolean) =>
     `${current ? "✓ " : ""}${{ all: "🧱 All", others: "🧱 Others", none: "🧱 None" }[policy]}`,
   buttonCodexModel: (model: string | null) => `🧠 Model: ${model ?? "default"}`,
@@ -376,6 +383,9 @@ const en = {
         {
           relay:
             "the relay on your machine is offline or has no Codex. Check it: <code>systemctl status tg-relay</code>.",
+          sandbox:
+            "this run is to be sandboxed, and the relay on your machine cannot sandbox: bubblewrap does not work there. " +
+            "Run the install command there again — it says what is wrong — or set the sandbox policy to None in 🤖 Assistant → Codex.",
           limit: `too many starts this hour. Try again in ${retryMinutes ?? 60} min.`,
           none: "it is not set up.",
           broken: "I can no longer read its settings. Choose them again in 🤖 Assistant → Codex.",
@@ -395,6 +405,7 @@ const en = {
             quota: "the key has no quota left. Check billing on platform.openai.com.",
             other: "OpenAI's API did not accept the start. Try again later.",
             relay: "OpenAI's API did not accept the start. Try again later.",
+            sandbox: "OpenAI's API did not accept the start. Try again later.",
             none: "no API key is set.",
             broken: "I can no longer read the key. Send it again.",
           }[reason]
@@ -408,6 +419,7 @@ const en = {
             quota: "Anthropic's API did not accept the start. Try again later.",
             other: "Anthropic's API did not accept the start. Try again later.",
             relay: "Anthropic's API did not accept the start. Try again later.",
+            sandbox: "Anthropic's API did not accept the start. Try again later.",
             none: "none is set up.",
             broken: "I can no longer read its token. Send the routine again.",
           }[reason],
@@ -539,7 +551,16 @@ const en = {
 };
 
 type FireFailure =
-  "token" | "missing" | "paused" | "limit" | "quota" | "relay" | "other" | "none" | "broken";
+  | "token"
+  | "missing"
+  | "paused"
+  | "limit"
+  | "quota"
+  | "relay"
+  | "sandbox"
+  | "other"
+  | "none"
+  | "broken";
 
 interface BusinessStatus {
   changed: boolean;
@@ -779,9 +800,10 @@ const ru: Texts = {
       ? "⚠️ Я больше не могу прочитать сохранённые настройки: сменился токен бота. Выбери их заново."
       : `Модель: ${p.model ? `<code>${escapeHtml(p.model)}</code>` : "по умолчанию Codex"}. Рабочая папка: ` +
         `${p.workdir ? `<code>${escapeHtml(p.workdir)}</code>` : "домашняя папка relay"}.\n\n` +
-        "Песочница — запуск в ней ничего не может записать и начинает в пустой папке, но читать может всё, что может " +
-        "прочитать пользователь relay на машине (в том числе токен самого relay); вне её Codex может всё, что может " +
-        "этот пользователь:\n" +
+        "Песочница — запуск в ней идёт внутри bubblewrap на этой машине. Он видит свою пустую папку, системные программы " +
+        "и твой вход в Codex (он на нём работает, так что может его и прочитать) и остаётся с сетью; твоих файлов, ключей " +
+        "и токена relay он не видит, а его переписки хранятся отдельно от твоих. Внутри, где машина позволяет, действует " +
+        "ещё и собственная песочница Codex (только чтение). Вне её Codex может всё, что может пользователь relay:\n" +
         (["all", "others", "none"] as const)
           .map(
             (policy) =>
@@ -793,7 +815,11 @@ const ru: Texts = {
                 none: "Никто: песочницы нет — любой, кому ты разрешил звать меня, запускает там команды.",
               }[policy],
           )
-          .join("\n")),
+          .join("\n") +
+        (p.relay === "online" && !p.boxes && p.sandbox !== "none"
+          ? "\n\n⚠️ Relay не умеет делать песочницу: на той машине не работает bubblewrap. Запуски в песочнице " +
+            "не пойдут, пока он не заработает, — запусти там команду установки ещё раз, она скажет, в чём дело."
+          : "")),
   buttonSandbox: (policy, current) =>
     `${current ? "✓ " : ""}${{ all: "🧱 Все", others: "🧱 Чужие", none: "🧱 Никто" }[policy]}`,
   buttonCodexModel: (model) => `🧠 Модель: ${model ?? "по умолчанию"}`,
@@ -867,6 +893,9 @@ const ru: Texts = {
         {
           relay:
             "relay на твоей машине офлайн или без Codex. Проверь его: <code>systemctl status tg-relay</code>.",
+          sandbox:
+            "этот запуск должен идти в песочнице, а relay на твоей машине не умеет её делать: там не работает bubblewrap. " +
+            "Запусти там команду установки ещё раз — она скажет, в чём дело, — или выбери политику песочницы «Никто» в 🤖 Ассистент → Codex.",
           limit: `слишком много запусков за час. Попробуй через ${retryMinutes ?? 60} мин.`,
           none: "он не настроен.",
           broken:
@@ -887,6 +916,7 @@ const ru: Texts = {
             quota: "у ключа закончилась квота. Проверь оплату на platform.openai.com.",
             other: "API OpenAI не принял запуск. Попробуй позже.",
             relay: "API OpenAI не принял запуск. Попробуй позже.",
+            sandbox: "API OpenAI не принял запуск. Попробуй позже.",
             none: "API-ключ не задан.",
             broken: "я больше не могу прочитать ключ. Пришли его заново.",
           }[reason]
@@ -899,6 +929,7 @@ const ru: Texts = {
             quota: "API Anthropic не принял запуск. Попробуй позже.",
             other: "API Anthropic не принял запуск. Попробуй позже.",
             relay: "API Anthropic не принял запуск. Попробуй позже.",
+            sandbox: "API Anthropic не принял запуск. Попробуй позже.",
             none: "она не задана.",
             broken: "я больше не могу прочитать её токен. Пришли рутину заново.",
           }[reason],
