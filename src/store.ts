@@ -766,7 +766,10 @@ export class Store {
       .run();
   }
 
-  /** Every token of the user stops working, and their sign-ins leave the list. */
+  /**
+   * Every token of the user stops working, and their sign-ins leave the list.
+   * Their scenes go on: a scene is the user's and runs without an assistant.
+   */
   async bumpTokenVersion(userId: number): Promise<void> {
     await this.db.batch([
       this.db
@@ -775,8 +778,6 @@ export class Store {
       this.db
         .prepare("UPDATE refresh_sessions SET revoked = 1 WHERE user_id = ? AND revoked = 0")
         .bind(userId),
-      // No assistant of theirs is left to answer their scenes.
-      this.finishScenesStatement("owner = ?", [userId]),
     ]);
   }
 
@@ -3329,14 +3330,14 @@ export class Store {
     return results.map((row) => row.id);
   }
 
-  /** The owner's finished scenes whose last drawing is owed, in one chat or everywhere. */
-  async undrawnScenesOf(owner: number, limit: number, chatId?: number): Promise<number[]> {
+  /** The owner's finished scenes in one chat whose last drawing is owed. */
+  async undrawnScenesOf(owner: number, limit: number, chatId: number): Promise<number[]> {
     const { results } = await this.db
       .prepare(
         `SELECT id FROM scenes WHERE status = 'finished' AND dirty = 1 AND owner = ?1
-         AND (?2 IS NULL OR chat_id = ?2) LIMIT ?3`,
+         AND chat_id = ?2 LIMIT ?3`,
       )
-      .bind(owner, chatId ?? null, limit)
+      .bind(owner, chatId, limit)
       .all<{ id: number }>();
     return results.map((row) => row.id);
   }
@@ -3427,6 +3428,20 @@ export class Store {
       .prepare("UPDATE scenes SET wake_limit = ? WHERE id = ? AND owner = ?")
       .bind(limit, id, owner)
       .run();
+  }
+
+  /** The user's active scenes everywhere, the newest first, for the menu. */
+  async activeScenesOf(
+    owner: number,
+    limit: number,
+  ): Promise<{ id: number; title: string; chat_id: number }[]> {
+    const { results } = await this.db
+      .prepare(
+        "SELECT id, title, chat_id FROM scenes WHERE owner = ? AND status = 'active' ORDER BY id DESC LIMIT ?",
+      )
+      .bind(owner, limit)
+      .all<{ id: number; title: string; chat_id: number }>();
+    return results;
   }
 
   /** The user's active scenes in a chat, for the menu. */

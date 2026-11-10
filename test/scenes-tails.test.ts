@@ -154,9 +154,10 @@ describe("a scene's tails", () => {
     expect(count("scene_links")).toBe(0);
   });
 
-  it("/disconnect ends the user's scenes", async () => {
+  it("/disconnect leaves the user's scenes running: they need no assistant", async () => {
     await h.say(dm(ALICE), ALICE, "/disconnect");
-    expect(status()).toBe("finished");
+    expect(status()).toBe("active");
+    expect((await press(TEAM.id)).text).toBeUndefined();
   });
 
   const keyboardGone = () => {
@@ -165,11 +166,6 @@ describe("a scene's tails", () => {
       .filter((call) => call.params.message_id === scene.message);
     expect(edits.at(-1)?.params.reply_markup).toEqual({ inline_keyboard: [] });
   };
-
-  it("/disconnect takes the buttons off the user's scenes", async () => {
-    await h.say(dm(ALICE), ALICE, "/disconnect");
-    keyboardGone();
-  });
 
   it("revoking access takes the buttons off the scenes there", async () => {
     await h.update({
@@ -209,7 +205,7 @@ describe("a scene's tails", () => {
 
   it("an ended scene Telegram keeps quiet loses its buttons in the daily run", async () => {
     h.db.raw.exec(`UPDATE scenes SET quiet_until = ${Date.now() + 3_600_000}`);
-    await h.say(dm(ALICE), ALICE, "/disconnect");
+    await h.say(TEAM, ALICE, "", { left_chat_member: { ...ALICE, is_bot: false } });
     expect(h.telegram.called("editMessageText")).toHaveLength(0);
     h.db.raw.exec(`UPDATE scenes SET quiet_until = 0`);
     await daily();

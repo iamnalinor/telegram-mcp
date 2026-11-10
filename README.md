@@ -140,8 +140,8 @@ is.
 - **Replies**: when someone replies to a message, the bot keeps the original too (even one older than
   the bot), so "@bot what about this?" under a message shows the assistant both.
 
-Bot commands: `/start` opens the menu (groups, connecting a group, personal chats, how it works,
-your Telegram ID). `/connect` in a group, `/groups` and `/disconnect` (signs out every assistant
+Bot commands: `/start` opens the menu (groups, connecting a group, personal chats, scenes, how it
+works, your Telegram ID). `/connect` in a group, `/groups` and `/disconnect` (signs out every assistant
 connected with your account) work too; only `/start` is listed in Telegram's command suggestions.
 
 ## Personal chats
@@ -279,6 +279,10 @@ message looks, and rules for each press, vote, reply or reaction — and goes. F
 Worker takes every event, changes the state, redraws the message and answers whoever pressed,
 without a session. The assistant is woken only where its own rules call `wake()`.
 
+A scene is yours, not the assistant's: it needs no session and no assistant to run. Any MCP client
+can create one (a `session` id only tells `wake()` where to go), it keeps running when the assistant
+is gone or `/disconnect`ed, and you can start a saved one yourself from the bot's menu (below).
+
 On it: a who's-coming list, a checklist, a board for a long task with Pause and Stop, a triage of
 findings that wakes the assistant when you press Done, a pinned control panel, tic-tac-toe, a quiz, mafia
 with the assistant as host. `scene_guide` hands out these as presets to adapt.
@@ -313,17 +317,19 @@ rules answer only you. Every press gets an answer: the rule's own, or why not ("
 seconds per person).
 
 **Waking the assistant.** A rule with `wake()` runs only if the wake may happen: it is your press,
-or the chat is a group where your assistant answers with «Others too» on; your assistant is set up
-and chosen (or the session to wake can take messages); and the limits allow it — the scene's own wakes an hour
-(10 by default; change it in the menu: chat → 🎬 Scenes) and the starts every tag shares. Otherwise
-the press is refused and nothing changes. The scene's own limit starts afresh if a scene is finished
-and created again; the shared limits do not.
+or the chat is a group where your assistant answers with «Others too» on; and the limits allow it —
+the scene's own wakes an hour (10 by default; change it in the menu: 🎬 Scenes) and the starts every
+tag shares. Otherwise the press is refused and nothing changes. When there is simply nobody to wake —
+no assistant set up and chosen, and no session that can take messages — the rule runs all the same,
+its `wake()` is only logged, and the presser hears that nobody was woken. The scene's own limit starts
+afresh if a scene is finished and created again; the shared limits do not.
 
 Like a group's sessions of the day, a scene keeps two audiences apart. Your wakes go into the
 session that made the scene, where it can take messages, or start a new one. Other members' wakes never go
 into that session: the first starts a session of its own for them, and later ones go there where it
 can take them (or start another). A session that drives its scene with
-`update_scene` `act` may wake only itself, and is never taken for you. Each wake is a start in the
+`update_scene` `act` may wake only itself, and is never taken for you; a client that names no session,
+on a scene that has none, runs its `act` rules without waking anyone. Each wake is a start in the
 chat's log (📜 Starts, in a group where your assistant answers).
 
 **Cost.** A press that changes something is one Worker request; it reads the scene's row and, for
@@ -334,7 +340,8 @@ mark the scene as in use). `log()` and `wake()` write one more row each; a scene
 events. Edits keep to one a second per message. Up to 20 active scenes per person per chat; a scene
 nobody used for `RETENTION_DAYS` ends and is deleted a retention later, and its messages are kept as
 long as it is. Scenes end, and their messages lose their buttons, when you lose access to the group
-or `/disconnect`. A vote the scene could not take (too fast, a full state) shows as an error in
+(or let a guest chat go); `/disconnect` signs assistants out but leaves scenes running — stop them in
+🎬 Scenes. A vote the scene could not take (too fast, a full state) shows as an error in
 `get_scene`, since nobody sees the answer to a vote.
 
 **Saved scenes.** Every scene an assistant creates is saved in your library, as written, under a name
@@ -344,6 +351,12 @@ only in its title or starting state: that is the same scene, started with other 
 session lists the library before building a scene and starts one that fits with `create_scene`
 `template` (with `state` and `title` for that run), changes it for good with `save_scene` and the
 version it read — the 20 versions before it are kept — or copies and adapts it under a new name.
+
+**🎬 Scenes in the menu.** `/start` → 🎬 Scenes lists your running scenes in every chat (open one to
+change its wakes an hour or stop it) and 📚 Saved scenes. Pick a saved scene to read its title and
+note, ▶ start it in your private chat with the bot, or delete it. A scene started there is yours and
+has no session behind it: everything in it works with no assistant connected, and a `wake()` starts
+your assistant if one is set up, or else wakes nobody and says so. The 20-a-chat limit applies.
 
 Up to 100 saved scenes per person. What `save_scene` made, changed or renamed is kept on purpose; a
 new scene makes room only by dropping the auto-saved one unused the longest, and when all 100 were

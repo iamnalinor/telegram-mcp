@@ -219,13 +219,13 @@ describe("waking the session", () => {
 describe("nobody to wake", () => {
   beforeEach(() => setUp(false));
 
-  it("without a routine the rule is refused", async () => {
+  it("without a routine the rule runs, and its wake() wakes nobody", async () => {
     const at = await create();
     const before = row(at.id).version;
-    expect((await press(ALICE, at)).text).toBe(
-      "Nobody to answer right now: no assistant is connected.",
-    );
-    expect(row(at.id).version).toBe(before);
+    expect((await press(ALICE, at)).text).toBe("No assistant is connected, so nobody was woken.");
+    expect(row(at.id).version).toBe(before + 1);
+    expect(JSON.parse(row(at.id).state)).toEqual({ n: 1 });
+    expect(h.fires).toHaveLength(0);
   });
 });
 

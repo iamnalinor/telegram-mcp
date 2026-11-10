@@ -8,7 +8,9 @@
  * must be able to answer (a routine, or the relay with the right session);
  * and the limits must allow it — the scene's own, per hour, and the ones
  * every start shares (src/bot/triggers.ts), claimed in one statement. A
- * refusal means the rule does not run at all.
+ * refusal means the rule does not run at all — except "nobody": with no
+ * assistant to wake, the rule runs and its wake() only logs. A scene needs
+ * no assistant for anything else.
  *
  * Like a group's sessions of the day, a scene keeps two audiences apart:
  * the owner's wakes go to `session_id` (the session that set it up), third
@@ -71,9 +73,11 @@ export async function gateWake(
   actor: Actor,
   source?: WakeSource,
 ): Promise<WakeGate> {
-  // A session acting through update_scene may wake only itself: the scene's own session.
-  if (source && (!source.session || source.session !== scene.session_id)) {
-    return { ok: false, answer: "session" };
+  if (source) {
+    // A caller that names no session, on a scene that has none: nothing of its own to wake.
+    if (!source.session && !scene.session_id) return { ok: false, answer: "nobody" };
+    // A session acting through update_scene may wake only itself: the scene's own session.
+    if (source.session !== scene.session_id) return { ok: false, answer: "session" };
   }
   const byOther = source ? source.origin !== "user" : actor.id !== scene.owner;
   const claim = await ctx.store.getClaudeChat(scene.chat_id);

@@ -44,6 +44,11 @@
  *   m:gl:<id>     their hourly limit: a picker; m:gn:<id>:<n> sets it, m:gk:<id> asks
  *                 for a number typed as a reply (see `takeLimitAnswer`)
  *   m:gs:<id>     the log of starts there
+ *   m:scn         scenes: the user's running scenes everywhere, and their saved ones
+ *   m:sl:<page>   saved scenes, the most recently used first, a page at a time
+ *   m:st:<id>     one saved scene; m:sgo:<id> starts it in the private chat, as the
+ *                 user's own with no session; m:sdel:<id> deletes it (asks first;
+ *                 m:sdely:<id> does it)
  *   m:sc:<chat>   the user's running scenes in a chat (a group, or their private chat)
  *   m:sv:<id>     one scene; m:sw / m:swn / m:swk its wakes an hour as for a limit,
  *                 m:ss stops it
@@ -69,7 +74,8 @@ import {
 import { loadOpenAI, MODELS, saveOpenAI } from "../agents/openai";
 import { codexRelayState, relaySandboxes, relayState, relayToken, tokenHash } from "../relay";
 import { routinePrompt, tokenOf } from "../routine";
-import { GUEST_BASE, type SceneRow } from "../store";
+import { compile, DefinitionError } from "../scenes/definition";
+import { GUEST_BASE, isGuestKey, type SceneRow, type SceneTemplateRow } from "../store";
 import { memoryTitle } from "../tools/memory";
 import { TelegramError } from "../telegram/api";
 import type { CallbackQuery, InlineKeyboardMarkup, Message, User } from "../telegram/types";
@@ -77,7 +83,14 @@ import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { fallBack } from "./fallback";
 import { OPENAI_WEBHOOK_PATH } from "./openaiWebhook";
 import { testCodex, testOpenAI, testRoutine } from "./routine";
-import { endScene, releaseChat, revokeAccess, signOutAll } from "./scenes";
+import {
+  ACTIVE_PER_CHAT,
+  endScene,
+  releaseChat,
+  revokeAccess,
+  signOutAll,
+  startScene,
+} from "./scenes";
 import { holderName, stillMember } from "./triggers";
 import { escapeHtml, formatDate, sessionRef, texts } from "./texts";
 
@@ -108,7 +121,7 @@ export async function mainScreen(ctx: BotContext, user: User): Promise<Screen> {
         [button(t.buttonGroups, "groups"), button(t.buttonAdd, "add")],
         [button(t.buttonMemory, "mem"), button(t.buttonSignIns, "si")],
         [button(t.buttonRoutine, "as"), button(t.buttonPersonal, "personal")],
-        [button(t.buttonHelp, "help")],
+        [button(t.buttonScenesHub, "scn"), button(t.buttonHelp, "help")],
       ],
     },
   };
@@ -602,8 +615,12 @@ async function startsScreen(
   };
 }
 
-/** Where a chat's scenes are listed from: the group's screen, or Claude's for the private chat. */
-const chatBack = (user: User, chatId: number) => (chatId === user.id ? "cl" : `g:${chatId}`);
+/** Where a chat's scenes are listed from: the group's screen, or 🎬 Scenes for the private chat. */
+const chatBack = (user: User, chatId: number) => (chatId === user.id ? "scn" : `g:${chatId}`);
+
+/** Where a scene's screen goes back to: its group's list, or 🎬 Scenes for any other chat. */
+const sceneBack = (user: User, chatId: number) =>
+  chatId === user.id || isGuestKey(chatId) ? "scn" : `sc:${chatId}`;
 
 async function chatTitle(ctx: BotContext, user: User, chatId: number): Promise<string> {
   if (chatId === user.id) return texts(user.language_code).memoryOfMe;
@@ -644,10 +661,130 @@ async function sceneScreen(ctx: BotContext, user: User, scene: SceneRow): Promis
       inline_keyboard: [
         [button(t.buttonSceneWakes(scene.wake_limit), `sw:${scene.id}`)],
         [button(t.buttonStopScene, `ss:${scene.id}`)],
-        [button(t.buttonBack, `sc:${scene.chat_id}`)],
+        [button(t.buttonBack, sceneBack(user, scene.chat_id))],
       ],
     },
   };
+}
+
+/** Running scenes shown in 🎬 Scenes, and saved ones a page. */
+const HUB_SCENES = 20;
+const SAVED_PAGE = 10;
+
+/** Short enough for a button. */
+const label = (text: string, length = 50) => Array.from(text).slice(0, length).join("");
+
+/** Where a running scene is, as the user would name it. */
+async function placeOf(ctx: BotContext, user: User, chatId: number): Promise<string> {
+  if (chatId === user.id) return texts(user.language_code).privateChatName;
+  if (isGuestKey(chatId)) {
+    const guest = await ctx.store.guestChatByKey(chatId);
+    return guest?.title ?? `#${guest?.id ?? chatId}`;
+  }
+  return (await ctx.store.getChat(chatId))?.title ?? String(chatId);
+}
+
+/** 🎬 Scenes: what runs anywhere, and the way to the saved ones. No assistant needed. */
+async function scenesHub(ctx: BotContext, user: User): Promise<Screen> {
+  const t = texts(user.language_code);
+  const running = await ctx.store.activeScenesOf(user.id, HUB_SCENES);
+  const places = await Promise.all(running.map((scene) => placeOf(ctx, user, scene.chat_id)));
+  const saved = await ctx.store.countTemplates(user.id);
+  return {
+    text: t.scenesHub(
+      running.map((scene, i) => `▶ ${escapeHtml(scene.title)} — ${escapeHtml(places[i])}`),
+      saved,
+    ),
+    reply_markup: {
+      inline_keyboard: [
+        ...running.map((scene) => [button(`▶ ${label(scene.title)}`, `sv:${scene.id}`)]),
+        ...(saved ? [[button(t.buttonSavedScenes(saved), "sl:0")]] : []),
+        [button(t.buttonBack, "main")],
+      ],
+    },
+  };
+}
+
+async function savedScenesScreen(ctx: BotContext, user: User, page: number): Promise<Screen> {
+  const t = texts(user.language_code);
+  const all = await ctx.store.listTemplates(user.id);
+  if (!all.length) return scenesHub(ctx, user);
+  const last = Math.ceil(all.length / SAVED_PAGE) - 1;
+  const at = Math.min(page, last);
+  const shown = all.slice(at * SAVED_PAGE, (at + 1) * SAVED_PAGE);
+  const pages = [
+    ...(at > 0 ? [button(t.buttonPrev, `sl:${at - 1}`)] : []),
+    ...(at < last ? [button(t.buttonNext, `sl:${at + 1}`)] : []),
+  ];
+  return {
+    text: t.savedScenesScreen(
+      shown.map((row) => `• <code>${escapeHtml(row.name)}</code> — ${escapeHtml(row.title)}`),
+    ),
+    reply_markup: {
+      inline_keyboard: [
+        ...shown.map((row) => [button(`📄 ${label(row.title)}`, `st:${row.id}`)]),
+        ...(pages.length ? [pages] : []),
+        [button(t.buttonBack, "scn")],
+      ],
+    },
+  };
+}
+
+function savedSceneScreen(user: User, row: SceneTemplateRow): Screen {
+  const t = texts(user.language_code);
+  return {
+    text: t.savedSceneScreen({
+      name: row.name,
+      title: row.title,
+      brief: row.brief,
+      version: row.version,
+      uses: row.uses,
+    }),
+    reply_markup: {
+      inline_keyboard: [
+        [button(t.buttonStartScene, `sgo:${row.id}`)],
+        [button(t.buttonDeleteSaved, `sdel:${row.id}`)],
+        [button(t.buttonBack, "sl:0")],
+      ],
+    },
+  };
+}
+
+/**
+ * Start a saved scene from the menu: in the user's private chat, as theirs,
+ * with no session behind it. Its wake() starts the user's assistant if one is
+ * set up, and otherwise wakes nobody (src/scenes/wake.ts); the rest needs none.
+ * A note for the screen: what went wrong, or that it started.
+ */
+async function startSaved(ctx: BotContext, user: User, row: SceneTemplateRow): Promise<string> {
+  const t = texts(user.language_code);
+  let start: ReturnType<typeof compile>;
+  try {
+    start = compile(JSON.parse(row.definition));
+  } catch (error) {
+    if (error instanceof DefinitionError || error instanceof SyntaxError) return t.sceneCannotStart;
+    throw error;
+  }
+  if ((await ctx.store.countScenesOf(user.id, user.id)) >= ACTIVE_PER_CHAT) {
+    return t.scenesFull(ACTIVE_PER_CHAT);
+  }
+  try {
+    await startScene(ctx, {
+      chatId: user.id,
+      threadId: null,
+      owner: user.id,
+      session: null,
+      agent: null,
+      compiled: start.compiled,
+      state: start.state,
+      template: { id: row.id, version: row.version },
+    });
+  } catch (error) {
+    if (error instanceof TelegramError) return t.sceneStartRefused;
+    throw error;
+  }
+  await ctx.store.useTemplate(row.id);
+  return t.sceneStarted;
 }
 
 /** The chats this user holds as a guest: called there by a tag, never a member. */
@@ -1043,6 +1180,36 @@ async function render(
     };
   }
 
+  if (name === "scn") return scenesHub(ctx, user);
+  const savedPage = /^sl:(\d{1,3})$/.exec(name);
+  if (savedPage) return savedScenesScreen(ctx, user, Number(savedPage[1]));
+  const saved = /^(st|sgo|sdel|sdely):(\d{1,15})$/.exec(name);
+  if (saved) {
+    // Only one's own: an id from someone else's library is as good as gone.
+    const row = await ctx.store.getTemplateById(user.id, Number(saved[2]));
+    if (!row) return { ...(await scenesHub(ctx, user)), note: t.sceneMenuGone };
+    if (saved[1] === "sgo") {
+      const note = await startSaved(ctx, user, row);
+      return { ...(await scenesHub(ctx, user)), note };
+    }
+    if (saved[1] === "sdel") {
+      return {
+        text: t.confirmDeleteSaved(row.name),
+        reply_markup: {
+          inline_keyboard: [
+            [button(t.buttonConfirmDelete, `sdely:${row.id}`)],
+            [button(t.buttonCancel, `st:${row.id}`)],
+          ],
+        },
+      };
+    }
+    if (saved[1] === "sdely") {
+      await ctx.store.deleteTemplate(user.id, row.name);
+      return { ...(await savedScenesScreen(ctx, user, 0)), note: t.savedDeleted };
+    }
+    return savedSceneScreen(user, row);
+  }
+
   const list = /^sc:(-?\d+)$/.exec(name);
   if (list) {
     const chatId = Number(list[1]);
@@ -1055,11 +1222,17 @@ async function render(
     const scene = await ctx.store.getScene(Number(sceneMenu[2]));
     // Only one's own running scenes; anything else is gone as far as this menu goes.
     if (!scene || scene.owner !== user.id || scene.status !== "active") {
-      return { ...(await mainScreen(ctx, user)), note: t.menuGone };
+      return { ...(await scenesHub(ctx, user)), note: t.sceneMenuGone };
     }
     if (sceneMenu[1] === "ss") {
       await endScene(ctx, scene.id);
-      return { ...(await scenesScreen(ctx, user, scene.chat_id)), note: t.sceneStopped };
+      const back = sceneBack(user, scene.chat_id);
+      return {
+        ...(back === "scn"
+          ? await scenesHub(ctx, user)
+          : await scenesScreen(ctx, user, scene.chat_id)),
+        note: t.sceneStopped,
+      };
     }
     if (sceneMenu[1] === "sw") {
       return limitPicker(

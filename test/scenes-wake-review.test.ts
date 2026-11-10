@@ -376,9 +376,8 @@ describe("waking from every source", () => {
     h = new Harness({ ALLOWED_USER_IDS: String(BOB.id) });
     h.db = db;
     h.env.DB = db.asD1();
-    expect((await press(ALICE, at)).text).toBe(
-      "Nobody to answer right now: no assistant is connected.",
-    );
+    // The rule runs; only its wake() is left out.
+    expect((await press(ALICE, at)).text).toBe("No assistant is connected, so nobody was woken.");
     expect(h.fires).toHaveLength(0);
   });
 });
