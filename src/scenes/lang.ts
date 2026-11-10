@@ -801,6 +801,17 @@ function binary(expr: Expr & { k: "bin" }, scope: Scope, budget: Budget): Value 
   }
 }
 
+/**
+ * The scope for one element of each() or a button generator: it, i and key
+ * bound, lets still computed once, in the outer scope (a let cannot read
+ * it, i or key), so a 64-cell board does not compute them 64 times.
+ */
+export function within(scope: Scope, it: Value, i: number, key: string | null): Scope {
+  const inner: Scope = { ...scope, vars: { ...scope.vars, it, i, key } };
+  outer.set(inner, outer.get(scope) ?? scope);
+  return inner;
+}
+
 /** each(coll, 'template'): the template once per element, with it, i and key bound. */
 function each(expr: Expr & { k: "call" }, scope: Scope, budget: Budget): Value {
   const collection = evaluate(expr.args[0], scope, budget);
@@ -812,8 +823,7 @@ function each(expr: Expr & { k: "call" }, scope: Scope, budget: Budget): Value {
   let out = "";
   for (const [i, [key, item]] of entries.entries()) {
     charge(budget, 1, expr.at);
-    const inner: Scope = { ...scope, vars: { ...scope.vars, it: item, i, key } };
-    outer.set(inner, outer.get(scope) ?? scope);
+    const inner = within(scope, item, i, key);
     out = append(out, renderTemplate(expr.tpl!, inner, budget, scope.escape ?? plain), expr.at);
   }
   return out;

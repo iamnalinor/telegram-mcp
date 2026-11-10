@@ -240,9 +240,11 @@ export async function startScene(
     template?: { id: number; version: number } | null;
     replyTo?: number;
     silent?: boolean;
+    /** Start it only if the owner's newest scene is still this one and they run fewer than `limit` here. */
+    claim?: { newest: number; limit: number };
   },
 ): Promise<{ id: number; message: Message }> {
-  const id = await ctx.store.createScene({
+  const row = {
     chat_id: p.chatId,
     thread_id: p.threadId,
     owner: p.owner,
@@ -256,20 +258,31 @@ export async function startScene(
     wake_limit: p.compiled.wakeLimit,
     template_id: p.template?.id ?? null,
     template_version: p.template?.version ?? null,
-  });
-  const row = (await ctx.store.getScene(id))!;
+  };
+  const id = p.claim
+    ? await ctx.store.createSceneIf(row, p.claim)
+    : await ctx.store.createScene(row);
+  if (id === null) throw new StartTaken();
+  const scene = (await ctx.store.getScene(id))!;
   let message: Message;
   try {
-    message = await sendView(ctx, row, "main", { replyTo: p.replyTo, silent: p.silent });
+    message = await sendView(ctx, scene, "main", { replyTo: p.replyTo, silent: p.silent });
   } catch (error) {
     await ctx.store.deleteScene(id);
     throw error;
   }
-  await ctx.store.commitScene(id, row.version, {
+  await ctx.store.commitScene(id, scene.version, {
     messages: JSON.stringify([{ id: message.message_id, view: "main" }]),
     edited_at: Date.now(),
   });
   return { id, message };
+}
+
+/** A start's `claim` did not hold: a newer scene of the owner's, or the chat's limit reached. */
+export class StartTaken extends Error {
+  constructor() {
+    super("The scene start was claimed or the chat is full.");
+  }
 }
 
 /** A guest call's message runs another scene already: `scene` is its id. */

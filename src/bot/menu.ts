@@ -52,6 +52,9 @@
  *                 m:sgo:<id>:<version>:<uses>:<page> starts it in the private chat, as
  *                 the user's own with no session, if it is still as the card showed it;
  *                 m:sdel:<id>:<page> deletes it (asks first; m:sdely:<id>:<page> does it)
+ *   m:rg:<game>   a ready-made game (src/scenes/games.ts): what it is, and ▶;
+ *                 m:rgo:<game>:<last> starts it in the private chat, as the user's
+ *                 own, if their newest scene is still <last> (a second tap starts none)
  *   m:sc:<chat>   the user's running scenes in a chat (a group, or their private chat)
  *   m:sv:<id>     one scene; m:sw / m:swn / m:swk its wakes an hour as for a limit,
  *                 m:ss stops it
@@ -78,6 +81,7 @@ import { loadOpenAI, MODELS, saveOpenAI } from "../agents/openai";
 import { codexRelayState, relaySandboxes, relayState, relayToken, tokenHash } from "../relay";
 import { routinePrompt, tokenOf } from "../routine";
 import { compile, DefinitionError, outline } from "../scenes/definition";
+import { GAMES, type GameKey } from "../scenes/games";
 import { GUEST_BASE, isGuestKey, type SceneRow, type SceneTemplateRow } from "../store";
 import { memoryTitle } from "../tools/memory";
 import { TelegramError } from "../telegram/api";
@@ -93,6 +97,7 @@ import {
   revokeAccess,
   signOutAll,
   startScene,
+  StartTaken,
   stopAllScenes,
 } from "./scenes";
 import { holderName, stillMember } from "./triggers";
@@ -729,6 +734,7 @@ async function scenesHub(ctx: BotContext, user: User, page = 0): Promise<Screen>
         ...pager(user, at, last, (n) => `scn:${n}`),
         ...(total ? [[button(t.buttonStopAllScenes, "scx")]] : []),
         ...(saved ? [[button(t.buttonSavedScenes(saved), "sl:0")]] : []),
+        [button(t.gameButtons.ttt, "rg:ttt"), button(t.gameButtons.chk, "rg:chk")],
         [button(t.buttonBack, "main")],
       ],
     },
@@ -838,6 +844,62 @@ async function startSaved(
     });
   } catch (error) {
     await ctx.store.unclaimTemplateStart(row.id);
+    if (error instanceof TelegramError) return { note: t.sceneStartRefused, again: true };
+    throw error;
+  }
+  return { note: t.sceneStarted, again: false };
+}
+
+/**
+ * A ready-made game's card. ▶ names the user's newest scene, so of two taps
+ * on the same card (or on two cards shown together) only one starts a game.
+ */
+async function gameScreen(ctx: BotContext, user: User, key: GameKey): Promise<Screen> {
+  const t = texts(user.language_code);
+  const last = await ctx.store.lastSceneOf(user.id);
+  return {
+    text: t.gameScreen(key),
+    reply_markup: {
+      inline_keyboard: [
+        [button(t.buttonStartScene, `rgo:${key}:${last}`)],
+        [button(t.buttonBack, "scn")],
+      ],
+    },
+  };
+}
+
+/**
+ * Start a ready-made game: built from code in the user's language, in their
+ * private chat, as theirs, with no session; nothing is saved to the library.
+ * The scene goes in only if the user's newest scene is still the one the card
+ * named and the chat is under its limit, in one statement.
+ */
+async function startGame(
+  ctx: BotContext,
+  user: User,
+  key: GameKey,
+  shown: number,
+): Promise<{ note: string; again: boolean }> {
+  const t = texts(user.language_code);
+  const lang = user.language_code?.toLowerCase().startsWith("ru") ? "ru" : "en";
+  const { compiled, state } = compile(GAMES[key](lang));
+  try {
+    await startScene(ctx, {
+      chatId: user.id,
+      threadId: null,
+      owner: user.id,
+      session: null,
+      agent: null,
+      compiled,
+      state,
+      claim: { newest: shown, limit: ACTIVE_PER_CHAT },
+    });
+  } catch (error) {
+    if (error instanceof StartTaken) {
+      return (await ctx.store.lastSceneOf(user.id)) !== shown
+        ? { note: t.savedStartedAlready, again: true }
+        : { note: t.scenesFull(ACTIVE_PER_CHAT), again: true };
+    }
     if (error instanceof TelegramError) return { note: t.sceneStartRefused, again: true };
     throw error;
   }
@@ -1256,6 +1318,13 @@ async function render(
   if (name === "scxy") {
     const stopped = await stopAllScenes(ctx, user.id);
     return { ...(await scenesHub(ctx, user)), note: t.allScenesStopped(stopped) };
+  }
+  const game = /^(rg|rgo):(ttt|chk)(?::(\d{1,15}))?$/.exec(name);
+  if (game) {
+    const key = game[2] as GameKey;
+    if (game[1] === "rg" || game[3] === undefined) return gameScreen(ctx, user, key);
+    const { note, again } = await startGame(ctx, user, key, Number(game[3]));
+    return { ...(again ? await gameScreen(ctx, user, key) : await scenesHub(ctx, user)), note };
   }
   const savedPage = /^sl:(\d{1,3})$/.exec(name);
   if (savedPage) return savedScenesScreen(ctx, user, Number(savedPage[1]));

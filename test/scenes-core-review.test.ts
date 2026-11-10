@@ -536,8 +536,9 @@ describe("every preset, from start to finish", () => {
     ] as const)
       s = fire(compiled, s, who, "press:cell", cell).state;
     const win = fire(compiled, s, ANN, "press:cell", 6);
-    expect(win.state.won).toEqual({ id: 2, name: "Ann" });
-    expect(win.effects).toEqual([{ kind: "finish" }]);
+    expect(win.state).toMatchObject({ winner: "x", win: [2, 4, 6], seats: { x: ANN, o: BOB } });
+    // The game stays, for a rematch.
+    expect(win.effects).toEqual([]);
   });
 
   it("quiz: an old keyboard's press does not answer the next question", () => {

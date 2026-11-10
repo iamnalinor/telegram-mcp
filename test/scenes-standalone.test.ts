@@ -311,3 +311,161 @@ describe("the 🎬 Scenes menu", () => {
     );
   });
 });
+
+describe("ready-made games in 🎬 Scenes", () => {
+  const scenesOf = (owner: number) =>
+    h.db.raw.query("SELECT * FROM scenes WHERE owner = ? ORDER BY id").all(owner) as {
+      id: number;
+      chat_id: number;
+      owner: number;
+      session_id: string | null;
+      template_id: number | null;
+      title: string;
+      state: string;
+      messages: string;
+    }[];
+  const templates = () =>
+    (h.db.raw.query("SELECT COUNT(*) AS n FROM scene_templates").get() as { n: number }).n;
+
+  it("are on the hub with an empty library, and ▶ starts one here as the user's", async () => {
+    const hub = await menu("m:scn");
+    expect(hub.text).toContain("No saved scenes yet");
+    expect(hub.text).toContain("<b>Ready-made</b>");
+    const games = hub.buttons.filter((b) => b.callback_data?.startsWith("m:rg:"));
+    expect(games.map((b) => [b.text, b.callback_data])).toEqual([
+      ["❌⭕ Tic-tac-toe", "m:rg:ttt"],
+      ["⚪⚫ Checkers", "m:rg:chk"],
+    ]);
+
+    const card = await menu("m:rg:ttt");
+    expect(card.text).toContain("<b>Tic-tac-toe</b>");
+    expect(card.text).toContain("It starts in this chat, as yours.");
+    expect(card.buttons.map((b) => b.callback_data)).toEqual(["m:rgo:ttt:0", "m:scn"]);
+
+    const started = await menu("m:rgo:ttt:0");
+    expect(started.note).toBe("Started: it is in this chat now.");
+    expect(started.text).toContain("▶ Tic-tac-toe — your private chat");
+    const [scene] = scenesOf(ALICE.id);
+    expect(scene).toMatchObject({
+      chat_id: ALICE.id,
+      session_id: null,
+      template_id: null,
+      title: "Tic-tac-toe",
+    });
+    // Built from code: nothing goes into the library.
+    expect(templates()).toBe(0);
+    const sent = h.telegram.called("sendMessage").at(-1)!;
+    expect(sent.params.chat_id).toBe(ALICE.id);
+    expect(String(sent.params.text)).toContain("Tic-tac-toe");
+
+    // The same ▶ a second time starts nothing, and the card offers a fresh one.
+    const again = await menu("m:rgo:ttt:0");
+    expect(again.note).toContain("It has been started since this card was shown");
+    expect(again.buttons.map((b) => b.callback_data)).toContain(`m:rgo:ttt:${scene.id}`);
+    expect(scenesOf(ALICE.id)).toHaveLength(1);
+
+    // It plays: against the bot, in the private chat.
+    const at = { id: scene.id, message: (JSON.parse(scene.messages) as { id: number }[])[0].id };
+    await press(ALICE, at, "bot", dm(ALICE));
+    await press(ALICE, at, "cell:0", dm(ALICE));
+    const state = JSON.parse(scenesOf(ALICE.id)[0].state) as { cells: string[] };
+    expect(state.cells).toEqual(["x", "", "", "", "o", "", "", "", ""]);
+  });
+
+  it("start checkers in the user's language", async () => {
+    const ru = { ...ALICE, language_code: "ru" };
+    const hub = await menu("m:scn", ru);
+    expect(hub.text).toContain("<b>Готовые</b>");
+    expect(hub.buttons.map((b) => b.text)).toContain("⚪⚫ Шашки");
+    const card = await menu("m:rg:chk", ru);
+    expect(card.text).toContain("Русские шашки");
+    const go = card.buttons.find((b) => b.callback_data?.startsWith("m:rgo:chk:"))!;
+    expect(go.text).toBe("▶ Запустить здесь");
+    expect((await menu(go.callback_data!, ru)).note).toBe("Запущена: она в этом чате.");
+    const [scene] = scenesOf(ALICE.id);
+    expect(scene.title).toBe("Шашки");
+    const keyboard = h.telegram.called("sendMessage").at(-1)!.params.reply_markup as Keyboard;
+    // 64 squares in eight rows, then the seats.
+    expect(keyboard.inline_keyboard.slice(0, 8).every((row) => row.length === 8)).toBe(true);
+    expect(keyboard.inline_keyboard.flat()).toHaveLength(66);
+    expect(keyboard.inline_keyboard.flat().every((b) => b.text.trim() !== "")).toBe(true);
+  });
+
+  it("refuses a start past the chat's limit, and an unknown game", async () => {
+    for (let i = 0; i < 20; i++) {
+      const last = scenesOf(ALICE.id).at(-1)?.id ?? 0;
+      expect((await menu(`m:rgo:ttt:${last}`)).note).toBe("Started: it is in this chat now.");
+    }
+    const last = scenesOf(ALICE.id).at(-1)!.id;
+    expect((await menu(`m:rgo:chk:${last}`)).note).toBe(
+      "You have 20 scenes running in this chat: stop one first.",
+    );
+    expect(scenesOf(ALICE.id)).toHaveLength(20);
+    const unknown = await menu(`m:rgo:chess:${last}`);
+    expect(unknown.note).toBeUndefined();
+    expect(scenesOf(ALICE.id)).toHaveLength(20);
+  });
+
+  /**
+   * Hold the first scene insert until a second one comes (or 100 ms pass):
+   * both taps get through everything before it, as concurrent updates may.
+   */
+  function holdFirstInsert() {
+    const prepare = h.db.prepare.bind(h.db);
+    let release: (() => void) | undefined;
+    let held = false;
+    h.db.prepare = (sql: string) => {
+      const statement = prepare(sql);
+      if (!/INSERT INTO scenes\b/.test(sql)) return statement;
+      const bind = statement.bind.bind(statement);
+      statement.bind = (...values: unknown[]) => {
+        const bound = bind(...values);
+        const first = bound.first.bind(bound);
+        bound.first = async <T>() => {
+          if (!held) {
+            held = true;
+            await new Promise<void>((resolve) => {
+              release = resolve;
+              setTimeout(resolve, 100);
+            });
+          } else release?.();
+          return first<T>();
+        };
+        return bound;
+      };
+      return statement;
+    };
+  }
+
+  it("a double tap on ▶ starts one game", async () => {
+    holdFirstInsert();
+    const [one, two] = await Promise.all([menu("m:rgo:ttt:0"), menu("m:rgo:ttt:0")]);
+    expect([one.note, two.note].sort()).toEqual([
+      "It has been started since this card was shown (a second tap?). Press ▶ again for another one.",
+      "Started: it is in this chat now.",
+    ]);
+    expect(scenesOf(ALICE.id)).toHaveLength(1);
+  });
+
+  it("two cards tapped at once at the limit start one game", async () => {
+    for (let i = 0; i < 19; i++) {
+      await menu(`m:rgo:ttt:${scenesOf(ALICE.id).at(-1)?.id ?? 0}`);
+    }
+    const last = scenesOf(ALICE.id).at(-1)!.id;
+    holdFirstInsert();
+    const notes = await Promise.all([menu(`m:rgo:ttt:${last}`), menu(`m:rgo:chk:${last}`)]);
+    expect(notes.filter((s) => s.note === "Started: it is in this chat now.")).toHaveLength(1);
+    expect(scenesOf(ALICE.id)).toHaveLength(20);
+    expect((await menu(`m:rgo:ttt:${scenesOf(ALICE.id).at(-1)!.id}`)).note).toBe(
+      "You have 20 scenes running in this chat: stop one first.",
+    );
+    expect(scenesOf(ALICE.id)).toHaveLength(20);
+  });
+
+  it("is not for a user who never connected", async () => {
+    const stranger = { ...BOB };
+    const screen = await menu("m:rgo:ttt:0", stranger);
+    expect(screen.buttons.map((b) => b.callback_data)).not.toContain("m:scn");
+    expect(scenesOf(BOB.id)).toHaveLength(0);
+  });
+});
