@@ -817,23 +817,33 @@ function later(ctx: SceneContext, sceneId: number): void {
   if (ctx.defer) ctx.defer(work);
 }
 
+/** How many ended scenes one revoke or sign-out redraws; the daily run takes the rest. */
+const ENDED_DRAWS = 10;
+
 /**
  * Access went (a revoke, leaving the group, /disconnect): the store ended the
- * owner's scenes there, and their buttons come off now. What Telegram keeps
- * quiet, or a failure here, is left to the daily run.
+ * owner's scenes there, and their buttons come off now, after the reply. What
+ * Telegram keeps quiet, a failure here, or more than a few scenes is left to
+ * the daily run.
  */
 async function drawEnded(ctx: SceneContext, owner: number, chatId?: number): Promise<void> {
-  try {
-    for (const scene of await ctx.store.undrawnScenesOf(owner, chatId)) {
+  const work = (async () => {
+    for (const scene of await ctx.store.undrawnScenesOf(owner, ENDED_DRAWS, chatId)) {
       await drawOwed(ctx, scene);
     }
-  } catch (error) {
-    console.error(JSON.stringify({ event: "scene_end_draw_failed", owner, error: String(error) }));
-  }
+  })().catch((error: unknown) =>
+    console.error(JSON.stringify({ event: "scene_end_draw_failed", owner, error: String(error) })),
+  );
+  if (ctx.defer) ctx.defer(work);
+  else await work;
 }
 
 /** Revoke the user's access to a group; their scenes there end with it. */
-export async function revokeAccess(ctx: SceneContext, userId: number, chatId: number) {
+export async function revokeAccess(
+  ctx: SceneContext,
+  userId: number,
+  chatId: number,
+): Promise<boolean> {
   const gone = await ctx.store.revokeGrant(userId, chatId);
   await drawEnded(ctx, userId, chatId);
   return gone;

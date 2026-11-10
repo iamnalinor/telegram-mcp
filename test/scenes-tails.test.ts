@@ -189,6 +189,24 @@ describe("a scene's tails", () => {
     keyboardGone();
   });
 
+  it("revoking one group leaves the scenes in another alone", async () => {
+    const other = { id: -1005555555555, title: "Other chat", type: "group" };
+    await h.addBot(other, ALICE);
+    const result = await h.tool(alice, "create_scene", { chat: other.id, definition: COUNTER });
+    const kept = Number(/Scene (\d+)/.exec(result.text)![1]);
+    const keptMessage = Number(/as #(\d+)/.exec(result.text)![1]);
+    await h.say(TEAM, ALICE, "", { left_chat_member: { ...ALICE, is_bot: false } });
+    keyboardGone();
+    const row = h.db.raw.query("SELECT status FROM scenes WHERE id = ?").get(kept) as {
+      status: string;
+    };
+    expect(row.status).toBe("active");
+    const touched = h.telegram
+      .called("editMessageText")
+      .filter((call) => call.params.chat_id === other.id && call.params.message_id === keptMessage);
+    expect(touched).toHaveLength(0);
+  });
+
   it("an ended scene Telegram keeps quiet loses its buttons in the daily run", async () => {
     h.db.raw.exec(`UPDATE scenes SET quiet_until = ${Date.now() + 3_600_000}`);
     await h.say(dm(ALICE), ALICE, "/disconnect");

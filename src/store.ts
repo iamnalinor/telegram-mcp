@@ -2772,13 +2772,13 @@ export class Store {
   }
 
   /** The owner's finished scenes whose last drawing is owed, in one chat or everywhere. */
-  async undrawnScenesOf(owner: number, chatId?: number): Promise<number[]> {
+  async undrawnScenesOf(owner: number, limit: number, chatId?: number): Promise<number[]> {
     const { results } = await this.db
       .prepare(
         `SELECT id FROM scenes WHERE status = 'finished' AND dirty = 1 AND owner = ?1
-         AND (?2 IS NULL OR chat_id = ?2)`,
+         AND (?2 IS NULL OR chat_id = ?2) LIMIT ?3`,
       )
-      .bind(owner, chatId ?? null)
+      .bind(owner, chatId ?? null, limit)
       .all<{ id: number }>();
     return results.map((row) => row.id);
   }
