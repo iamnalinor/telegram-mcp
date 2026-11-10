@@ -419,7 +419,7 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
           },
           undefined,
           "en",
-          { session: caller, origin: await originOf(ctx, caller, undefined) },
+          { session: caller, origin: await originOf(ctx, caller, undefined, row.session_id) },
         );
         // A rule's words may carry members' names and replies: fenced like any Telegram content.
         const said = answer.text ?? "no rule took it";

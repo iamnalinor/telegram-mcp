@@ -2,16 +2,17 @@
  * What becomes of a job the relay (src/relay.ts) could not pass on: it goes
  * the way it would have without a relay — a new session, told why, through
  * the same routing as everything else (src/agents/route.ts). A Codex start
- * that did not go through is not tried elsewhere: the user hears of it.
+ * that did not go through is not tried elsewhere, nor is a message its thread
+ * took and failed on: the user hears of it.
  */
 
 import { codexStartFailed } from "../agents/codex";
 import { wakeFallback } from "../scenes/wake";
-import { BOT_ACCOUNT, type GuestReply, type RelayJob } from "../store";
+import { BOT_ACCOUNT, isGuestKey, type GuestReply, type RelayJob } from "../store";
 import type { BotContext } from "./context";
 import { startGuest } from "./guest";
 import { texts } from "./texts";
-import { launch } from "./triggers";
+import { holderVoice, launch } from "./triggers";
 
 /**
  * A Telegram reply the relay could not pass on starts a session after all,
@@ -38,6 +39,12 @@ export async function fallBack(
         parse_mode: "HTML",
       })
       .catch(() => undefined);
+    return;
+  }
+  // The thread is there and the relay ran the message, which failed: a new session would not know
+  // what this one did, and could fail the same way. Only one that never ran it starts afresh.
+  if (job.runner === "codex-resume" && why === "failed") {
+    await codexResumeFailed(ctx, job);
     return;
   }
   if (job.chat_id === null || job.message_id === null) return;
@@ -83,4 +90,27 @@ export async function fallBack(
     agent,
     relay: job.kind === "reply" ? why : null,
   });
+}
+
+/** A message a Codex thread took and failed on: its start in the log fails, and the holder hears. */
+async function codexResumeFailed(ctx: BotContext, job: RelayJob): Promise<void> {
+  // Another session's ask: that session hears of it when it waits for the answer.
+  if (job.chat_id === null || job.message_id === null || job.kind === "ask") return;
+  let chat = job.chat_id;
+  let fire = job.message_id;
+  if (job.kind === "scene") {
+    // A scene's job names the scene and the start it was claimed as.
+    const scene = await ctx.store.getScene(job.chat_id);
+    if (!scene || job.thread_id === null) return;
+    chat = scene.chat_id;
+    fire = job.thread_id;
+  }
+  await ctx.store.endFire(chat, fire, { status: "failed" });
+  const title = isGuestKey(chat)
+    ? ((await ctx.store.guestChatByKey(chat))?.title ?? null)
+    : chat < 0
+      ? ((await ctx.store.getChat(chat))?.title ?? null)
+      : null;
+  const { tell, where, t } = await holderVoice(ctx, job.user_id, chat, title);
+  await tell(where + t.codexDeliverFailed(job.target_session, job.error ?? "unknown error"));
 }

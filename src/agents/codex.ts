@@ -4,12 +4,17 @@
  * there. The Worker gives each session its id (`cx_…`) and queues its start;
  * the relay tells the thread's id once Codex has one (`agent_sessions`
  * `external_id`), and messages for the session wait for it, then go in one at
- * a time.
+ * a time. Each run reaches the bot's tools with a token of its own, bound to
+ * its session and handed out with its job (src/relay.ts): what it says it is
+ * counts only as that session.
  *
  * Settings, kept encrypted like OpenAI's though none is secret: the model
  * (null: Codex's own default), the sandbox policy and the working directory.
- * A sandboxed run is read-only, in an empty directory; otherwise Codex has the
- * machine, from the working directory. Policy `others` (the default) sandboxes
+ * A sandboxed run cannot write and starts in an empty directory, but it still
+ * reads whatever the relay's user can; otherwise Codex has the machine, from
+ * the working directory. A resume is given the sandbox afresh each time
+ * (`-c sandbox_mode`, which Codex applies to the turn), so a thread may run
+ * sandboxed one turn and not the next. Policy `others` (the default) sandboxes
  * whatever a third party stands behind — their message, their scene's wake, a
  * session their words went into — `all` everything, `none` nothing.
  *
@@ -78,7 +83,11 @@ export function workdirOf(text: string): string | null {
   return dir.length <= 200 && /^(?:~|(?:~\/|\/)[^\p{Cc}$`"'\\]*)$/u.test(dir) ? dir : null;
 }
 
-/** What the relay runs a job with. A sandboxed run gets the relay's empty directory. */
+/**
+ * What the relay runs a job with. A sandboxed run gets the relay's empty
+ * directory. Fixed when the job is queued: a job waiting in the queue keeps the
+ * sandbox and directory it was enqueued with, whatever the settings say later.
+ */
 function paramsOf(config: CodexConfig, sandboxed: boolean): string {
   return JSON.stringify({
     model: config.model,

@@ -106,7 +106,8 @@ describe("OpenAI webhooks", () => {
     expect(told).toHaveLength(1);
     expect(told[0].chat_id).toBe(ALICE.id);
     expect(String(told[0].text)).toContain("An OpenAI session failed");
-    expect(String(told[0].text)).toContain(`<code>${ours("sess_1")}</code>`);
+    // Shown short: its prefix and six characters.
+    expect(String(told[0].text)).toContain(`<code>${ours("sess_1").slice(0, 9)}</code>`);
     expect(told[0].reply_parameters).toEqual({
       message_id: started.message_id,
       allow_sending_without_reply: true,
@@ -147,10 +148,22 @@ describe("OpenAI webhooks", () => {
     expect(sent()).toHaveLength(before + 1);
     expect(sentTexts().at(-1)).toContain("waiting for an action I cannot give");
 
+    // A message went in since: the next wait is news again.
+    const { access_token } = await h.connect(ALICE);
+    const asked = await h.tool(access_token, "message_session", {
+      to: ours("sess_0"),
+      text: "go on",
+      expect_answer: false,
+    });
+    expect(asked.isError).toBe(false);
+    await deliver(path, "agent.session.action_required", "sess_0");
+    expect(sent()).toHaveLength(before + 2);
+    expect(sentTexts().at(-1)).toContain("waiting for an action I cannot give");
+
     // A failure after that is still news; nothing after a failure is.
     await deliver(path, "agent.session.failed", "sess_0");
     await deliver(path, "agent.session.action_required", "sess_0");
-    expect(sent()).toHaveLength(before + 2);
+    expect(sent()).toHaveLength(before + 3);
     expect(sentTexts().at(-1)).toContain("An OpenAI session failed");
   });
 

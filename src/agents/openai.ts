@@ -322,6 +322,8 @@ export const openai: Provider = {
     const body = `Your session id: ${row.id}\n${await delivery.envelope(ask)}`;
     const posted = await call(config.key, `${path}/events`, inputEvent(body));
     if (!posted.ok) return missed(posted);
+    // It goes on: an action it waits for later is news again.
+    if (row.told === "action") await ctx.store.clearTold(row.id);
     // Filed like a relay job already done: answer_session and the session's origin read it.
     await ctx.store.enqueueJob(
       { ...delivery.job, id: ask, user_id: holder, target_session: row.id, body },

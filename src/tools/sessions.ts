@@ -114,7 +114,7 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
         to: z
           .string()
           .max(200)
-          .describe("The session: session_…, cse_…, oa_… or its claude.ai/code link."),
+          .describe("The session: session_…, cse_…, oa_…, cx_… or its claude.ai/code link."),
         text: z
           .string()
           .min(1)
@@ -158,7 +158,7 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
         }
         const from = callerSession(ctx, args.session);
         if (from === target) throw new ToolError("That is this session.");
-        const origin = await originOf(ctx, from, args.on_behalf_of);
+        const origin = await originOf(ctx, from, args.on_behalf_of, target);
         const expectAnswer = args.expect_answer;
         const routed = await route(ctx, {
           holder: ctx.userId,
@@ -295,16 +295,22 @@ function describe(session: KnownSession, where: (chatId: number) => string): str
  * them whatever it says; one the bot did not start, or a caller that names no
  * session, is of unknown origin. A task session acts for whom the chat
  * session that started it did then (src/tools/tasks.ts), and for others too
- * once their messages went into it. The session id itself is the caller's word —
- * every assistant of the user's signs in the same way — so this narrows what
- * a label can claim; it is not proof.
+ * once their messages went into it. A session the Worker runs (oa_…, cx_…) is
+ * known by its token, which is bound to it; any other session id is the
+ * caller's word — Claude's sessions sign in the same way — so this narrows what
+ * a label can claim; it is not proof. Hence a Worker's id counts only from its
+ * own token, and a message `into` a Codex session (which may run unsandboxed
+ * for the user) from a caller no token binds is a third party's.
  */
 export async function originOf(
   ctx: ToolContext,
   from: string | null,
   declared: "user" | "third_party" | undefined,
+  into: string | null = null,
 ): Promise<RelayOrigin> {
   if (declared === "third_party") return "other";
+  if (from && providerOf(from) !== "claude" && from !== ctx.session) return "other";
+  if (into && providerOf(into) === "codex" && !ctx.session) return "other";
   if (!from) return "unknown";
   // A task is started by a chat session, not from Telegram: it acts for whom that one did.
   const inherited =

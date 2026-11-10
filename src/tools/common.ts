@@ -35,7 +35,8 @@ export interface ToolContext {
   client: string | null;
   /**
    * The session the caller's token is bound to: one the Worker started itself
-   * (src/agents/openai.ts). It stands for `session` whatever the model passes.
+   * (src/agents/openai.ts) or a Codex run (src/agents/codex.ts). It stands for
+   * `session` whatever the model passes.
    */
   session: string | null;
   /** Public origin of the Worker, for upload and download links. */
@@ -130,7 +131,7 @@ export const sessionArg = z
   .optional()
   .describe(
     "Your session id, if you have one: a Claude Code cloud session's (cse_… or session_…), or the one " +
-      "your start named (oa_…).",
+      "your start named (oa_… or cx_…).",
   );
 
 /** The calling session: the one its token is bound to, else the id it passed as `session`. */

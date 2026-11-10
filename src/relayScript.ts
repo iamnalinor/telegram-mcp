@@ -11,7 +11,9 @@
  * the Worker for work, so it needs no open port, domain or public address.
  * Claude Code must be signed in once on that machine (`claude`, then /login)
  * — the relay writes to sessions as that account; Codex likewise (`codex
- * login`), and connected to the bot (`codex mcp add`, `codex mcp login`).
+ * login`). Codex needs no sign-in to the bot: each run is handed a token of
+ * its own with its job, bound to its session (src/relay.ts), and gets it in
+ * an environment variable — never on a command line, never in the log.
  *
  * The relay says which of the two it has, and runs each job by its runner:
  * Claude's in turn, Codex's in the background — a few at a time, one per
@@ -30,6 +32,9 @@ DIR="$HOME/.tg-relay"
 AUTH=$(umask 077 && mktemp)
 trap 'rm -f "$AUTH"' EXIT
 printf 'Authorization: Bearer %s\n' "$RELAY_TOKEN" >"$AUTH"
+# Then out of the environment: nothing the relay runs, Codex least of all, inherits it. The file
+# stays readable to this user, and so to an unsandboxed run, which can do all this user can.
+unset RELAY_TOKEN
 
 report() { # job id, JSON[, path after the id]
   printf '%s' "$2" | curl -fsS --max-time 30 -X POST -H @"$AUTH" -H 'Content-Type: application/json' --data-binary @- "$API/jobs/$1${"$"}{3:-}" >/dev/null || true
@@ -56,10 +61,11 @@ claude_continue() { # job JSON
 }
 
 # A Codex thread started or carried on here; run in the background, one at a time per session.
-# Sandboxed: read-only, in an empty directory. Otherwise it has the machine, from the job's directory.
+# Sandboxed: it cannot write, and works in an empty directory, but it still reads whatever this
+# user can. Otherwise it has the machine, from the job's directory.
 CODEX_MAX=3
 codex_run() { # job JSON
-  local job=$1 id runner session thread model sandbox cwd out err pid code told= msg result
+  local job=$1 id runner session thread model sandbox cwd token out err pid code told= msg result
   id=$(printf '%s' "$job" | jq -r .id)
   runner=$(printf '%s' "$job" | jq -r .runner)
   session=$(printf '%s' "$job" | jq -r .session)
@@ -67,6 +73,8 @@ codex_run() { # job JSON
   model=$(printf '%s' "$job" | jq -r '.model // empty')
   sandbox=$(printf '%s' "$job" | jq -r '.sandbox // empty')
   cwd=$(printf '%s' "$job" | jq -r '.cwd // empty')
+  # The run's own token to the bot, bound to its session: it goes to Codex in its environment only.
+  token=$(printf '%s' "$job" | jq -r '.token // empty')
   if [ "$sandbox" = danger-full-access ]; then
     case "$cwd" in
       "" | "~") cwd=$HOME ;;
@@ -80,18 +88,30 @@ codex_run() { # job JSON
     report "$id" "$(jq -cn --arg d "$cwd" '{ok:false, error:("no such directory: " + $d)}')"
     return
   fi
-  exec 9>"$DIR/locks/$session"
-  flock 9
+  # The bot hands out one job of a session at a time; the lock is the second guard. Codex does not
+  # get its descriptor (9>&-): whatever it leaves running must not hold the session's lock.
+  local lock="$DIR/locks/$session"
+  exec 9>"$lock"
+  if ! flock -w 60 9; then
+    exec 9>&-
+    report "$id" '{"ok":false,"error":"another run of this session still holds its lock on the relay"}'
+    return
+  fi
+  # The sandbox goes as config on a resume too: Codex applies it to the turn (checked with 0.167).
   local args=(--json --skip-git-repo-check -c 'approval_policy="never"' -c "sandbox_mode=\"$sandbox\"")
   [ -n "$model" ] && args+=(-m "$model")
-  # The bot's tools go without asking, once Codex is connected to the bot.
-  codex mcp get telegram >/dev/null 2>&1 && args+=(-c 'mcp_servers.telegram.default_tools_approval_mode="approve"')
+  # The bot's tools, with this run's token, going without asking.
+  [ -n "$token" ] && args+=(
+    -c "mcp_servers.telegram.url=\"$RELAY_ORIGIN/\""
+    -c 'mcp_servers.telegram.bearer_token_env_var="TG_MCP_TOKEN"'
+    -c 'mcp_servers.telegram.default_tools_approval_mode="approve"'
+  )
   out=$(mktemp)
   err=$(mktemp)
   if [ "$runner" = codex-start ]; then
-    printf '%s' "$job" | jq -r .text | (cd "$cwd" && exec timeout 3000 codex exec "${"$"}{args[@]}" -C "$cwd" -) >"$out" 2>"$err" &
+    printf '%s' "$job" | jq -r .text | (cd "$cwd" && TG_MCP_TOKEN=$token exec timeout 3000 codex exec "${"$"}{args[@]}" -C "$cwd" -- - 9>&-) >"$out" 2>"$err" &
   else
-    printf '%s' "$job" | jq -r .text | (cd "$cwd" && exec timeout 3000 codex exec resume "${"$"}{args[@]}" "$thread" -) >"$out" 2>"$err" &
+    printf '%s' "$job" | jq -r .text | (cd "$cwd" && TG_MCP_TOKEN=$token exec timeout 3000 codex exec resume "${"$"}{args[@]}" -- "$thread" - 9>&-) >"$out" 2>"$err" &
   fi
   pid=$!
   # The thread's id comes first: the bot holds messages for it until it has it.
@@ -116,7 +136,8 @@ codex_run() { # job JSON
     result=$(jq -cn --arg m "$msg" --arg err "$(tail -c 400 "$err")" --arg code "$code" --arg t "$thread" \
       '{ok:false, thread:$t, error:(if $m != "" then $m elif ($err | test("^\\s*$")) then "codex exited with " + $code else $err end)}')
   fi
-  rm -f "$out" "$err"
+  rm -f "$out" "$err" "$lock"
+  exec 9>&-
   report "$id" "$result"
   echo "$(date -u +%FT%TZ) $id -> $session: $result"
 }
@@ -232,11 +253,15 @@ if have claude; then
   fi
 fi
 if have codex; then
+  # Each run now gets a sign-in of its own from the bot: a stored one, shared by every run, goes.
+  if codex mcp get telegram >/dev/null 2>&1; then
+    codex mcp logout telegram >/dev/null 2>&1 || true
+    codex mcp remove telegram >/dev/null 2>&1 || true
+    echo "Removed Codex's stored connection to the bot: the relay gives each run its own."
+  fi
   echo
-  echo "Codex, once, here:"
+  echo "Sign Codex in once, here, if it is not yet:"
   echo "  codex login                (without a browser: codex login --device-auth)"
-  echo "  codex mcp add telegram --url $ORIGIN/"
-  echo "  codex mcp login telegram --no-browser"
   echo "  sudo systemctl restart tg-relay"
 fi
 }

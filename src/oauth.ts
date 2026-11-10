@@ -34,11 +34,12 @@ import {
   type AuthMetadataOptions,
 } from "@modelcontextprotocol/server";
 
+import { providerOf } from "./agents/types";
 import { escapeHtml } from "./bot/texts";
 import { nowSeconds, randomId, sha256Base64Url, sign, verify } from "./crypto";
 import { isAllowed, type Config, type Env } from "./env";
 import { allow, clientIp, RETRY_AFTER_HEADERS } from "./limits";
-import { AGENTS_SIGN_IN, type Store } from "./store";
+import { AGENTS_SIGN_IN, CODEX_SIGN_IN, type Store } from "./store";
 import { verifyLogin, type LoginUser } from "./telegram/login";
 
 const SCOPE = "telegram";
@@ -749,21 +750,24 @@ const SESSION_TOKEN_TTL = 7 * 24 * 60 * 60;
  * An access token for a session the Worker starts itself, bound to that
  * session (`session`, the Worker's id for it): whatever the session passes as
  * `session`, its calls are filed under this one. It hangs off one sign-in per
- * user, listed in the bot's menu, so it is revoked like any other — and a
- * token version bump (/disconnect) ends it too. Never logged.
+ * user and provider ("OpenAI agents", "Codex runs"), listed in the bot's menu,
+ * so it is revoked like any other — and a token version bump (/disconnect)
+ * ends it too. A Codex run gets one for itself, living about as long as the
+ * run may (`ttl`). Never logged.
  */
 export async function mintSessionToken(
   deps: Pick<OAuthDeps, "config" | "store">,
   userId: number,
   session: string,
+  ttl = SESSION_TOKEN_TTL,
 ): Promise<{ token: string; expiresAt: number; signIn: string; version: number }> {
   const user = await deps.store.getUser(userId);
   const version = user?.token_version ?? 0;
-  const expiresAt = nowSeconds() + SESSION_TOKEN_TTL;
+  const expiresAt = nowSeconds() + ttl;
   // Listed and revoked like any other sign-in; ending the user's agents revokes it too (src/store.ts).
   const signIn = await deps.store.workerSignIn(
     userId,
-    AGENTS_SIGN_IN,
+    providerOf(session) === "codex" ? CODEX_SIGN_IN : AGENTS_SIGN_IN,
     nowSeconds() + REFRESH_TTL,
     randomId(),
   );
@@ -771,7 +775,7 @@ export async function mintSessionToken(
     deps.config.signingKey,
     "access",
     { u: userId, v: version, s: signIn, as: session },
-    SESSION_TOKEN_TTL,
+    ttl,
   );
   return { token, expiresAt, signIn, version };
 }

@@ -930,7 +930,7 @@ async function render(
   if (name === "cx") return codexScreen(ctx, user);
   if (name === "cxsetup") {
     return {
-      text: t.codexSetup(ctx.origin),
+      text: t.codexSetup,
       reply_markup: { inline_keyboard: [[button(t.buttonBack, "cx")]] },
     };
   }

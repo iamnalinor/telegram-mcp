@@ -10,7 +10,9 @@
  *                                    the relay asks for work it can run (Bearer:
  *                                    its token; no runners: Claude only), less
  *                                    what it has no room for now; the answer
- *                                    waits up to that long for a job
+ *                                    waits up to that long for a job; a Codex
+ *                                    job comes with its run's own MCP token,
+ *                                    bound to its session (src/oauth.ts)
  *   POST /relay/jobs/<id>/started    a Codex start tells its thread's id: {thread}
  *   POST /relay/jobs/<id>            …and the relay reports how it went: {ok, error}
  *
@@ -26,6 +28,7 @@ import type { BotContext } from "./bot/context";
 import { texts } from "./bot/texts";
 import { nowSeconds, randomId, sha256Base64Url } from "./crypto";
 import type { UserRef } from "./prompts";
+import { mintSessionToken } from "./oauth";
 import { installScript } from "./relayScript";
 import { type RelayJob, type RelayRow, type Runner, type Store } from "./store";
 
@@ -60,10 +63,11 @@ const WAIT_STEP_MS = 2000;
 /** Past the relay's own 300 s timeout per job: a taken job never reported is lost. */
 const TAKEN_EXPIRY_SECONDS = 420;
 /**
- * Stale jobs one sweep takes: each may start a session, a dozen D1 queries
- * and a fetch or two, and a cron run has a budget. The rest wait a few minutes.
+ * Stale jobs one sweep handles: each may start a session, a dozen D1 queries
+ * and a fetch or two, and a cron run has 50 queries on the free plan. The
+ * rest wait for the next sweep, a few minutes on, as they were.
  */
-const SWEEP_LIMIT = 25;
+const SWEEP_LIMIT = 3;
 const ERROR_LIMIT = 500;
 
 export type RelayState = "none" | "online" | "offline" | "login";
@@ -153,7 +157,8 @@ export async function handleRelay(
     await store.touchRelay(relay.user_id, now);
     // What it runs; a relay too old to say runs Claude only, and stays null.
     const said = params.get("runners");
-    const runners = said === null ? null : said.split(",").filter((kind) => kind in RUNS);
+    const runners =
+      said === null ? null : said.split(",").filter((kind) => Object.hasOwn(RUNS, kind));
     const stored = runners === null ? null : runners.join(",");
     if (stored !== relay.runners) await store.setRelayRunners(relay.user_id, stored);
     // A relay (re)started after a new sign-in: give it a chance before calling it broken again.
@@ -179,15 +184,32 @@ export async function handleRelay(
         kinds.flatMap((kind) => RUNS[kind]),
       );
       if (jobs.length || Date.now() + WAIT_STEP_MS > deadline) {
+        const ctx = jobs.some((job) => job.runner !== "claude-continue") ? await botFor() : null;
         return Response.json(
-          jobs.map((job) => ({
-            id: job.id,
-            runner: job.runner,
-            session: job.target_session,
-            text: job.body,
-            ...(job.params ? (JSON.parse(job.params) as object) : {}),
-            ...(job.runner === "codex-resume" ? { thread: job.thread } : {}),
-          })),
+          await Promise.all(
+            jobs.map(async (job) => ({
+              id: job.id,
+              runner: job.runner,
+              session: job.target_session,
+              text: job.body,
+              // As queued: a job keeps the sandbox and directory it was enqueued with.
+              ...(job.params ? (JSON.parse(job.params) as object) : {}),
+              ...(job.runner === "codex-resume" ? { thread: job.thread } : {}),
+              // A Codex run's own MCP token, bound to its session, for as long as the run may last.
+              ...(ctx && job.runner !== "claude-continue"
+                ? {
+                    token: (
+                      await mintSessionToken(
+                        ctx,
+                        relay.user_id,
+                        job.target_session,
+                        CODEX_TAKEN_SECONDS,
+                      )
+                    ).token,
+                  }
+                : {}),
+            })),
+          ),
         );
       }
       await sleep(WAIT_STEP_MS);
@@ -251,8 +273,8 @@ export async function handleRelay(
   return new Response(null, { status: 204 });
 }
 
-/** A Codex thread's id, as the relay tells it. */
-const THREAD = /^[\w-]{8,64}$/;
+/** A Codex thread's id, as the relay tells it: never one a command line would take for an option. */
+const THREAD = /^[A-Za-z0-9][\w-]{7,63}$/;
 
 const errorOf = (error: unknown) =>
   (typeof error === "string" ? error : "unknown error").slice(0, ERROR_LIMIT);
@@ -260,7 +282,8 @@ const errorOf = (error: unknown) =>
 /**
  * Stale jobs fail; a Telegram reply among them starts a session instead. A
  * relay gone quiet with work waiting is told to the user once — unless it is
- * signed out, which they heard about already.
+ * signed out, which they heard about already. A few jobs a sweep, each failed
+ * only as what becomes of it runs: the rest wait for the next sweep.
  */
 export async function sweepRelays(
   store: Store,
@@ -268,7 +291,7 @@ export async function sweepRelays(
   fallBack: FallBack,
 ): Promise<void> {
   const now = nowSeconds();
-  const expired = await store.expireJobs(
+  const stale = await store.staleJobs(
     {
       queued: now - JOB_EXPIRY_SECONDS,
       taken: now - TAKEN_EXPIRY_SECONDS,
@@ -279,13 +302,15 @@ export async function sweepRelays(
     },
     SWEEP_LIMIT,
   );
-  if (!expired.length) return;
+  if (!stale.length) return;
   const ctx = await botFor();
   const seen = new Set<number>();
   const restarted = new Set<string>();
-  const order = (a: RelayJob, b: RelayJob) =>
-    a.created_at - b.created_at || (a.message_id ?? 0) - (b.message_id ?? 0);
-  for (const job of expired.sort(order)) {
+  const relays = new Map<number, RelayRow | null>();
+  for (const found of stale) {
+    const job = await store.expireJob(found);
+    // Taken, reported or folded into another since it was found: it is not stale any more.
+    if (!job) continue;
     // The day's messages for one session start one new session; the rest join it.
     const day = `${job.user_id}:${job.target_session}`;
     if (job.kind === "day" && restarted.has(day)) {
@@ -295,7 +320,8 @@ export async function sweepRelays(
       continue;
     }
     if (job.kind === "day") restarted.add(day);
-    const row = await store.getRelay(job.user_id);
+    if (!relays.has(job.user_id)) relays.set(job.user_id, await store.getRelay(job.user_id));
+    const row = relays.get(job.user_id) ?? null;
     // Claude's sign-in is no matter for Codex.
     const claude = job.runner === "claude-continue";
     const state = claude ? relayState(row, now) : codexRelayState(row, now);

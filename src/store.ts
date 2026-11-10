@@ -97,8 +97,9 @@ export interface AgentSession {
   origin: RelayOrigin | null;
 }
 
-/** The sign-in the Worker's own sessions' MCP tokens hang on (src/oauth.ts `mintSessionToken`). */
+/** The sign-ins the Worker's own sessions' MCP tokens hang on (src/oauth.ts `mintSessionToken`). */
 export const AGENTS_SIGN_IN = "OpenAI agents";
+export const CODEX_SIGN_IN = "Codex runs";
 
 export interface ClaudeChat {
   chat_id: number;
@@ -1864,17 +1865,19 @@ export class Store {
    * session started gets a new sign-in.
    */
   private endAgentSessions(userId: number, provider: string | null): D1PreparedStatement[] {
+    // Each provider's sessions hold tokens of a sign-in of its own (src/oauth.ts `mintSessionToken`).
+    const signIns =
+      provider === null
+        ? [AGENTS_SIGN_IN, CODEX_SIGN_IN]
+        : [provider === "codex" ? CODEX_SIGN_IN : AGENTS_SIGN_IN];
     return [
-      // Only OpenAI's sessions hold tokens of that sign-in; Codex signs in on the user's machine.
-      ...(provider === "codex"
-        ? []
-        : [
-            this.db
-              .prepare(
-                "UPDATE refresh_sessions SET revoked = 1 WHERE user_id = ? AND client_name = ? AND revoked = 0",
-              )
-              .bind(userId, AGENTS_SIGN_IN),
-          ]),
+      ...signIns.map((name) =>
+        this.db
+          .prepare(
+            "UPDATE refresh_sessions SET revoked = 1 WHERE user_id = ? AND client_name = ? AND revoked = 0",
+          )
+          .bind(userId, name),
+      ),
       // What the relay was still to run for them is not run.
       this.db
         .prepare(
@@ -2005,6 +2008,17 @@ export class Store {
       .bind(id, what)
       .run();
     return (result.meta.changes ?? 0) > 0;
+  }
+
+  /**
+   * A message went into the session after all: a later action it waits for is
+   * worth telling again. A failure stands.
+   */
+  async clearTold(id: string): Promise<void> {
+    await this.db
+      .prepare("UPDATE agent_sessions SET told = NULL WHERE id = ? AND told = 'action'")
+      .bind(id)
+      .run();
   }
 
   /**
@@ -2525,14 +2539,16 @@ export class Store {
   }
 
   /**
-   * Jobs gone stale fail now. Claude's: queued ones nobody took since
-   * `queued` (the relay is gone), and taken ones never reported since `taken`
-   * (it restarted or lost the report). Codex's run for long: queued ones fail
-   * after `codexQueued` only while no relay that runs Codex was `online`
-   * since — before that they may wait behind a running start, up to
-   * `codexHeld` — and taken ones after `codexTaken`.
+   * Jobs gone stale, the oldest first, left as they are: each fails only when
+   * what becomes of it is about to run (`expireJob`), so a sweep cut short
+   * loses none. Claude's: queued ones nobody took since `queued` (the relay is
+   * gone), and taken ones never reported since `taken` (it restarted or lost
+   * the report). Codex's run for long: queued ones go stale after
+   * `codexQueued` only while no relay that runs Codex was `online` since —
+   * before that they may wait behind a running start, up to `codexHeld` — and
+   * taken ones after `codexTaken`.
    */
-  async expireJobs(
+  async staleJobs(
     cutoffs: {
       queued: number;
       taken: number;
@@ -2545,21 +2561,18 @@ export class Store {
   ): Promise<RelayJob[]> {
     const { results } = await this.db
       .prepare(
-        `UPDATE relay_jobs SET status = 'failed', error = CASE status
-           WHEN 'queued' THEN 'the relay did not pick it up' ELSE 'the relay did not report back' END
-         WHERE id IN (SELECT j.id FROM relay_jobs j
-                      WHERE (j.runner = 'claude-continue'
-                             AND ((j.status = 'queued' AND j.created_at < ?1)
-                                  OR (j.status = 'taken' AND j.taken_at < ?2)))
-                         OR (j.runner != 'claude-continue'
-                             AND ((j.status = 'queued' AND (j.created_at < ?4
-                                    OR (j.created_at < ?3 AND NOT EXISTS (
-                                      SELECT 1 FROM relays r WHERE r.user_id = j.user_id
-                                        AND r.last_seen >= ?6
-                                        AND instr(',' || r.runners || ',', ',codex,') > 0))))
-                                  OR (j.status = 'taken' AND j.taken_at < ?5)))
-                      ORDER BY j.created_at LIMIT ?7)
-         RETURNING *`,
+        `SELECT j.* FROM relay_jobs j
+         WHERE (j.runner = 'claude-continue'
+                AND ((j.status = 'queued' AND j.created_at < ?1)
+                     OR (j.status = 'taken' AND j.taken_at < ?2)))
+            OR (j.runner != 'claude-continue'
+                AND ((j.status = 'queued' AND (j.created_at < ?4
+                       OR (j.created_at < ?3 AND NOT EXISTS (
+                         SELECT 1 FROM relays r WHERE r.user_id = j.user_id
+                           AND r.last_seen >= ?6
+                           AND instr(',' || r.runners || ',', ',codex,') > 0))))
+                     OR (j.status = 'taken' AND j.taken_at < ?5)))
+         ORDER BY j.created_at, j.message_id LIMIT ?7`,
       )
       .bind(
         cutoffs.queued,
@@ -2572,6 +2585,21 @@ export class Store {
       )
       .all<RelayJob>();
     return results;
+  }
+
+  /** A stale job fails, if it is still as it was found; null when it moved on meanwhile. */
+  async expireJob(job: Pick<RelayJob, "id" | "status">): Promise<RelayJob | null> {
+    return this.db
+      .prepare(
+        `UPDATE relay_jobs SET status = 'failed', error = ?
+         WHERE id = ? AND status = ? RETURNING *`,
+      )
+      .bind(
+        job.status === "queued" ? "the relay did not pick it up" : "the relay did not report back",
+        job.id,
+        job.status,
+      )
+      .first<RelayJob>();
   }
 
   /**
@@ -2619,12 +2647,16 @@ export class Store {
     return row ? { by_other: row.by_other === 1 } : null;
   }
 
-  /** Whether anyone but the user has had messages relayed into this session. */
+  /**
+   * Whether anyone but the user has had messages relayed into this session —
+   * scene wakes that others caused among them.
+   */
   async sessionHeardOthers(userId: number, sessionId: string): Promise<boolean> {
     const row = await this.db
       .prepare(
         // A scene's wake from the session's own act is no third party's word.
-        "SELECT 1 FROM relay_jobs WHERE user_id = ? AND target_session = ? AND origin != 'user' AND kind != 'scene' LIMIT 1",
+        `SELECT 1 FROM relay_jobs WHERE user_id = ?1 AND target_session = ?2 AND origin != 'user'
+           AND (kind != 'scene' OR from_session IS NULL OR from_session != ?2) LIMIT 1`,
       )
       .bind(userId, sessionId)
       .first();

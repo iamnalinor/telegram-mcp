@@ -12,12 +12,22 @@ export function escapeHtml(text: string): string {
   return text.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
 }
 
-/** A session under `label`: a link where it has a page, else the label and its id. */
+/**
+ * A session's id as the user reads it: its prefix and the first six characters
+ * after it (`oa_3f9c2a`), enough to tell sessions apart. The model always gets
+ * the full id.
+ */
+function shortSession(id: string): string {
+  const match = /^([a-z]+_)(.{6})./.exec(id);
+  return match ? match[1] + match[2] : id;
+}
+
+/** A session under `label`: a link where it has a page, else the label and its short id. */
 export function sessionRef(id: string, label: string): string {
   const link = sessionLink(id);
   return link
     ? `<a href="${escapeHtml(link)}">${label}</a>`
-    : `${label} <code>${escapeHtml(id)}</code>`;
+    : `${label} <code>${escapeHtml(shortSession(id))}</code>`;
 }
 
 /** How a provider's setup is named on the assistant screen. */
@@ -241,13 +251,13 @@ const en = {
       ? "✅ The secret is set: failed sessions reach you here."
       : "The secret is not set yet: until it is, I ignore what comes to this URL."),
   agentFailed: (session: string, from: { chat: string; link: string | null } | null) =>
-    `⚠️ An OpenAI session failed: <code>${escapeHtml(session)}</code>.` +
+    `⚠️ An OpenAI session failed: <code>${escapeHtml(shortSession(session))}</code>.` +
     (from
       ? ` It started from ${from.link ? `<a href="${escapeHtml(from.link)}">a message</a>` : "a message"} in «${escapeHtml(from.chat)}».`
       : "") +
     " What it was doing did not finish: write again to start a new one, or check its logs on platform.openai.com.",
   agentStuck: (session: string, from: { chat: string; link: string | null } | null) =>
-    `⏸ An OpenAI session is waiting for an action I cannot give: <code>${escapeHtml(session)}</code>.` +
+    `⏸ An OpenAI session is waiting for an action I cannot give: <code>${escapeHtml(shortSession(session))}</code>.` +
     (from
       ? ` It started from ${from.link ? `<a href="${escapeHtml(from.link)}">a message</a>` : "a message"} in «${escapeHtml(from.chat)}».`
       : "") +
@@ -273,7 +283,9 @@ const en = {
       ? "⚠️ I can no longer read the saved settings: the bot's token changed. Choose them again."
       : `Model: ${p.model ? `<code>${escapeHtml(p.model)}</code>` : "Codex's default"}. Working directory: ` +
         `${p.workdir ? `<code>${escapeHtml(p.workdir)}</code>` : "the relay's home"}.\n\n` +
-        "Sandbox — read-only, in an empty directory; outside it Codex can do whatever your account on the machine can:\n" +
+        "Sandbox — a sandboxed run cannot write anything and starts in an empty directory, but it can still read every file " +
+        "the relay's user can read on the machine (the relay's own token among them); outside it Codex can do whatever " +
+        "that user can:\n" +
         (["all", "others", "none"] as const)
           .map(
             (policy) =>
@@ -290,7 +302,7 @@ const en = {
     `${current ? "✓ " : ""}${{ all: "🧱 All", others: "🧱 Others", none: "🧱 None" }[policy]}`,
   buttonCodexModel: (model: string | null) => `🧠 Model: ${model ?? "default"}`,
   buttonWorkdir: "📁 Working directory",
-  buttonCodexSetup: "🔌 Connect Codex to me",
+  buttonCodexSetup: "🔌 Sign Codex in",
   codexModelPicker: "The model Codex runs with. «Default»: whatever Codex picks itself.",
   buttonDefaultModel: "Codex's default",
   workdirAsk:
@@ -300,19 +312,22 @@ const en = {
     "That is not a path I can use: an absolute path or one under ~, without quotes, $ or backslashes. Send it again, as a reply.",
   codexInstall: (command: string) =>
     "Run this on the machine (Linux with systemd; it asks for sudo). It installs Codex if needed — that takes Node.js and npm — and " +
-    `starts the relay as a service:\n<pre>${escapeHtml(command)}</pre>\nThen connect Codex to me there once: 🔌 in the Codex screen. ` +
+    `starts the relay as a service:\n<pre>${escapeHtml(command)}</pre>\nThen sign Codex in there once: 🔌 in the Codex screen. ` +
     "This command holds the relay's token — getting a new one turns the old one off, for Claude too.",
-  codexSetup: (origin: string) =>
-    "<b>Connecting Codex</b>\n\nOnce, on the relay's machine, as the user the relay runs as:\n\n" +
+  codexSetup:
+    "<b>Signing Codex in</b>\n\nOnce, on the relay's machine, as the user the relay runs as:\n\n" +
     "1. Sign Codex in to ChatGPT: <code>codex login</code> (on a machine without a browser: <code>codex login --device-auth</code>).\n" +
-    `2. Give it this bot's tools:\n<pre>codex mcp add telegram --url ${escapeHtml(origin)}/\ncodex mcp login telegram --no-browser</pre>\n` +
-    "The second command prints a link: open it, sign in with Telegram, and paste back the address the browser ends up on.\n" +
-    "3. <code>sudo systemctl restart tg-relay</code>, then ▶️ Test start.",
+    "2. <code>sudo systemctl restart tg-relay</code>, then ▶️ Test start.\n\n" +
+    "Codex needs no sign-in to me: the relay hands each run a key of its own to my tools, good for that run only. " +
+    "You see them as «Codex runs» among the sign-ins.",
   confirmDeleteCodex:
     "Remove the Codex settings? I will stop starting Codex. The relay stays: turn it off in its own screen.",
   codexStartFailed: (error: string) =>
     `⚠️ Codex could not start on your machine: <code>${escapeHtml(error)}</code>. ` +
     "What was sent to it did not get through: write again once that is fixed.",
+  codexDeliverFailed: (session: string, error: string) =>
+    `⚠️ Codex failed on the message in ${sessionRef(session, "its session")} on your machine: ` +
+    `<code>${escapeHtml(error)}</code>. It did not get through: write again to try once more.`,
   routineScreen: (p: { state: "none" | "set" | "broken"; trigger?: string; since?: string }) =>
     "<b>Claude on tag</b>\n\nA Claude Code cloud session that I start for you: it does the work and answers in Telegram. It is your routine on claude.ai and runs on your account.\n\n" +
     (p.state === "set"
@@ -739,13 +754,13 @@ const ru: Texts = {
       ? "✅ Секрет задан: об упавших сессиях я сообщу сюда."
       : "Секрет ещё не задан: пока его нет, я не слушаю, что приходит на этот URL."),
   agentFailed: (session, from) =>
-    `⚠️ Сессия OpenAI упала: <code>${escapeHtml(session)}</code>.` +
+    `⚠️ Сессия OpenAI упала: <code>${escapeHtml(shortSession(session))}</code>.` +
     (from
       ? ` Её запустило ${from.link ? `<a href="${escapeHtml(from.link)}">сообщение</a>` : "сообщение"} в «${escapeHtml(from.chat)}».`
       : "") +
     " Начатое она не закончила: напиши ещё раз, чтобы запустить новую, или посмотри её логи на platform.openai.com.",
   agentStuck: (session, from) =>
-    `⏸ Сессия OpenAI ждёт действия, которое я дать не могу: <code>${escapeHtml(session)}</code>.` +
+    `⏸ Сессия OpenAI ждёт действия, которое я дать не могу: <code>${escapeHtml(shortSession(session))}</code>.` +
     (from
       ? ` Её запустило ${from.link ? `<a href="${escapeHtml(from.link)}">сообщение</a>` : "сообщение"} в «${escapeHtml(from.chat)}».`
       : "") +
@@ -764,7 +779,9 @@ const ru: Texts = {
       ? "⚠️ Я больше не могу прочитать сохранённые настройки: сменился токен бота. Выбери их заново."
       : `Модель: ${p.model ? `<code>${escapeHtml(p.model)}</code>` : "по умолчанию Codex"}. Рабочая папка: ` +
         `${p.workdir ? `<code>${escapeHtml(p.workdir)}</code>` : "домашняя папка relay"}.\n\n` +
-        "Песочница — только чтение, в пустой папке; вне её Codex может всё, что может твой пользователь на машине:\n" +
+        "Песочница — запуск в ней ничего не может записать и начинает в пустой папке, но читать может всё, что может " +
+        "прочитать пользователь relay на машине (в том числе токен самого relay); вне её Codex может всё, что может " +
+        "этот пользователь:\n" +
         (["all", "others", "none"] as const)
           .map(
             (policy) =>
@@ -781,7 +798,7 @@ const ru: Texts = {
     `${current ? "✓ " : ""}${{ all: "🧱 Все", others: "🧱 Чужие", none: "🧱 Никто" }[policy]}`,
   buttonCodexModel: (model) => `🧠 Модель: ${model ?? "по умолчанию"}`,
   buttonWorkdir: "📁 Рабочая папка",
-  buttonCodexSetup: "🔌 Подключить Codex ко мне",
+  buttonCodexSetup: "🔌 Вход в Codex",
   codexModelPicker: "Модель, на которой работает Codex. «По умолчанию» — какую выберет сам Codex.",
   buttonDefaultModel: "По умолчанию Codex",
   workdirAsk:
@@ -791,19 +808,22 @@ const ru: Texts = {
     "Такой путь я принять не могу: нужен абсолютный путь или путь под ~, без кавычек, $ и обратных слэшей. Пришли ещё раз, ответом.",
   codexInstall: (command) =>
     "Запусти это на машине (Linux с systemd; попросит sudo). Команда поставит Codex, если его нет — для этого нужны Node.js и npm, — и " +
-    `запустит relay как сервис:\n<pre>${escapeHtml(command)}</pre>\nПотом один раз подключи там Codex ко мне: 🔌 на экране Codex. ` +
+    `запустит relay как сервис:\n<pre>${escapeHtml(command)}</pre>\nПотом один раз войди там в Codex: 🔌 на экране Codex. ` +
     "В команде токен relay — новая команда отключает старый, и для Claude тоже.",
-  codexSetup: (origin) =>
-    "<b>Подключение Codex</b>\n\nОдин раз, на машине relay, от того пользователя, под которым он работает:\n\n" +
+  codexSetup:
+    "<b>Вход в Codex</b>\n\nОдин раз, на машине relay, от того пользователя, под которым он работает:\n\n" +
     "1. Войди в Codex через ChatGPT: <code>codex login</code> (на машине без браузера: <code>codex login --device-auth</code>).\n" +
-    `2. Дай ему инструменты этого бота:\n<pre>codex mcp add telegram --url ${escapeHtml(origin)}/\ncodex mcp login telegram --no-browser</pre>\n` +
-    "Вторая команда напечатает ссылку: открой её, войди через Telegram и вставь обратно адрес, на котором остановится браузер.\n" +
-    "3. <code>sudo systemctl restart tg-relay</code>, потом ▶️ Тестовый запуск.",
+    "2. <code>sudo systemctl restart tg-relay</code>, потом ▶️ Тестовый запуск.\n\n" +
+    "Входить в меня Codex не нужно: relay выдаёт каждому запуску собственный ключ к моим инструментам, только на этот запуск. " +
+    "В списке входов они видны как «Codex runs».",
   confirmDeleteCodex:
     "Удалить настройки Codex? Я перестану запускать Codex. Relay останется: его можно выключить на его экране.",
   codexStartFailed: (error) =>
     `⚠️ Codex не смог запуститься на твоей машине: <code>${escapeHtml(error)}</code>. ` +
     "Отправленное ему не дошло: напиши ещё раз, когда это будет исправлено.",
+  codexDeliverFailed: (session, error) =>
+    `⚠️ Codex сломался на сообщении в ${sessionRef(session, "его сессии")} на твоей машине: ` +
+    `<code>${escapeHtml(error)}</code>. Оно не дошло: напиши ещё раз, чтобы попробовать снова.`,
   routineScreen: (p) =>
     "<b>Claude по тегу</b>\n\nОблачная сессия Claude Code, которую я запускаю для тебя: она делает работу и отвечает в Telegram. Это твоя рутина на claude.ai, она работает от твоего аккаунта.\n\n" +
     (p.state === "set"

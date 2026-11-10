@@ -116,6 +116,9 @@ codex mcp add telegram --url https://telegram-mcp.<your-subdomain>.workers.dev/
 codex mcp login telegram
 ```
 
+Not on the machine that runs the relay for Codex (below): there each run gets its own sign-in, and
+the relay's installer removes this one.
+
 ## Groups
 
 - **Adding the bot** to a group gives you (whoever added it) access straight away. The menu's
@@ -483,9 +486,17 @@ sign-in expires or it goes quiet, you hear once, and the session that answers in
 The same relay can run the Codex CLI, signed in to your ChatGPT plan, as your assistant: 🤖
 Assistant → ⚙️ Codex → 📋 Install command sends the install command with `RELAY_CODEX=1`, which
 installs Codex from npm (it needs Node.js) instead of Claude Code. Then, once, on that machine:
-`codex login`, `codex mcp add telegram --url https://<your worker>/` and `codex mcp login telegram
---no-browser`, and `sudo systemctl restart tg-relay`. With the relay online and running Codex,
+`codex login` and `sudo systemctl restart tg-relay`. With the relay online and running Codex,
 choose Codex in 🤖 Assistant.
+
+Codex is not signed in to the bot on that machine. Each job comes with an MCP token of its own,
+bound to its session and valid about as long as the run may last (an hour); the relay hands it to
+Codex in an environment variable (`-c mcp_servers.telegram.bearer_token_env_var=TG_MCP_TOKEN`),
+never on a command line or in the log. Whatever session id a run passes, its calls count as its
+own session, so a sandboxed run cannot speak as one of yours. The tokens hang on one sign-in,
+**Codex runs**, listed with the others; removing Codex or losing access revokes it. A Codex session
+messaged by a caller that no token binds (a Claude session, say) counts that message as a third
+party's.
 
 The relay says what it can run (`claude`, `codex`) and is handed only those jobs. A start runs
 `codex exec --json` in the background — three at most at once, one at a time per session — and
@@ -496,9 +507,13 @@ once.
 
 Codex runs with your account on that machine, so the screen sets a sandbox policy: **Others** (the
 default) sandboxes whatever a third party stands behind — their message, their scene's wake, a
-session their words went into — **All** sandboxes everything, **None** nothing. A sandboxed run is
-read-only, in an empty directory (`~/.tg-relay/sandbox`); otherwise Codex has full access, from the
-working directory you set (your home by default).
+session their words went into — **All** sandboxes everything, **None** nothing. A sandboxed run
+cannot write and starts in an empty directory (`~/.tg-relay/sandbox`), but it is not isolated: it
+still runs as the relay's user and can read every file that user can, the relay's token in
+`~/.tg-relay` among them (the relay keeps it out of Codex's environment, not out of its reach).
+Run the relay as a user with nothing else to read if that matters. Otherwise Codex has full access,
+from the working directory you set (your home by default). The sandbox is set on every run,
+resumes included, and a job keeps the one it was queued with.
 
 ## Limits
 
