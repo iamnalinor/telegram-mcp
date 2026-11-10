@@ -1071,7 +1071,6 @@ async function render(
       chat_id: user.id,
       text: t.setRoutineAsk,
       parse_mode: "HTML",
-      reply_markup: { force_reply: true, input_field_placeholder: "trig_… sk-ant-oat01-…" },
     });
     return { ...(await routineScreen(ctx, user)), note: t.setRoutineNote };
   }
@@ -1135,7 +1134,6 @@ async function render(
       chat_id: user.id,
       text: t.openaiKeyAsk,
       parse_mode: "HTML",
-      reply_markup: { force_reply: true, input_field_placeholder: "sk-proj-…" },
     });
     return { ...(await openaiScreen(ctx, user)), note: t.openaiKeyNote };
   }
