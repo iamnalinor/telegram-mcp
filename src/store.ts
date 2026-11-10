@@ -56,6 +56,8 @@ export interface StoredButton {
   text: string;
   data?: string;
   url?: string;
+  /** A button that copies this text (guest answers): no press reaches the bot. */
+  copy?: string;
   style?: "primary" | "success" | "danger";
 }
 
@@ -229,7 +231,19 @@ export interface GuestCall {
   reply: string | null;
   /** What the bot's message there says now. */
   answer: string | null;
+  /** JSON of `StoredButton[][]`: the buttons on that message now, whose presses are recorded. */
+  buttons: string | null;
+  /** JSON of `GuestMedia`: the photo, video or file that message became, if it did. */
+  media: string | null;
+  /** The scene that runs on that message (create_scene guest_call); answers wait for its end. */
+  scene_id: number | null;
   at: number;
+}
+
+/** What the bot's message for a guest call shows besides its text (answer_guest media). */
+export interface GuestMedia {
+  type: "photo" | "video" | "animation" | "audio" | "document";
+  url: string;
 }
 
 export interface GuestReply {
@@ -462,6 +476,11 @@ export interface SceneRow {
   /** The saved scene it was started from, or saved as, and that scene's version then. */
   template_id: number | null;
   template_version: number | null;
+  /**
+   * In a chat the bot is not in: the bot's one message there (a guest call's),
+   * which the scene has for its only live message; `chat_id` is the guest key.
+   */
+  inline_id: string | null;
   created: number;
   updated: number;
 }
@@ -2096,10 +2115,15 @@ export class Store {
   }
 
   async releaseClaudeChat(userId: number, chatId: number): Promise<void> {
-    await this.db
-      .prepare("DELETE FROM claude_chats WHERE chat_id = ? AND user_id = ?")
-      .bind(chatId, userId)
-      .run();
+    await this.db.batch([
+      this.db
+        .prepare("DELETE FROM claude_chats WHERE chat_id = ? AND user_id = ?")
+        .bind(chatId, userId),
+      // A chat the bot is not in is the holder's only by this claim: their scenes there end with it.
+      ...(isGuestKey(chatId)
+        ? [this.finishScenesStatement("owner = ? AND chat_id = ?", [userId, chatId])]
+        : []),
+    ]);
   }
 
   async setClaudeOthersLimit(userId: number, chatId: number, limit: number): Promise<void> {
@@ -2780,7 +2804,12 @@ export class Store {
   }
 
   /** Record a call from a chat the bot is not in. Null when Telegram already delivered it. */
-  async insertGuestCall(call: Omit<GuestCall, "id" | "inline_message_id" | "answer" | "at">) {
+  async insertGuestCall(
+    call: Omit<
+      GuestCall,
+      "id" | "inline_message_id" | "answer" | "at" | "buttons" | "media" | "scene_id"
+    >,
+  ) {
     const row = await this.db
       .prepare(
         `INSERT INTO guest_calls
@@ -2819,11 +2848,47 @@ export class Store {
       .first<GuestCall>();
   }
 
-  async setGuestAnswer(id: number, answer: string): Promise<void> {
+  /** What answer_guest put on the call's message: its text, buttons and media. */
+  async setGuestAnswer(
+    id: number,
+    answer: string,
+    shown: { buttons?: string | null; media?: string | null } = {},
+  ): Promise<void> {
     await this.db
-      .prepare("UPDATE guest_calls SET answer = ? WHERE id = ?")
-      .bind(redactSecrets(answer), id)
+      .prepare(
+        `UPDATE guest_calls SET answer = ?, buttons = ?,
+           media = COALESCE(?, media) WHERE id = ?`,
+      )
+      .bind(redactSecrets(answer), shown.buttons ?? null, shown.media ?? null, id)
       .run();
+  }
+
+  /** The call whose message this is: a press on an inline message names nothing else. */
+  guestCallByMessage(inlineMessageId: string): Promise<GuestCall | null> {
+    return this.db
+      .prepare("SELECT * FROM guest_calls WHERE inline_message_id = ?")
+      .bind(inlineMessageId)
+      .first<GuestCall>();
+  }
+
+  /**
+   * A scene takes the call's message, unless one runs there already: its id
+   * is returned then. The message's own buttons go with it.
+   */
+  async takeGuestMessage(id: number, sceneId: number): Promise<number | null> {
+    const taken = await this.db
+      .prepare(
+        `UPDATE guest_calls SET scene_id = ?1, buttons = NULL WHERE id = ?2 AND (scene_id IS NULL
+           OR NOT EXISTS (SELECT 1 FROM scenes WHERE id = guest_calls.scene_id AND status = 'active'))`,
+      )
+      .bind(sceneId, id)
+      .run();
+    if (taken.meta.changes) return null;
+    const row = await this.db
+      .prepare("SELECT scene_id FROM guest_calls WHERE id = ?")
+      .bind(id)
+      .first<{ scene_id: number | null }>();
+    return row?.scene_id ?? null;
   }
 
   // --- refresh sessions ----------------------------------------------------
@@ -3016,13 +3081,14 @@ export class Store {
     wake_limit: number;
     template_id?: number | null;
     template_version?: number | null;
+    inline_id?: string | null;
   }): Promise<number> {
     const now = nowSeconds();
     const created = await this.db
       .prepare(
         `INSERT INTO scenes (chat_id, thread_id, owner, owner_name, session_id, agent, title, brief,
-           def, state, wake_limit, template_id, template_version, created, updated)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+           def, state, wake_limit, template_id, template_version, inline_id, created, updated)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
       )
       .bind(
         row.chat_id,
@@ -3038,6 +3104,7 @@ export class Store {
         row.wake_limit,
         row.template_id ?? null,
         row.template_version ?? null,
+        row.inline_id ?? null,
         now,
         now,
       )

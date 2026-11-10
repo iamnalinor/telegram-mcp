@@ -7,7 +7,15 @@
 import type { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 
-import { applyEvent, endScene, loaded, mergeState, startScene } from "../bot/scenes";
+import {
+  applyEvent,
+  endScene,
+  loaded,
+  MessageTaken,
+  mergeState,
+  startGuestScene,
+  startScene,
+} from "../bot/scenes";
 import { Fence, formatTime, person } from "../format";
 import type { ChatView } from "../access";
 import { reachable } from "../agents/route";
@@ -16,7 +24,7 @@ import { guide, PRESETS } from "../scenes/guide";
 import type { Value } from "../scenes/lang";
 import { render } from "../scenes/render";
 import { GROUP_NOTE } from "../prompts";
-import type { SceneEventRow, SceneRow, SceneTemplateRow } from "../store";
+import type { GuestCall, SceneEventRow, SceneRow, SceneTemplateRow } from "../store";
 import {
   agentArg,
   chatArg,
@@ -82,9 +90,42 @@ async function ownScene(ctx: ToolContext, id: number): Promise<SceneRow> {
  * Who can wake the session through this scene, said plainly and truly, so
  * the session does not promise the chat more than the bot will let through.
  */
+/** The guest call a scene is to run on: the user's, answerable, in a chat they still hold. */
+async function guestTarget(
+  ctx: ToolContext,
+  args: {
+    guest_call?: number;
+    chat?: unknown;
+    topic?: number;
+    reply_to?: number;
+    silent?: boolean;
+  },
+): Promise<GuestCall> {
+  if (args.chat !== undefined || args.topic || args.reply_to || args.silent) {
+    throw new ToolError(
+      "guest_call takes the place of chat: the scene runs on the bot's message for that call, so chat, " +
+        "topic, reply_to and silent do not go with it.",
+    );
+  }
+  const call = await ctx.store.getGuestCall(ctx.userId, args.guest_call!);
+  if (!call) throw new ToolError(`There is no guest call ${args.guest_call} for this user.`);
+  if (!call.inline_message_id) {
+    throw new ToolError(
+      "Telegram did not accept the bot's message for that call, so there is nothing to run a scene on.",
+    );
+  }
+  const claim = await ctx.store.getClaudeChat(call.chat_key);
+  if (claim?.user_id !== ctx.userId) {
+    throw new ToolError(
+      "That chat is no longer the user's (they let it go in the menu, or someone else holds it): no scene there.",
+    );
+  }
+  return call;
+}
+
 async function accessReport(
   ctx: ToolContext,
-  chat: ChatView,
+  chat: Pick<ChatView, "kind" | "chat_id">,
   scene: Compiled,
   session: string | null,
 ) {
@@ -225,6 +266,17 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
         topic: topicArg,
         reply_to: z.number().int().positive().optional().describe("Reply to this message id."),
         silent: z.boolean().optional().describe("Deliver without a notification sound."),
+        guest_call: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe(
+            "Instead of chat: run the scene on the bot's one message for this guest call (a chat the bot " +
+              "is not in). Presses, toast, alert, whisper, show, log, wake and finish work there; post, " +
+              "poll, dice and tag cannot (the bot can send nothing else there), and no reply, reaction " +
+              "or vote reaches it.",
+          ),
         session: sessionArg,
         agent: agentArg,
         dry_run: z.boolean().optional().describe("Only check and preview; nothing is sent."),
@@ -233,9 +285,14 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
     },
     async (args) => {
       try {
-        const chat = await ctx.access.resolve(args.chat);
-        notPersonal(chat, "scenes run only in the bot's own chats.");
-        await mayPost(ctx, chat);
+        const guest = args.guest_call === undefined ? null : await guestTarget(ctx, args);
+        const chat = guest ? null : await ctx.access.resolve(args.chat);
+        if (chat) {
+          notPersonal(chat, "scenes run only in the bot's own chats.");
+          await mayPost(ctx, chat);
+        }
+        const place = guest ? { kind: "group" as const, chat_id: guest.chat_key } : chat!;
+        const placeName = guest ? `the chat of guest call ${guest.id}` : where(chat!);
         if (args.definition && args.template) {
           throw new ToolError("Pass definition or template, not both.");
         }
@@ -266,7 +323,7 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
         const saveAs = args.save_as === undefined ? null : await checkSaveAs(ctx, args.save_as);
         const { compiled: scene, state } = compiled(source);
         const session = callerSession(ctx, args.session);
-        const report = await accessReport(ctx, chat, scene, session);
+        const report = await accessReport(ctx, place, scene, session);
         if (args.dry_run) {
           const shown = render(scene, "main", state, {
             owner: { id: ctx.userId, name: ctx.user.name ?? "owner" },
@@ -279,9 +336,9 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
             `Valid; nothing sent. It would show:\n${shown.plain}\n${labels}\n\n${report}`,
           );
         }
-        if ((await ctx.store.countScenesOf(ctx.userId, chat.chat_id)) >= ACTIVE_PER_CHAT) {
+        if ((await ctx.store.countScenesOf(ctx.userId, place.chat_id)) >= ACTIVE_PER_CHAT) {
           throw new ToolError(
-            `You have ${ACTIVE_PER_CHAT} active scenes in ${where(chat)} already: finish one (update_scene finish).`,
+            `You have ${ACTIVE_PER_CHAT} active scenes in ${placeName} already: finish one (update_scene finish).`,
           );
         }
         // Saved before it is sent: a definition that compiled is worth keeping even if Telegram refuses.
@@ -291,12 +348,43 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
               note: `From saved scene ${JSON.stringify(template.name)} (version ${template.version}).`,
             }
           : await autoSave(ctx, source, scene, saveAs);
+        const agent =
+          session && args.agent && /^[\w.:-]{1,64}$/.test(args.agent) ? args.agent : null;
+        if (guest) {
+          let id: number;
+          try {
+            id = await startGuestScene(ctx, {
+              chatKey: guest.chat_key,
+              call: guest.id,
+              inlineId: guest.inline_message_id!,
+              owner: ctx.userId,
+              session,
+              agent,
+              compiled: scene,
+              state,
+              template: saved.template,
+            });
+          } catch (error) {
+            if (error instanceof MessageTaken) {
+              throw new ToolError(
+                `The bot's message for guest call ${guest.id} runs scene ${error.scene} already: ` +
+                  "change that one with update_scene, or finish it first.",
+              );
+            }
+            throw error;
+          }
+          if (saved.template) await ctx.store.useTemplate(saved.template.id);
+          return text(
+            `Scene ${id} is running on the bot's message for guest call ${guest.id}; everyone in that ` +
+              `chat sees it and may press its buttons.\n${saved.note}\n${report}`,
+          );
+        }
         const { id, message } = await startScene(ctx, {
-          chatId: chat.chat_id,
+          chatId: chat!.chat_id,
           threadId: args.topic ?? null,
           owner: ctx.userId,
           session,
-          agent: session && args.agent && /^[\w.:-]{1,64}$/.test(args.agent) ? args.agent : null,
+          agent,
           compiled: scene,
           state,
           template: saved.template,
@@ -305,9 +393,9 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
         });
         // Counted once it runs: a scene Telegram refused is no use of it.
         if (saved.template) await ctx.store.useTemplate(saved.template.id);
-        const link = sentLink(ctx, chat, message);
+        const link = sentLink(ctx, chat!, message);
         return text(
-          `Scene ${id} is running in ${where(chat)} as #${message.message_id}.` +
+          `Scene ${id} is running in ${where(chat!)} as #${message.message_id}.` +
             `${link ? ` Link for the user: ${link}` : ""}\n${saved.note}\n${report}`,
         );
       } catch (error) {

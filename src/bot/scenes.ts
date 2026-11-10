@@ -258,6 +258,75 @@ export async function startScene(
   return { id, message };
 }
 
+/** A guest call's message runs another scene already: `scene` is its id. */
+export class MessageTaken extends Error {
+  constructor(readonly scene: number) {
+    super(`The message runs scene ${scene} already.`);
+  }
+}
+
+/**
+ * Run a scene on the bot's one message for a guest call (a chat the bot is
+ * not in): it is drawn over what that message showed, and stays the scene's
+ * only live message. Telegram lets the bot edit it and sends presses on its
+ * buttons, but nothing else: no other message, poll, die or reply there.
+ */
+export async function startGuestScene(
+  ctx: SceneContext,
+  p: {
+    chatKey: number;
+    call: number;
+    inlineId: string;
+    owner: number;
+    session: string | null;
+    agent: string | null;
+    compiled: Compiled;
+    state: Record<string, Value>;
+    template?: { id: number; version: number } | null;
+  },
+): Promise<number> {
+  const id = await ctx.store.createScene({
+    chat_id: p.chatKey,
+    thread_id: null,
+    owner: p.owner,
+    owner_name: nameOf(await ctx.store.getUser(p.owner), p.owner),
+    session_id: p.session,
+    agent: p.agent,
+    title: p.compiled.title,
+    brief: p.compiled.brief,
+    def: JSON.stringify(p.compiled),
+    state: JSON.stringify(p.state),
+    wake_limit: p.compiled.wakeLimit,
+    template_id: p.template?.id ?? null,
+    template_version: p.template?.version ?? null,
+    inline_id: p.inlineId,
+  });
+  const taken = await ctx.store.takeGuestMessage(p.call, id);
+  if (taken !== null) {
+    await ctx.store.deleteScene(id);
+    throw new MessageTaken(taken);
+  }
+  const row = (await ctx.store.getScene(id))!;
+  try {
+    const owner = await ownerOf(ctx, row);
+    const { compiled, state } = loaded(row);
+    const rendered = render(compiled, "main", state, { owner, now: nowSeconds(), sceneId: id });
+    await ctx.api.call("editMessageText", {
+      inline_message_id: p.inlineId,
+      ...body(rendered),
+      reply_markup: keyboard(rendered.rows, id),
+    });
+  } catch (error) {
+    await ctx.store.deleteScene(id);
+    throw error;
+  }
+  await ctx.store.commitScene(id, row.version, {
+    messages: JSON.stringify([{ id: 0, view: "main" }]),
+    edited_at: Date.now(),
+  });
+  return id;
+}
+
 function cut(text: string, length: number): string {
   const chars = Array.from(text);
   return chars.length > length ? `${chars.slice(0, length - 1).join("")}…` : text;
@@ -271,21 +340,21 @@ export async function handleScenePress(
   const t = texts(query.from.language_code);
   const parsed = parseCallback(query.data ?? "");
   const message = query.message;
+  // A press on a message in a chat the bot is not in names only that message.
+  const where = message
+    ? { chatId: message.chat.id, messageId: message.message_id }
+    : query.inline_message_id
+      ? { inline: query.inline_message_id }
+      : null;
   let answer: Answer;
   try {
     answer =
-      parsed && message
+      parsed && where
         ? await applyEvent(
             ctx,
             parsed.sceneId,
             { on: `press:${parsed.press}`, user: actorOf(query.from), arg: parsed.arg },
-            {
-              query,
-              chatId: message.chat.id,
-              messageId: message.message_id,
-              arg: parsed.arg,
-              press: parsed.press,
-            },
+            { query, ...where, arg: parsed.arg, press: parsed.press },
           )
         : { text: t.sceneStale };
   } catch (error) {
@@ -304,8 +373,10 @@ export async function handleScenePress(
 
 interface Press {
   query: CallbackQuery;
-  chatId: number;
-  messageId: number;
+  /** The message pressed on: in a chat, or (a guest call's) inline. */
+  chatId?: number;
+  messageId?: number;
+  inline?: string;
   press: string;
   arg: Value | undefined;
 }
@@ -398,8 +469,14 @@ async function attempt(
     if (press) {
       // Only a button on the message as drawn now counts: an old keyboard, or
       // callback_data made up by a client, changes nothing.
-      const index = messages.findIndex((message) => message.id === press.messageId);
-      if (row.chat_id !== press.chatId || index < 0) return { text: t.sceneStale };
+      const index = row.inline_id
+        ? press.inline === row.inline_id
+          ? 0
+          : -1
+        : messages.findIndex((message) => message.id === press.messageId);
+      if (index < 0 || (!row.inline_id && row.chat_id !== press.chatId)) {
+        return { text: t.sceneStale };
+      }
       let current: Rendered;
       try {
         current = render(compiled, viewOf(row, messages, index), state, {
@@ -587,6 +664,9 @@ const SESSION_REFUSAL =
 const POSTS_PER_MINUTE = 5;
 /** Live messages a scene may have, the main one included. */
 const LIVE_MESSAGES = 3;
+/** Why a scene in a chat the bot is not in sends nothing more there. */
+const GUEST_ONLY =
+  "in a chat the bot is not in, a scene has only its one message: Telegram lets the bot send nothing else there";
 const DICE_EVENT = "dice";
 
 /**
@@ -648,12 +728,15 @@ class Outbox {
     const refuse = (why: string) => recordError(this.ctx, this.row, event.user, effect.kind, why);
     const spend = () => this.ctx.store.spendScenePost(this.row.id, POSTS_PER_MINUTE);
     const overLimit = `at most ${POSTS_PER_MINUTE} posts a minute`;
+    const guest = this.row.inline_id !== null;
+    if (guest && effect.kind !== "whisper") return refuse(GUEST_ONLY);
     switch (effect.kind) {
       case "whisper": {
         // An ephemeral reply to the press (Bot API 10.4): only the presser sees it.
         if (!callbackId) return refuse("whisper() answers a press only");
         await this.ctx.api.call("sendMessage", {
-          chat_id: this.row.chat_id,
+          // Where the bot is no member, the press alone says where it goes.
+          ...(guest ? {} : { chat_id: this.row.chat_id }),
           text: effect.text,
           ephemeral_message_parameters: { callback_query_id: callbackId },
         });
@@ -888,12 +971,14 @@ async function redraw(
     const rendered = current.get(viewOf(row, messages, index));
     if (!rendered) continue;
     const buttons = finished ? null : storedButtons(rendered.rows, row.id);
-    const stored = await ctx.store.getMessage(chat, message.id);
+    // A guest call's message is not among the bot's: it is edited, and Telegram says if nothing changed.
+    const stored = row.inline_id ? null : await ctx.store.getMessage(chat, message.id);
     if (stored && stored.text === rendered.plain && stored.buttons === buttons) continue;
     try {
       await ctx.api.call("editMessageText", {
-        chat_id: row.chat_id,
-        message_id: message.id,
+        ...(row.inline_id
+          ? { inline_message_id: row.inline_id }
+          : { chat_id: row.chat_id, message_id: message.id }),
         ...body(rendered),
         reply_markup: finished ? { inline_keyboard: [] } : keyboard(rendered.rows, row.id),
       });
@@ -923,7 +1008,9 @@ async function redraw(
         continue;
       }
     }
-    await ctx.store.updateOutgoing(chat, message.id, { text: rendered.plain, buttons });
+    if (!row.inline_id) {
+      await ctx.store.updateOutgoing(chat, message.id, { text: rendered.plain, buttons });
+    }
   }
 }
 

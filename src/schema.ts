@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 24;
+const SCHEMA_VERSION = 25;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -341,7 +341,8 @@ const SCHEMA: string[] = [
   )`,
 
   // The calls themselves. `inline_message_id` names the bot's one message for
-  // that call, which every answer edits.
+  // that call, which every answer edits; `buttons` and `media` are what that
+  // message carries now, and `scene_id` the scene that runs on it, if any.
   `CREATE TABLE IF NOT EXISTS guest_calls (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
@@ -356,8 +357,12 @@ const SCHEMA: string[] = [
     file TEXT,
     reply TEXT,
     answer TEXT,
+    buttons TEXT,
+    media TEXT,
+    scene_id INTEGER,
     at INTEGER NOT NULL
   )`,
+  `CREATE INDEX IF NOT EXISTS guest_calls_by_inline ON guest_calls (inline_message_id)`,
 
   // A user's Telegram Business connection: the bot reads their private chats,
   // and acts in them only as far as `rights` (set by the user in Telegram) allow.
@@ -403,6 +408,7 @@ const SCHEMA: string[] = [
     last_query TEXT,
     template_id INTEGER,
     template_version INTEGER,
+    inline_id TEXT,
     created INTEGER NOT NULL,
     updated INTEGER NOT NULL
   )`,
@@ -593,6 +599,15 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
     ],
   },
   { target: 24, alter: ["ALTER TABLE agent_sessions ADD COLUMN sandboxed INTEGER"] },
+  {
+    target: 25,
+    alter: [
+      "ALTER TABLE guest_calls ADD COLUMN buttons TEXT",
+      "ALTER TABLE guest_calls ADD COLUMN media TEXT",
+      "ALTER TABLE guest_calls ADD COLUMN scene_id INTEGER",
+      "ALTER TABLE scenes ADD COLUMN inline_id TEXT",
+    ],
+  },
 ];
 
 const ready = new WeakMap<D1Database, Promise<void>>();

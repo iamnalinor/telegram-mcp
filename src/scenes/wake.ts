@@ -26,7 +26,7 @@ import { excerptOf, holderVoice } from "../bot/triggers";
 import { nowSeconds } from "../crypto";
 import { isAllowed } from "../env";
 import { messageLink } from "../links";
-import type { RelayOrigin, SceneRow } from "../store";
+import { isGuestKey, type RelayOrigin, type SceneRow } from "../store";
 import type { Actor } from "./engine";
 
 type WakeContext = Pick<BotContext, "api" | "store" | "bot" | "config">;
@@ -44,6 +44,16 @@ export type WakeGate =
   | { ok: false; answer: "not_for_you" | "nobody" | "resting" | "session"; minutes?: number };
 
 const HOUR = 3600;
+
+/** The scene's chat as far as wakes name it; a chat the bot is not in is known by its key. */
+async function chatOf(
+  ctx: WakeContext,
+  chatId: number,
+): Promise<{ title: string | null; type?: string; username?: string | null } | null> {
+  if (!isGuestKey(chatId)) return ctx.store.getChat(chatId);
+  const guest = await ctx.store.guestChatByKey(chatId);
+  return guest && { title: guest.title };
+}
 
 /** Minutes until a count that started at `oldest` lets one more through. */
 function minutesLeft(oldest: number | null, now: number): number {
@@ -98,7 +108,7 @@ export async function gateWake(
     const minutes = await restingMinutes(ctx, scene, byOther, now);
     // As with tags: the holder hears once an hour that wakes are held back.
     if (await ctx.store.noteLimited(entry)) {
-      const chat = await ctx.store.getChat(scene.chat_id);
+      const chat = await chatOf(ctx, scene.chat_id);
       const { tell, where, t } = await holderVoice(
         ctx,
         scene.owner,
@@ -163,7 +173,7 @@ export async function deliverWake(
         },
         envelope: async () => {
           const owner = await ctx.store.getUser(scene.owner);
-          const chat = await ctx.store.getChat(scene.chat_id);
+          const chat = await chatOf(ctx, scene.chat_id);
           const main = (JSON.parse(scene.messages) as { id: number }[])[0]?.id;
           const link = main
             ? messageLink(
@@ -244,7 +254,7 @@ async function wake(
     );
   }
   if (!quiet) {
-    const chat = await ctx.store.getChat(scene.chat_id);
+    const chat = await chatOf(ctx, scene.chat_id);
     const { tell, where, t } = await holderVoice(
       ctx,
       scene.owner,

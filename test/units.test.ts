@@ -472,7 +472,7 @@ describe("schema upgrade", () => {
       ensureSchema(new SqliteD1Proxy(db).asD1()),
       ensureSchema(new SqliteD1Proxy(db).asD1()),
     ]);
-    expect(version(db)).toBe("24");
+    expect(version(db)).toBe("25");
     const stored = await new Store(db.asD1()).getMessage(
       { account_id: BOT_ACCOUNT, chat_id: -100 },
       7,
@@ -492,7 +492,7 @@ describe("schema upgrade", () => {
       INSERT INTO routines (user_id, trigger_id, token_enc, updated_at) VALUES (2, 'trig_x', 'x', 1);
       UPDATE meta SET value = '19' WHERE key = 'schema_version';`);
     await ensureSchema(new SqliteD1Proxy(db).asD1());
-    expect(version(db)).toBe("24");
+    expect(version(db)).toBe("25");
     // Whoever had a routine keeps Claude answering; the others choose.
     expect(
       db.raw.query("SELECT user_id, active_provider FROM users ORDER BY user_id").all(),
@@ -516,7 +516,7 @@ describe("schema upgrade", () => {
       ALTER TABLE agent_sessions DROP COLUMN origin;
       UPDATE meta SET value = '21' WHERE key = 'schema_version';`);
     await ensureSchema(new SqliteD1Proxy(db).asD1());
-    expect(version(db)).toBe("24");
+    expect(version(db)).toBe("25");
     db.raw
       .exec(`INSERT INTO agent_sessions (id, user_id, provider, kind, created_at, signin, token_version, origin)
       VALUES ('oa_1', 1, 'openai', 'task', 1, 's', 0, 'other');`);
@@ -540,7 +540,7 @@ describe("schema upgrade", () => {
       VALUES ('ask_old', 1, 'session_x', 'b', 'user', 'queued', 1);
       UPDATE meta SET value = '22' WHERE key = 'schema_version';`);
     await ensureSchema(new SqliteD1Proxy(db).asD1());
-    expect(version(db)).toBe("24");
+    expect(version(db)).toBe("25");
     expect(db.raw.query("SELECT runner, params FROM relay_jobs").get()).toEqual({
       runner: "claude-continue",
       params: null,
@@ -559,8 +559,26 @@ describe("schema upgrade", () => {
       INSERT INTO agent_sessions (id, user_id, provider, kind, created_at) VALUES ('cx_1', 1, 'codex', 'chat', 1);
       UPDATE meta SET value = '23' WHERE key = 'schema_version';`);
     await ensureSchema(new SqliteD1Proxy(db).asD1());
-    expect(version(db)).toBe("24");
+    expect(version(db)).toBe("25");
     expect(db.raw.query("SELECT sandboxed FROM agent_sessions").get()).toEqual({ sandboxed: null });
+  });
+
+  it("gives a v24 database guest answers' buttons, media and scenes", async () => {
+    const { SqliteD1 } = await import("./sqlite-d1");
+    const { ensureSchema } = await import("../src/schema");
+    const db = new SqliteD1();
+    await ensureSchema(db.asD1());
+    db.raw.exec(`DROP INDEX guest_calls_by_inline;
+      ALTER TABLE guest_calls DROP COLUMN buttons; ALTER TABLE guest_calls DROP COLUMN media;
+      ALTER TABLE guest_calls DROP COLUMN scene_id; ALTER TABLE scenes DROP COLUMN inline_id;
+      UPDATE meta SET value = '24' WHERE key = 'schema_version';`);
+    await ensureSchema(new SqliteD1Proxy(db).asD1());
+    expect(version(db)).toBe("25");
+    db.raw.exec(`UPDATE guest_calls SET buttons = '[]', media = '{}', scene_id = 1;
+      UPDATE scenes SET inline_id = 'x';`);
+    expect(
+      db.raw.query("SELECT name FROM sqlite_master WHERE name = 'guest_calls_by_inline'").get(),
+    ).toEqual({ name: "guest_calls_by_inline" });
   });
 
   it("gives a v18 database the scene library", async () => {
@@ -573,7 +591,7 @@ describe("schema upgrade", () => {
       DROP TABLE scene_templates; DROP TABLE scene_template_history;
       UPDATE meta SET value = '18' WHERE key = 'schema_version';`);
     await ensureSchema(new SqliteD1Proxy(db).asD1());
-    expect(version(db)).toBe("24");
+    expect(version(db)).toBe("25");
     db.raw
       .exec(`INSERT INTO scene_templates (owner, name, title, definition, created, updated, used)
       VALUES (1, 'a', 'A', '{}', 1, 1, 1);
@@ -593,7 +611,7 @@ describe("schema upgrade", () => {
     await ensureSchema(db.asD1());
     const columns = db.raw.query("PRAGMA table_info(users)").all() as { name: string }[];
     expect(columns.map((c) => c.name)).toContain("connected_at");
-    expect(version(db)).toBe("24");
+    expect(version(db)).toBe("25");
     expect(
       db.raw.query("SELECT name FROM sqlite_master WHERE name = 'refresh_sessions'").get(),
     ).not.toBeNull();
@@ -610,7 +628,7 @@ describe("schema upgrade", () => {
       ${V2_TABLES}`);
     // Two isolates racing on the upgrade: the table must be rebuilt once, not twice.
     await Promise.all([ensureSchema(db.asD1()), ensureSchema(new SqliteD1Proxy(db).asD1())]);
-    expect(version(db)).toBe("24");
+    expect(version(db)).toBe("25");
 
     const store = new Store(db.asD1());
     const ref = { account_id: BOT_ACCOUNT, chat_id: -100 };

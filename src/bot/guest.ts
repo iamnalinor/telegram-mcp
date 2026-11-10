@@ -29,9 +29,15 @@ import { guestEnvelope } from "../agents/envelopes";
 import { activeProvider, startsPerHour } from "../agents/route";
 import { providerOf, type Delivery } from "../agents/types";
 import { redactSecrets } from "../secrets";
-import { GUEST_BASE, type ClaudeChat, type GuestCall, type GuestReply } from "../store";
-import { displayName, type Message } from "../telegram/types";
-import type { BotContext } from "./context";
+import {
+  GUEST_BASE,
+  type ClaudeChat,
+  type GuestCall,
+  type GuestReply,
+  type StoredButton,
+} from "../store";
+import { displayName, type CallbackQuery, type Message } from "../telegram/types";
+import type { BotContext, WebhookReply } from "./context";
 import { hasContent, realReply, toStored } from "./extract";
 import { spinnerLine } from "./spinner";
 import { texts } from "./texts";
@@ -295,4 +301,45 @@ export async function startGuest(
     const t = texts((await ctx.store.getUser(userId))?.language);
     await guestSay(ctx, call, t.guestFailed);
   }
+}
+
+/**
+ * A press on a button answer_guest put on the bot's message for a call. Only
+ * the buttons that message carries now count; the press is recorded under the
+ * call (its chat's key and its number) for get_guest_call to show.
+ */
+export async function handleGuestPress(
+  ctx: BotContext,
+  query: CallbackQuery,
+  row: number,
+  column: number,
+): Promise<WebhookReply> {
+  const t = texts(query.from.language_code);
+  const answer = (text: string): WebhookReply => ({
+    method: "answerCallbackQuery",
+    callback_query_id: query.id,
+    text,
+  });
+  const call = query.inline_message_id
+    ? await ctx.store.guestCallByMessage(query.inline_message_id)
+    : null;
+  let buttons: StoredButton[][] | null;
+  try {
+    buttons = call?.buttons ? (JSON.parse(call.buttons) as StoredButton[][]) : null;
+  } catch {
+    buttons = null;
+  }
+  const button = buttons?.[row]?.[column];
+  if (!call || !button || button.url || button.copy) return answer(t.alreadyAnswered);
+  await ctx.store.insertPress({
+    chat_id: call.chat_key,
+    message_id: call.id,
+    callback_id: query.id,
+    user_id: query.from.id,
+    user_name: query.from.username ? `@${query.from.username}` : displayName(query.from),
+    label: button.text,
+    data: button.data ?? button.text,
+    date: nowSeconds(),
+  });
+  return answer(t.pressed(button.text));
 }
