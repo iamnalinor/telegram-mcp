@@ -4,6 +4,8 @@
  * definition; the tests compile and play them.
  */
 
+import { checkers, ticTacToe } from "./games";
+
 const REFERENCE = `Scenes: a message the bot runs by itself. Its state lives in the bot; its rules say what each press, vote or reply does; you are woken only where a rule calls wake(). It needs no session to run; the user can also start your saved scenes from the bot's menu, with no assistant connected: where you can, let a scene do its job without its wakes.
 
 Definition (JSON)
@@ -27,7 +29,8 @@ Language (not JavaScript)
 - Values as in JSON. Names: state fields, lets, user ({id, name}), arg, event, now, owner, and it, i, key inside each.
 - Operators: + - * / %, == != (deep), < <= > >=, && || !, ??, a ? b : c, a[i], a.b, x in list (a map's key, or a piece of a text). Missing things are null; 1/0 is null; null + 1 is 1. False are null, false, 0, '', [] and {}. Map keys are strings: players[user.id] works. Assigning copies a list or map.
 - Templates: text, say and button labels take {expression}; {{ and }} are literal braces. Values are shown as text, never as markup. "{{" is always a literal brace, so an interpolation that starts with a map literal needs a space: { {a: 1}.a }. Action arguments are expressions, not templates: toast('Hi ' + user.name).
-- Functions: len keys values has count(list, v[, field]) sum min max slice without(list|map, v) tally(map) leader(map) top(map, n) | full(cells) line(cells, width, k) drop(cells, width, col) | random(n) pick shuffle deal(roles, ids, rest) | str join(list, sep) each(coll, 'template') bar(n, max) ago(t).
+- Functions: len keys values has count(list, v[, field]) sum min max slice without(list|map, v) tally(map) leader(map) top(map, n) | full(cells) line(cells, width, k) drop(cells, width, col) draughts(board, side, from?) replace(list, old, new) | random(n) pick shuffle deal(roles, ids, rest) | str join(list, sep) each(coll, 'template') bar(n, max) ago(t).
+- draughts(board, side, from?): Russian draughts' legal steps for side 'w' (moves up) or 'b' on a 64-cell board ('' empty, w/b men, W/B kings, anything else blocks: a piece already captured this move, a light square) as {from: {to: captured square or null}}; only captures when there are any; with from, only that piece's captures (a chain goes on). The checkers preset plays it.
 - do: statements — "path = expr", "+=" (adds, or appends to a list), "-=" (subtracts, or removes from a list), an action, or {"if": expr, "do": [...], "else": [...]} (3 deep).
 
 Actions
@@ -177,49 +180,6 @@ const PANEL = {
       on: "press:rollback",
       who: "owner",
       do: ["last = 'rollback'", "at = now", "wake('rollback')", "toast('Sent')"],
-    },
-  ],
-};
-
-const TICTACTOE = {
-  title: "Tic-tac-toe",
-  brief: "A game for two; it does not wake me. The result is in state.won.",
-  state: { cells: ["", "", "", "", "", "", "", "", ""], x: null, o: null, turn: "x", won: null },
-  let: { seat: "turn == 'x' ? x : o", over: "won != null || full(cells)" },
-  view: {
-    text: "**Tic-tac-toe**\n❌ {x ? x.name : 'free'}\n⭕ {o ? o.name : 'free'}\n\n{won ? won.name + ' wins' : over ? 'A draw' : 'Turn: ' + (turn == 'x' ? '❌' : '⭕')}",
-    buttons: [
-      {
-        grid: "cells",
-        width: 3,
-        press: "cell",
-        text: "{it == 'x' ? '❌' : it == 'o' ? '⭕' : '·'}",
-      },
-    ],
-  },
-  rules: [
-    { on: "press:cell", when: "over", say: "The game is over" },
-    { on: "press:cell", when: "cells[arg] != ''", say: "Taken" },
-    {
-      on: "press:cell",
-      when: "seat != null && seat.id != user.id",
-      say: "It is {seat.name}'s turn",
-    },
-    {
-      on: "press:cell",
-      when: "turn == 'o' && x != null && x.id == user.id",
-      say: "Let someone else play ⭕",
-    },
-    {
-      on: "press:cell",
-      do: [
-        "x = turn == 'x' ? user : x",
-        "o = turn == 'o' ? user : o",
-        "cells[arg] = turn",
-        "won = line(cells, 3, 3) != '' ? user : null",
-        "turn = turn == 'x' ? 'o' : 'x'",
-        { if: "over", do: ["finish()"] },
-      ],
     },
   ],
 };
@@ -416,7 +376,8 @@ export const PRESETS: Record<string, object> = {
   task_board: TASK_BOARD,
   triage: TRIAGE,
   panel: PANEL,
-  tictactoe: TICTACTOE,
+  tictactoe: ticTacToe("en"),
+  checkers: checkers("en"),
   quiz: QUIZ,
   mafia: MAFIA,
 };

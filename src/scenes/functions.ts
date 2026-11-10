@@ -82,6 +82,118 @@ function scored(value: Value, call: Call): [string, number][] {
 
 const BAR_WIDTH = 10;
 
+/** Russian draughts: an 8×8 board, row by row from the top, black at the top. */
+const SIDE = 8;
+const DIAGONALS = [
+  [-1, -1],
+  [-1, 1],
+  [1, -1],
+  [1, 1],
+] as const;
+
+function squareAt(row: number, col: number): number {
+  return row >= 0 && row < SIDE && col >= 0 && col < SIDE ? row * SIDE + col : -1;
+}
+
+/**
+ * The legal steps for `side` ("w" moves up, "b" down) on `board`: 64 cells
+ * of "" (empty), "w"/"b" (men), "W"/"B" (kings), or anything else, which
+ * blocks: a piece captured earlier in this move (it cannot be captured
+ * twice), or a light square no piece stands on.
+ * Russian rules: men step forward and capture both ways, kings fly, capture
+ * is mandatory, and a king that can capture again from some landing squares
+ * must land on one of them. A chain is played a step at a time: with `from`,
+ * only captures by the piece on that square. Counts the squares it looks at.
+ */
+function draughtsMoves(
+  board: Value[],
+  side: "w" | "b",
+  from: number | null,
+  look: () => void,
+): Record<string, Value> {
+  const king = side.toUpperCase();
+  const foes = side === "w" ? ["b", "B"] : ["w", "W"];
+  const ahead = side === "w" ? -1 : 1;
+  const empty = (cells: Value[], square: number) => square >= 0 && cells[square] === "";
+
+  /** [landing, captured] for one piece; `strict` applies the king's landing rule. */
+  const captures = (cells: Value[], square: number, isKing: boolean, strict: boolean) => {
+    const found: [number, number][] = [];
+    const row = Math.floor(square / SIDE);
+    const col = square % SIDE;
+    for (const [dr, dc] of DIAGONALS) {
+      if (!isKing) {
+        look();
+        const over = squareAt(row + dr, col + dc);
+        const land = squareAt(row + 2 * dr, col + 2 * dc);
+        if (over >= 0 && foes.includes(cells[over] as string) && empty(cells, land))
+          found.push([land, over]);
+        continue;
+      }
+      let k = 1;
+      let at = squareAt(row + dr, col + dc);
+      for (; empty(cells, at); at = squareAt(row + ++k * dr, col + k * dc)) look();
+      look();
+      if (at < 0 || !foes.includes(cells[at] as string)) continue;
+      const lands: number[] = [];
+      for (let j = k + 1, land = squareAt(row + j * dr, col + j * dc); empty(cells, land);) {
+        look();
+        lands.push(land);
+        land = squareAt(row + ++j * dr, col + j * dc);
+      }
+      if (!strict || lands.length < 2) {
+        for (const land of lands) found.push([land, at]);
+        continue;
+      }
+      const after = [...cells];
+      after[square] = "";
+      after[at] = "x";
+      const onward = lands.filter((land) => {
+        after[land] = king;
+        const more = captures(after, land, true, false).length > 0;
+        after[land] = "";
+        return more;
+      });
+      for (const land of onward.length ? onward : lands) found.push([land, at]);
+    }
+    return found;
+  };
+
+  const pieces =
+    from === null
+      ? board.flatMap((cell, square) => (cell === side || cell === king ? [square] : []))
+      : board[from] === side || board[from] === king
+        ? [from]
+        : [];
+  const moves: Record<string, Value> = {};
+  for (const square of pieces) {
+    const found = captures(board, square, board[square] === king, true);
+    if (found.length) moves[square] = mapOf(found.map(([land, over]) => [String(land), over]));
+  }
+  if (Object.keys(moves).length || from !== null) return moves;
+
+  for (const square of pieces) {
+    const steps: number[] = [];
+    const row = Math.floor(square / SIDE);
+    const col = square % SIDE;
+    for (const [dr, dc] of DIAGONALS) {
+      if (board[square] !== king) {
+        look();
+        const to = squareAt(row + dr, col + dc);
+        if (dr === ahead && empty(board, to)) steps.push(to);
+        continue;
+      }
+      for (let k = 1, to = squareAt(row + dr, col + dc); empty(board, to);) {
+        look();
+        steps.push(to);
+        to = squareAt(row + ++k * dr, col + k * dc);
+      }
+    }
+    if (steps.length) moves[square] = mapOf(steps.map((to) => [String(to), null]));
+  }
+  return moves;
+}
+
 /** How many arguments each function takes: [least, most]. */
 export const ARITY: Record<string, [number, number]> = Object.freeze(
   Object.assign(Object.create(null) as Record<string, [number, number]>, {
@@ -95,12 +207,14 @@ export const ARITY: Record<string, [number, number]> = Object.freeze(
     max: [1, Infinity],
     slice: [2, 3],
     without: [2, 2],
+    replace: [3, 3],
     tally: [1, 1],
     leader: [1, 1],
     top: [1, 2],
     full: [1, 1],
     line: [3, 3],
     drop: [3, 3],
+    draughts: [2, 3],
     random: [1, 1],
     pick: [1, 1],
     shuffle: [1, 1],
@@ -168,6 +282,11 @@ const BUILT_INS: Record<string, Fn> = {
       return mapOf(Object.entries(collection).filter(([name]) => name !== key));
     }
     return collection;
+  },
+  replace: ([list, old, value], call) => {
+    if (!Array.isArray(list)) return list;
+    walk(call, list.length);
+    return list.map((item) => (equal(item, old, call.budget, call.at) ? value : item));
   },
   tally: ([value], call) => {
     const counts = new Map<string, number>();
@@ -242,6 +361,18 @@ const BUILT_INS: Record<string, Fn> = {
       if (all[cell] === null || all[cell] === "") return cell;
     }
     return null;
+  },
+  draughts: ([board, side, from], call) => {
+    const square = from ?? null;
+    const valid =
+      Array.isArray(board) &&
+      board.length === SIDE * SIDE &&
+      (side === "w" || side === "b") &&
+      (square === null || (Number.isInteger(square) && Number(square) >= 0 && Number(square) < 64));
+    if (!valid) return {};
+    walk(call, board.length);
+    // Bounded by the board: a square looked at is a step, as line() counts its runs.
+    return draughtsMoves(board, side, square as number | null, () => walk(call, 1));
   },
   random: ([n], call) => {
     const bound = integer(n, "random's bound", call);

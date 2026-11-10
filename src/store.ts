@@ -3446,6 +3446,15 @@ export class Store {
   }
 
   /** How many scenes the user has running anywhere. */
+  /** The newest scene the user owns, running or not (0 for none): a ready-made game's ▶ names it. */
+  async lastSceneOf(owner: number): Promise<number> {
+    const row = await this.db
+      .prepare("SELECT MAX(id) AS id FROM scenes WHERE owner = ?")
+      .bind(owner)
+      .first<{ id: number | null }>();
+    return row?.id ?? 0;
+  }
+
   async countActiveScenesOf(owner: number): Promise<number> {
     const row = await this.db
       .prepare("SELECT COUNT(*) AS n FROM scenes WHERE owner = ? AND status = 'active'")

@@ -561,7 +561,14 @@ const en = {
     (p.pages > 1 ? ` · page ${p.page + 1} of ${p.pages}` : "") +
     "\n" +
     (p.lines.length ? p.lines.join("\n") : "None running.") +
-    (p.saved ? "" : "\n\nNo saved scenes yet: ask your assistant to make one."),
+    (p.saved ? "" : "\n\nNo saved scenes yet: ask your assistant to make one.") +
+    "\n\n<b>Ready-made</b>\nGames that come with the bot: start one in this chat, no assistant needed.",
+  gameButtons: { ttt: "❌⭕ Tic-tac-toe", chk: "⚪⚫ Checkers" },
+  gameScreen: (key: "ttt" | "chk") =>
+    (key === "ttt"
+      ? "❌⭕ <b>Tic-tac-toe</b>\n\nTwo seats: tap a cell to take ❌, or a seat button. Play both sides yourself, or 🤖 against the bot: it wins when it can and blocks when it must. The winning line lights up green; 🔁 Rematch swaps who starts and keeps the score."
+      : "⚪⚫ <b>Checkers</b>\n\nRussian draughts on an 8×8 board: men move forward and capture both ways, kings (🤍 🖤) fly, capturing is mandatory and a capture goes on while it can. Tap a piece (blue), then a green square; pieces that must capture show red. Draw offers, resigning and rematches are on the buttons.") +
+    "\n\nIt starts in this chat, as yours. To play with friends in a group, ask your assistant to start it there.",
   buttonStopAllScenes: "■ Stop all scenes",
   confirmStopAll: (n: number) =>
     `Stop all ${n} running scene${n === 1 ? "" : "s"}, in every chat? Their buttons go away; saved scenes stay, to start again.`,
@@ -1133,7 +1140,14 @@ const ru: Texts = {
     (p.pages > 1 ? ` · страница ${p.page + 1} из ${p.pages}` : "") +
     "\n" +
     (p.lines.length ? p.lines.join("\n") : "Ни одной не идёт.") +
-    (p.saved ? "" : "\n\nСохранённых сцен пока нет: попроси ассистента сделать сцену."),
+    (p.saved ? "" : "\n\nСохранённых сцен пока нет: попроси ассистента сделать сцену.") +
+    "\n\n<b>Готовые</b>\nИгры, которые есть в боте: запусти любую в этом чате, ассистент не нужен.",
+  gameButtons: { ttt: "❌⭕ Крестики-нолики", chk: "⚪⚫ Шашки" },
+  gameScreen: (key) =>
+    (key === "ttt"
+      ? "❌⭕ <b>Крестики-нолики</b>\n\nДва места: нажми на клетку, чтобы занять ❌, или на кнопку места. Играй за обоих сам или 🤖 против бота: он выигрывает, когда может, и закрывает, когда надо. Победная линия загорается зелёным; 🔁 Реванш меняет, кто начинает, и сохраняет счёт."
+      : "⚪⚫ <b>Шашки</b>\n\nРусские шашки на доске 8×8: простые ходят вперёд и бьют в обе стороны, дамки (🤍 🖤) ходят на любое поле по диагонали, бить обязательно, и взятие продолжается, пока есть кого бить. Нажми на шашку (синяя), затем на зелёное поле; шашки, которые обязаны бить, — красные. Ничья, сдача и реванш — на кнопках.") +
+    "\n\nЗапустится в этом чате, от твоего имени. Чтобы играть с друзьями в группе, попроси ассистента запустить её там.",
   buttonStopAllScenes: "■ Остановить все сцены",
   confirmStopAll: (n) =>
     `Остановить все идущие сцены во всех чатах (всего: ${n})? Их кнопки пропадут; сохранённые сцены останутся, их можно запустить снова.`,

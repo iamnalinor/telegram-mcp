@@ -25,6 +25,7 @@ import {
   isMap,
   renderTemplate,
   truthy,
+  within,
   type Budget,
   type Scope,
   type Template,
@@ -209,10 +210,6 @@ export function render(
       ...(style ? { style } : {}),
     };
   };
-  const within = (it: Value, i: number, key: string | null): Scope => ({
-    ...scope,
-    vars: { ...scope.vars, it, i, key },
-  });
   const elements = (value: Value): [string | null, Value][] =>
     Array.isArray(value)
       ? value.map((item) => [null, item])
@@ -235,7 +232,7 @@ export function render(
     const items = elements(evaluate(row.over, scope, budget));
     if (row.kind === "each") {
       for (const [i, [key, item]] of items.entries()) {
-        const inner = within(item, i, key);
+        const inner = within(scope, item, i, key);
         // Hidden buttons drop out of the row: a place counts in the template's own row.
         const shown = row.row
           .map((button, c) => ({ button: one(button, inner, `buttons[${r}].row[${c}]`), c }))
@@ -251,7 +248,7 @@ export function render(
     const size = row.kind === "grid" ? row.width : row.perRow;
     let current: RenderedButton[] = [];
     for (const [i, [key, item]] of items.entries()) {
-      const shown = one(row.button, within(item, i, key), `buttons[${r}]`);
+      const shown = one(row.button, within(scope, item, i, key), `buttons[${r}]`);
       // A grid keeps its geometry: a hidden cell still takes its place, as a blank.
       if (shown) current.push(shown);
       else if (row.kind === "grid") current.push({ text: " ", press: row.button.press, arg: i });

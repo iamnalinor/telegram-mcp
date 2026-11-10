@@ -284,8 +284,9 @@ can create one (a `session` id only tells `wake()` where to go), it keeps runnin
 is gone or `/disconnect`ed, and you can start a saved one yourself from the bot's menu (below).
 
 On it: a who's-coming list, a checklist, a board for a long task with Pause and Stop, a triage of
-findings that wakes the assistant when you press Done, a pinned control panel, tic-tac-toe, a quiz, mafia
-with the assistant as host. `scene_guide` hands out these as presets to adapt.
+findings that wakes the assistant when you press Done, a pinned control panel, tic-tac-toe (with a
+bot to play against), Russian checkers, a quiz, mafia with the assistant as host. `scene_guide` hands
+out these as presets to adapt.
 
 ```json
 {
@@ -364,6 +365,19 @@ it. ▶ starts the version the card showed, once: if the scene changed meanwhile
 second tap, you get the card again. A scene started there is yours and
 has no session behind it: everything in it works with no assistant connected, and a `wake()` starts
 your assistant if one is set up, or else wakes nobody and says so. The 20-a-chat limit applies.
+
+**Ready-made games.** 🎬 Scenes also offers ❌⭕ Tic-tac-toe and ⚪⚫ Checkers, shipped with the bot
+(`src/scenes/games.ts`) in English and Russian and shown even with an empty library. ▶ starts one in
+your private chat as yours, like a saved scene, without adding it to your library; a second tap on
+the same card starts nothing. Tic-tac-toe seats two (or one person on both seats, or you against
+🤖, which wins when it can, blocks when it must and otherwise takes the centre or a corner), lights
+up whose turn it is, the last move and the winning line, keeps a score and offers a rematch with
+sides swapped. Checkers plays Russian draughts on 64 buttons: men step forward and capture both
+ways, kings fly, capturing is mandatory, a capture goes on as a chain (the taken pieces stay as ✖
+until it ends and cannot be jumped twice; a man crowned mid-chain goes on as a king; a king must land
+where it can capture again, when it can), and a side with no move left loses. Draws are by agreement
+only. To play with others in a group, ask the assistant: the same games are the `tictactoe` and
+`checkers` presets.
 
 Up to 100 saved scenes per person. What `save_scene` made, changed or renamed is kept on purpose; a
 new scene makes room only by dropping the auto-saved one unused the longest, and when all 100 were
