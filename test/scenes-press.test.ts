@@ -144,8 +144,8 @@ describe("answers to a press", () => {
         for (const i of [0, 1, 2]) await press(ALICE, at, "mark", [i, "fix"]);
         return press({ ...ALICE, language_code: lang }, at, "done");
       },
-      "Nobody to answer right now: no assistant is connected.",
-      "Сейчас некому ответить: ассистент не подключён.",
+      "No assistant is connected, so nobody was woken.",
+      "Ассистент не подключён — будить некого.",
     ],
     [
       "out of date",

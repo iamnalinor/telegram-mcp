@@ -130,7 +130,7 @@ const en = {
   signedOut: "Signed out.",
   alreadySignedOut: "Already signed out.",
   confirmSignOutAll:
-    "Sign out every assistant connected with your account? Each of them will have to sign in again.",
+    "Sign out every assistant connected with your account? Each of them will have to sign in again.\n\nYour scenes keep running after this: they need no assistant. To stop them too, use ■ Stop all scenes (also in 🎬 Scenes).",
   connectFirst:
     "Connect your AI assistant to this bot first (add it as a connector in Claude or ChatGPT and sign in with Telegram), then link groups.",
   leavingNotConnected: (name: string) =>
@@ -158,7 +158,7 @@ const en = {
   revoked: "Access revoked.",
   notYours: "Nothing to revoke.",
   disconnected:
-    "Done — every assistant signed in with your account is disconnected. Connect again from your assistant's settings when you want.",
+    "Done — every assistant signed in with your account is disconnected. Connect again from your assistant's settings when you want.\n\nYour scenes keep running: they need no assistant. To stop them all: /start → 🎬 Scenes → ■ Stop all scenes.",
   pressed: (label: string) => `✓ ${label}`,
   alreadyAnswered: "Already answered.",
   unknownCommand: "Unknown command. Try /start.",
@@ -518,7 +518,8 @@ const en = {
   limitInvalid: "A number from 1 to 500, please.",
   sceneDenied: "Not now.",
   sceneNotForYou: (name: string) => `This button is only for ${name}.`,
-  sceneNobody: "Nobody to answer right now: no assistant is connected.",
+  sceneNoWake: "No assistant is connected, so nobody was woken.",
+  sceneUnreachable: "Nobody can answer right now. Try again later.",
   sceneResting: (minutes: number) => `The assistant is resting. Try again in ${minutes} min.`,
   sceneTooFast: "Not so fast.",
   sceneStale: "This button is out of date.",
@@ -530,7 +531,7 @@ const en = {
   limitGone: "That is gone meanwhile: nothing to set.",
   buttonScenes: (n: number) => `🎬 Scenes (${n})`,
   scenesScreen: (title: string, lines: string[]) =>
-    `🎬 <b>Scenes in «${escapeHtml(title)}»</b>\n\nYour assistant's messages that run by themselves: buttons, votes, games.\n\n` +
+    `🎬 <b>Scenes in «${escapeHtml(title)}»</b>\n\nMessages that run by themselves: buttons, votes, games.\n\n` +
     (lines.length ? lines.join("\n") : "None running."),
   sceneScreen: (p: {
     title: string;
@@ -539,12 +540,74 @@ const en = {
     wakes: number;
     limit: number;
   }) =>
-    `🎬 <b>${escapeHtml(p.title)}</b>\n\nSet up by ` +
-    (p.session ? sessionRef(p.session, "a session") : "your assistant") +
-    `.\nEvents logged: ${p.events}.\nWakes this hour: ${p.wakes} of ${p.limit}.`,
+    `🎬 <b>${escapeHtml(p.title)}</b>\n\n` +
+    (p.session
+      ? `Wakes go to ${sessionRef(p.session, "a session")}.`
+      : "No session behind it: a wake starts your assistant if one is set up, and otherwise wakes nobody.") +
+    `\nEvents logged: ${p.events}.\nWakes this hour: ${p.wakes} of ${p.limit}.`,
   buttonSceneWakes: (limit: number) => `⏱ Wakes: up to ${limit}/h`,
   buttonStopScene: "■ Stop",
   sceneStopped: "Stopped: the buttons are gone.",
+  buttonScenesHub: "🎬 Scenes",
+  scenesHub: (p: {
+    lines: string[];
+    running: number;
+    page: number;
+    pages: number;
+    saved: number;
+  }) =>
+    "🎬 <b>Scenes</b>\n\nMessages that run by themselves: buttons, votes, games. Your assistant makes them, and keeps every one it makes in 📚 Saved scenes: start one from there in this chat, whether an assistant is connected or not.\n\n" +
+    `<b>Running${p.running ? `: ${p.running}` : ""}</b>` +
+    (p.pages > 1 ? ` · page ${p.page + 1} of ${p.pages}` : "") +
+    "\n" +
+    (p.lines.length ? p.lines.join("\n") : "None running.") +
+    (p.saved ? "" : "\n\nNo saved scenes yet: ask your assistant to make one."),
+  buttonStopAllScenes: "■ Stop all scenes",
+  confirmStopAll: (n: number) =>
+    `Stop all ${n} running scene${n === 1 ? "" : "s"}, in every chat? Their buttons go away; saved scenes stay, to start again.`,
+  buttonConfirmStopAll: "■ Stop them all",
+  allScenesStopped: (n: number) =>
+    n ? `Stopped ${n} scene${n === 1 ? "" : "s"}.` : "Nothing was running.",
+  buttonSavedScenes: (n: number) => `📚 Saved scenes (${n})`,
+  savedScenesScreen: (lines: string[]) =>
+    `📚 <b>Saved scenes</b>\n\nThe most recently used first. Pick one to start it in this chat.\n\n${lines.join("\n")}`,
+  savedSceneScreen: (p: {
+    name: string;
+    title: string;
+    brief: string | null;
+    version: number;
+    uses: number;
+    outline: { buttons: number; links: number; sends: number; wakes: string[] } | null;
+  }) =>
+    `📄 <b>${escapeHtml(p.title)}</b>\n<code>${escapeHtml(p.name)}</code> · version ${p.version} · started ${p.uses} time${p.uses === 1 ? "" : "s"}` +
+    (p.brief ? `\n\n<i>${escapeHtml(p.brief)}</i>` : "") +
+    (p.outline
+      ? `\n\nButtons: ${p.outline.buttons}` +
+        (p.outline.links ? ` (links: ${p.outline.links})` : "") +
+        `. Rules that send messages: ${p.outline.sends}.\n` +
+        (p.outline.wakes.length
+          ? `Wakes the assistant on: ${p.outline.wakes.join(", ")}. With yours set up, those start it; otherwise they work without waking anyone.`
+          : "Never wakes the assistant.") +
+        "\n\nIt starts in this chat, as yours."
+      : "\n\nIt no longer checks out, so it cannot start. Ask your assistant to fix it."),
+  buttonStartScene: "▶ Start here",
+  buttonDeleteSaved: "🗑 Delete",
+  confirmDeleteSaved: (name: string) =>
+    `Delete the saved scene «${escapeHtml(name)}» and its earlier versions? Scenes running from it go on.`,
+  savedDeleted: "Deleted.",
+  savedChanged:
+    "This saved scene changed since you opened it. Here it is as it is now: check it, then start it again.",
+  savedStartedAlready:
+    "It has been started since this card was shown (a second tap?). Press ▶ again for another one.",
+  sceneStarted: "Started: it is in this chat now.",
+  sceneCannotStart:
+    "This saved scene cannot start: it no longer checks out. Ask your assistant to fix it.",
+  sceneStartRefused: "Telegram did not take the message. Try again later.",
+  scenesFull: (n: number) => `You have ${n} scenes running in this chat: stop one first.`,
+  sceneMenuGone: "That is gone already.",
+  privateChatName: "your private chat",
+  buttonPrev: "← Newer",
+  buttonNext: "Older →",
   othersLimited: (limit: number) =>
     `😴 Other members used up ${limit} starts this hour; theirs wait until it passes (they see 😴). Change the limit in 👥 Groups.`,
   routineFirst: "Set up 🤖 Assistant first.",
@@ -678,7 +741,7 @@ const ru: Texts = {
   signedOut: "Вход завершён.",
   alreadySignedOut: "Этот вход уже завершён.",
   confirmSignOutAll:
-    "Выйти из всех ассистентов, подключённых под твоим аккаунтом? Каждому придётся войти заново.",
+    "Выйти из всех ассистентов, подключённых под твоим аккаунтом? Каждому придётся войти заново.\n\nСцены после этого продолжат идти: ассистент им не нужен. Чтобы остановить и их, нажми ■ Остановить все сцены (есть и в 🎬 Сценах).",
   connectFirst:
     "Сначала подключи AI-ассистента к этому боту (добавь коннектор в Claude или ChatGPT и войди через Telegram), потом привязывай группы.",
   leavingNotConnected: (name) =>
@@ -707,7 +770,7 @@ const ru: Texts = {
   revoked: "Доступ отозван.",
   notYours: "Нечего отзывать.",
   disconnected:
-    "Готово — все ассистенты, подключённые под твоим аккаунтом, отключены. Подключиться снова можно в настройках ассистента.",
+    "Готово — все ассистенты, подключённые под твоим аккаунтом, отключены. Подключиться снова можно в настройках ассистента.\n\nСцены продолжают идти: ассистент им не нужен. Остановить все: /start → 🎬 Сцены → ■ Остановить все сцены.",
   pressed: (label) => `✓ ${label}`,
   alreadyAnswered: "Уже отвечено.",
   unknownCommand: "Не знаю такой команды. Попробуй /start.",
@@ -1039,7 +1102,8 @@ const ru: Texts = {
   limitInvalid: "Нужно число от 1 до 500.",
   sceneDenied: "Сейчас нельзя.",
   sceneNotForYou: (name) => `Эта кнопка только для ${name}.`,
-  sceneNobody: "Сейчас некому ответить: ассистент не подключён.",
+  sceneNoWake: "Ассистент не подключён — будить некого.",
+  sceneUnreachable: "Сейчас некому ответить. Попробуй позже.",
   sceneResting: (minutes) => `Ассистент отдыхает, попробуй через ${minutes} мин.`,
   sceneTooFast: "Не так быстро.",
   sceneStale: "Кнопка устарела.",
@@ -1051,15 +1115,63 @@ const ru: Texts = {
   limitGone: "Этого уже нет: настраивать нечего.",
   buttonScenes: (n) => `🎬 Сцены (${n})`,
   scenesScreen: (title, lines) =>
-    `🎬 <b>Сцены в «${escapeHtml(title)}»</b>\n\nСообщения твоего ассистента, которые работают сами: кнопки, голосования, игры.\n\n` +
+    `🎬 <b>Сцены в «${escapeHtml(title)}»</b>\n\nСообщения, которые работают сами: кнопки, голосования, игры.\n\n` +
     (lines.length ? lines.join("\n") : "Ни одной не идёт."),
   sceneScreen: (p) =>
-    `🎬 <b>${escapeHtml(p.title)}</b>\n\nЗапустила ` +
-    (p.session ? sessionRef(p.session, "сессия") : "твой ассистент") +
-    `.\nСобытий в журнале: ${p.events}.\nПобудок за час: ${p.wakes} из ${p.limit}.`,
+    `🎬 <b>${escapeHtml(p.title)}</b>\n\n` +
+    (p.session
+      ? `Побудки идут в ${sessionRef(p.session, "сессию")}.`
+      : "Сессии за ней нет: побудка запускает ассистента, если он настроен, а иначе никого не будит.") +
+    `\nСобытий в журнале: ${p.events}.\nПобудок за час: ${p.wakes} из ${p.limit}.`,
   buttonSceneWakes: (limit) => `⏱ Побудок: до ${limit}/ч`,
   buttonStopScene: "■ Остановить",
   sceneStopped: "Остановлена: кнопок больше нет.",
+  buttonScenesHub: "🎬 Сцены",
+  scenesHub: (p) =>
+    "🎬 <b>Сцены</b>\n\nСообщения, которые работают сами: кнопки, голосования, игры. Их делает ассистент и хранит каждую в 📚 Сохранённых сценах: оттуда любую можно запустить в этом чате — подключён ассистент или нет.\n\n" +
+    `<b>Идут${p.running ? `: ${p.running}` : ""}</b>` +
+    (p.pages > 1 ? ` · страница ${p.page + 1} из ${p.pages}` : "") +
+    "\n" +
+    (p.lines.length ? p.lines.join("\n") : "Ни одной не идёт.") +
+    (p.saved ? "" : "\n\nСохранённых сцен пока нет: попроси ассистента сделать сцену."),
+  buttonStopAllScenes: "■ Остановить все сцены",
+  confirmStopAll: (n) =>
+    `Остановить все идущие сцены во всех чатах (всего: ${n})? Их кнопки пропадут; сохранённые сцены останутся, их можно запустить снова.`,
+  buttonConfirmStopAll: "■ Остановить все",
+  allScenesStopped: (n) => (n ? `Остановлено сцен: ${n}.` : "Ничего не шло."),
+  buttonSavedScenes: (n) => `📚 Сохранённые сцены (${n})`,
+  savedScenesScreen: (lines) =>
+    `📚 <b>Сохранённые сцены</b>\n\nСначала недавние. Выбери, чтобы запустить в этом чате.\n\n${lines.join("\n")}`,
+  savedSceneScreen: (p) =>
+    `📄 <b>${escapeHtml(p.title)}</b>\n<code>${escapeHtml(p.name)}</code> · версия ${p.version} · запусков: ${p.uses}` +
+    (p.brief ? `\n\n<i>${escapeHtml(p.brief)}</i>` : "") +
+    (p.outline
+      ? `\n\nКнопок: ${p.outline.buttons}` +
+        (p.outline.links ? ` (ссылок: ${p.outline.links})` : "") +
+        `. Правил, которые шлют сообщения: ${p.outline.sends}.\n` +
+        (p.outline.wakes.length
+          ? `Будит ассистента на: ${p.outline.wakes.join(", ")}. Если твой настроен, это его запустит; иначе сработает, никого не будя.`
+          : "Ассистента не будит.") +
+        "\n\nЗапустится в этом чате, от твоего имени."
+      : "\n\nОна больше не проходит проверку, запустить её нельзя. Попроси ассистента её исправить."),
+  buttonStartScene: "▶ Запустить здесь",
+  buttonDeleteSaved: "🗑 Удалить",
+  confirmDeleteSaved: (name) =>
+    `Удалить сохранённую сцену «${escapeHtml(name)}» вместе с прошлыми версиями? Запущенные из неё сцены продолжат идти.`,
+  savedDeleted: "Удалена.",
+  savedChanged:
+    "Эта сохранённая сцена изменилась, пока была открыта. Вот она сейчас: проверь и запусти снова.",
+  savedStartedAlready:
+    "Её уже запустили, пока была открыта карточка (двойное нажатие?). Нажми ▶ ещё раз, чтобы запустить ещё одну.",
+  sceneStarted: "Запущена: она в этом чате.",
+  sceneCannotStart:
+    "Эту сохранённую сцену не запустить: она больше не проходит проверку. Попроси ассистента её исправить.",
+  sceneStartRefused: "Telegram не принял сообщение. Попробуй позже.",
+  scenesFull: (n) => `В этом чате уже идут ${n} сцен: сначала останови одну.`,
+  sceneMenuGone: "Этого уже нет.",
+  privateChatName: "личный чат",
+  buttonPrev: "← Новее",
+  buttonNext: "Старше →",
   othersLimited: (limit) =>
     `😴 Остальные участники исчерпали ${limit} запусков за час; их теги подождут, пока он пройдёт (они видят 😴). Лимит меняется в 👥 Группах.`,
   routineFirst: "Сначала настрой 🤖 Ассистента.",

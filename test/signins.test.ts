@@ -85,6 +85,7 @@ describe("sign-ins", () => {
     const confirm = await press("m:out");
     expect(buttons(confirm.screen!.reply_markup).map((b) => b.callback_data)).toEqual([
       "m:outyes",
+      "m:scx",
       "m:si",
     ]);
     expect(await works(one.access_token)).toBe(true);

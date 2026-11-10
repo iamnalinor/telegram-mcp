@@ -8,7 +8,13 @@
  * must be able to answer (a routine, or the relay with the right session);
  * and the limits must allow it — the scene's own, per hour, and the ones
  * every start shares (src/bot/triggers.ts), claimed in one statement. A
- * refusal means the rule does not run at all.
+ * refusal means the rule does not run at all — except "nobody": with
+ * nothing set up that could be woken (no session behind the scene that
+ * anything reaches, no assistant to start one), the rule runs and its
+ * wake() only logs. A scene needs no assistant for anything else. Something
+ * set up that cannot be reached now (the relay offline, settings that no
+ * longer read, an owner taken off the allowlist) refuses, as a limit does:
+ * the press can be tried again.
  *
  * Like a group's sessions of the day, a scene keeps two audiences apart:
  * the owner's wakes go to `session_id` (the session that set it up), third
@@ -41,7 +47,11 @@ export interface WakeSource {
 
 export type WakeGate =
   | { ok: true; fireId: number; byOther: boolean; source?: WakeSource }
-  | { ok: false; answer: "not_for_you" | "nobody" | "resting" | "session"; minutes?: number };
+  | {
+      ok: false;
+      answer: "not_for_you" | "nobody" | "unreachable" | "resting" | "session";
+      minutes?: number;
+    };
 
 const HOUR = 3600;
 
@@ -71,19 +81,21 @@ export async function gateWake(
   actor: Actor,
   source?: WakeSource,
 ): Promise<WakeGate> {
-  // A session acting through update_scene may wake only itself: the scene's own session.
-  if (source && (!source.session || source.session !== scene.session_id)) {
-    return { ok: false, answer: "session" };
+  if (source) {
+    // A scene with no session (one started from the menu, say): whoever acts, nobody's to wake.
+    if (!scene.session_id) return { ok: false, answer: "nobody" };
+    // A session acting through update_scene may wake only itself: the scene's own session.
+    if (source.session !== scene.session_id) return { ok: false, answer: "session" };
   }
   const byOther = source ? source.origin !== "user" : actor.id !== scene.owner;
   const claim = await ctx.store.getClaudeChat(scene.chat_id);
   const othersAllowed = claim?.user_id === scene.owner && claim.others === 1;
   if (!source && byOther && !othersAllowed) return { ok: false, answer: "not_for_you" };
 
-  if (!isAllowed(ctx.config, scene.owner)) return { ok: false, answer: "nobody" };
-  if ((await reachable(ctx, scene.owner, targetOf(scene, byOther && !source))) !== true) {
-    return { ok: false, answer: "nobody" };
-  }
+  if (!isAllowed(ctx.config, scene.owner)) return { ok: false, answer: "unreachable" };
+  const reach = await reachable(ctx, scene.owner, targetOf(scene, byOther && !source));
+  if (reach === "none") return { ok: false, answer: "nobody" };
+  if (reach !== true) return { ok: false, answer: "unreachable" };
 
   const now = nowSeconds();
   const fireId = -(Date.now() * 1000 + Math.floor(Math.random() * 1000));

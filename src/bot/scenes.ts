@@ -63,12 +63,16 @@ export type Answer = {
   noRule?: boolean;
   /** Why the event was dropped though a rule may well have taken it: for a source nobody answers. */
   lost?: string;
+  /** The rule ran, but its wake() woke nobody: no assistant could be woken. */
+  unwoken?: boolean;
 };
 
 /** What a scene's I/O needs; tools pass their own context, which has these too. */
 type SceneContext = Pick<BotContext, "api" | "store" | "bot" | "config" | "defer" | "sceneLimit">;
 
 const ATTEMPTS = 3;
+/** Scenes one owner may run in one chat at once. */
+export const ACTIVE_PER_CHAT = 20;
 const EDIT_GAP_MS = 1000;
 /** How long a held-back edit waits; tests shorten it. */
 export const sceneTiming = { redrawDelayMs: 1200 };
@@ -431,7 +435,7 @@ export async function applyEvent(
   /** A session of the owner's acting through update_scene, rather than a person in Telegram. */
   source?: WakeSource,
 ): Promise<Answer> {
-  const wake: Wake = { gate: null, row: null, used: false, source };
+  const wake: Wake = { gate: null, row: null, used: false, unwoken: false, source };
   try {
     return await attempt(ctx, sceneId, incoming, press, language, wake);
   } finally {
@@ -445,6 +449,8 @@ interface Wake {
   gate: (WakeGate & { ok: true }) | null;
   row: SceneRow | null;
   used: boolean;
+  /** Nobody can be woken: the rule runs, its wake() only logs. */
+  unwoken: boolean;
   source?: WakeSource;
 }
 
@@ -527,16 +533,20 @@ async function attempt(
       if (found.refused === "no_rule") return { text: t.sceneDenied, noRule: true };
       return found.text ? { text: found.text, said: true } : { text: t.sceneDenied, said: true };
     }
-    if (found.wakes && !wake.gate) {
+    if (found.wakes && !wake.gate && !wake.unwoken) {
       const gate = await gateWake(ctx, row, event.user, wake.source);
-      if (!gate.ok) {
+      if (gate.ok) {
+        wake.gate = gate;
+        wake.row = row;
+      } else if (gate.answer === "nobody") {
+        // Waking is the one thing that needs an assistant: the rest of the rule goes on.
+        wake.unwoken = true;
+      } else {
         if (gate.answer === "not_for_you") return { text: t.sceneNotForYou(owner.name) };
-        if (gate.answer === "nobody") return { text: t.sceneNobody };
         if (gate.answer === "session") return { text: SESSION_REFUSAL };
+        if (gate.answer === "unreachable") return { text: t.sceneUnreachable };
         return { text: t.sceneResting(gate.minutes ?? 60) };
       }
-      wake.gate = gate;
-      wake.row = row;
     }
 
     let result: ReturnType<typeof run>;
@@ -599,10 +609,15 @@ async function attempt(
       await ctx.store.touchScene(row.id);
     }
     try {
-      return {
-        ...(await perform(ctx, current, event, result.effects, wake, press?.query.id)),
-        applied: true,
-      };
+      const answer = await perform(ctx, current, event, result.effects, wake, press?.query.id);
+      // Only a wake() the rule reached says so: one in a branch not taken woke nobody either way.
+      if (!wake.unwoken || !result.effects.some((effect) => effect.kind === "wake")) {
+        return { ...answer, applied: true };
+      }
+      // A person in Telegram hears it in their language; a session reads `unwoken`.
+      const note = wake.source ? undefined : t.sceneNoWake;
+      const text = [answer.text, note].filter(Boolean).join("\n");
+      return { ...answer, ...(text ? { text } : {}), applied: true, unwoken: true };
     } catch (error) {
       await afterCommit(ctx, current, event.user, error);
       return { applied: true };
@@ -674,10 +689,14 @@ async function perform(
   return answer;
 }
 
-/** For the model, in update_scene's result: only the scene's own session may wake through act. */
+/**
+ * For the model, in update_scene's result: on a scene with a session, only
+ * that session may wake through act (a scene with none runs the rule unwoken).
+ */
 const SESSION_REFUSAL =
-  "wake() through act works only from the session that set the scene up: pass your session id as " +
-  "`session`, and only on a scene that session created.";
+  "This scene was set up by a session, and a rule with wake() through act runs only from that " +
+  "session: pass its id as `session`. (On a scene with no session, act runs the rule and its wake() " +
+  "only logs.)";
 
 /** Posts a minute per scene; a die counts as one. */
 const POSTS_PER_MINUTE = 5;
@@ -921,12 +940,13 @@ function later(ctx: SceneContext, sceneId: number): void {
   if (ctx.defer) ctx.defer(work);
 }
 
-/** How many ended scenes one revoke or sign-out redraws; the daily run takes the rest. */
+/** How many ended scenes one revoke or stop-all redraws; the daily run takes the rest. */
 const ENDED_DRAWS = 10;
 
 /**
- * Access went (a revoke, leaving the group, /disconnect): the store ended the
- * owner's scenes there, and their buttons come off now, after the reply. What
+ * Access went (a revoke, leaving the group, letting a guest chat go), or the
+ * user stopped them all: the store ended the owner's scenes there (or
+ * everywhere), and their buttons come off now, after the reply. What
  * Telegram keeps quiet, a failure here, or more than a few scenes is left to
  * the daily run.
  */
@@ -966,10 +986,16 @@ export async function releaseChat(
   if (isGuestKey(chatId)) await drawEnded(ctx, userId, chatId);
 }
 
-/** Sign out every assistant of the user; their scenes end with it. */
+/** The user's panic button: every scene of theirs ends, in every chat. How many did. */
+export async function stopAllScenes(ctx: SceneContext, userId: number): Promise<number> {
+  const stopped = await ctx.store.finishScenesOf(userId);
+  if (stopped) await drawEnded(ctx, userId);
+  return stopped;
+}
+
+/** Sign out every assistant of the user. Their scenes go on: they need no assistant. */
 export async function signOutAll(ctx: SceneContext, userId: number): Promise<void> {
   await ctx.store.bumpTokenVersion(userId);
-  await drawEnded(ctx, userId);
 }
 
 /** For the daily run: draw a finished scene whose last drawing is still owed. */
