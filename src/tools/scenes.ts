@@ -105,6 +105,14 @@ async function guestTarget(
   }
   const call = await ctx.store.getGuestCall(ctx.userId, args.guest_call!);
   if (!call) throw new ToolError(`There is no guest call ${args.guest_call} for this user.`);
+  // A scene can carry link buttons on a message the whole chat reads: only on
+  // the user's own call, as answer_guest allows links only there.
+  if (call.by_other) {
+    throw new ToolError(
+      "The caller is not the user: scenes (which can carry link buttons) run only on the user's own " +
+        "guest calls. Answer a third party's call with answer_guest: text and plain buttons.",
+    );
+  }
   if (!call.inline_message_id) {
     throw new ToolError(
       "Telegram did not accept the bot's message for that call, so there is nothing to run a scene on.",
@@ -287,7 +295,8 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
             "Instead of chat: run the scene on the bot's one message for this guest call (a chat the bot " +
               "is not in). Presses, toast, alert, whisper, show, log, wake and finish work there; post, " +
               "poll, dice and tag cannot (the bot can send nothing else there), and no reply, reaction " +
-              "or vote reaches it. Not on a message answer_guest turned into media.",
+              "or vote reaches it. Only on the user's own call, not a third party's; link buttons there are " +
+              "https only. Not on a message answer_guest turned into media.",
           ),
         session: sessionArg,
         agent: agentArg,
@@ -340,6 +349,7 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
           const shown = render(scene, "main", state, {
             owner: { id: ctx.userId, name: ctx.user.name ?? "owner" },
             now: Math.floor(Date.now() / 1000),
+            httpsOnly: guest !== null,
           });
           const labels = shown.rows
             .map((row) => row.map((b) => `[${b.text}]`).join(" "))

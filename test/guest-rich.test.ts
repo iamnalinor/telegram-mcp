@@ -437,6 +437,65 @@ describe("answer_guest: what may go on a public message", () => {
       ).isError,
     ).toBe(false);
   });
+
+  const LINKS = {
+    title: "Links",
+    view: {
+      text: "Links",
+      buttons: [
+        [
+          { text: "Safe", url: "https://example.com" },
+          { text: "Plain", url: "http://example.com" },
+          { text: "App", url: "tg://resolve?domain=x" },
+        ],
+      ],
+    },
+    rules: [],
+  };
+
+  it("runs no scene on a third party's call", async () => {
+    await call(ALICE, `${BOT} hi`);
+    h.db.raw.exec("UPDATE claude_chats SET others = 1");
+    await call(BOB, `${BOT} help me`);
+    const edits = h.telegram.called("editMessageText").length;
+    for (const definition of [LINKS, COUNTER]) {
+      const refused = await h.tool(alice, "create_scene", { definition, guest_call: 2 });
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toContain("not the user");
+    }
+    expect(h.telegram.called("editMessageText")).toHaveLength(edits);
+    expect(count("SELECT COUNT(*) AS n FROM scenes")).toBe(0);
+  });
+
+  it("keeps only https link buttons in a scene on the user's own call", async () => {
+    await call(ALICE, `${BOT} hi`);
+    const dry = await h.tool(alice, "create_scene", {
+      definition: LINKS,
+      guest_call: 1,
+      dry_run: true,
+    });
+    expect(dry.text).toContain("[Safe]");
+    expect(dry.text).not.toContain("[Plain]");
+    expect(dry.text).not.toContain("[App]");
+    const created = await h.tool(alice, "create_scene", { definition: LINKS, guest_call: 1 });
+    expect(created.isError).toBe(false);
+    const keyboard = last("editMessageText").reply_markup as {
+      inline_keyboard: { url?: string }[][];
+    };
+    expect(keyboard.inline_keyboard.flat().map((b) => b.url)).toEqual(["https://example.com"]);
+  });
+
+  it("leaves link buttons in an ordinary scene as they were", async () => {
+    await h.tool(alice, "create_scene", { definition: LINKS, chat: "me" });
+    const keyboard = last("sendMessage").reply_markup as {
+      inline_keyboard: { url?: string }[][];
+    };
+    expect(keyboard.inline_keyboard.flat().map((b) => b.url)).toEqual([
+      "https://example.com",
+      "http://example.com",
+      "tg://resolve?domain=x",
+    ]);
+  });
 });
 
 describe("scenes on a guest call's message: edges", () => {

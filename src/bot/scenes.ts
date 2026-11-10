@@ -168,7 +168,15 @@ function screens(row: SceneRow, owner: Actor): Map<string, Rendered> {
   for (const index of messages.keys()) {
     const view = viewOf(row, messages, index);
     if (!drawn.has(view)) {
-      drawn.set(view, render(compiled, view, state, { owner, now: nowSeconds(), sceneId: row.id }));
+      drawn.set(
+        view,
+        render(compiled, view, state, {
+          owner,
+          now: nowSeconds(),
+          sceneId: row.id,
+          httpsOnly: row.inline_id !== null,
+        }),
+      );
     }
   }
   return drawn;
@@ -316,7 +324,12 @@ export async function startGuestScene(
     const row = (await ctx.store.getScene(id))!;
     const owner = await ownerOf(ctx, row);
     const { compiled, state } = loaded(row);
-    const rendered = render(compiled, "main", state, { owner, now: nowSeconds(), sceneId: id });
+    const rendered = render(compiled, "main", state, {
+      owner,
+      now: nowSeconds(),
+      sceneId: id,
+      httpsOnly: true,
+    });
     await ctx.api.call("editMessageText", {
       inline_message_id: p.inlineId,
       ...body(rendered),
@@ -488,6 +501,7 @@ async function attempt(
           owner,
           now: nowSeconds(),
           sceneId: row.id,
+          httpsOnly: row.inline_id !== null,
         });
       } catch {
         return { text: t.sceneFailed };

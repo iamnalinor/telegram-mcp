@@ -64,8 +64,9 @@ function cut(text: string, length: number): string {
   return chars.length > length ? `${chars.slice(0, length - 1).join("")}…` : text;
 }
 
-function safeUrl(url: string): string | null {
-  return /^(https?:\/\/|tg:\/\/)\S+$/i.test(url.trim()) ? url.trim() : null;
+function safeUrl(url: string, httpsOnly: boolean): string | null {
+  const pattern = httpsOnly ? /^https:\/\/\S+$/i : /^(https?:\/\/|tg:\/\/)\S+$/i;
+  return pattern.test(url.trim()) ? url.trim() : null;
 }
 
 /**
@@ -103,7 +104,13 @@ export function render(
   compiled: Compiled,
   view: string,
   state: Record<string, Value>,
-  env: { owner: Actor; now: number; sceneId?: number },
+  env: {
+    owner: Actor;
+    now: number;
+    sceneId?: number;
+    /** A guest call's public message: link buttons other than https drop out. */
+    httpsOnly?: boolean;
+  },
 ): Rendered {
   const screen = compiled.views[view] ?? compiled.views.main;
   if (!screen) throw new DefinitionError(`there is no view "${view}"`, "views");
@@ -191,7 +198,7 @@ export function render(
     if (button.show && !truthy(evaluate(button.show, inner, budget))) return null;
     const label = cut(plainText(button.text, inner, budget), BUTTON_TEXT) || "·";
     if (button.url) {
-      const url = safeUrl(plainText(button.url, inner, budget));
+      const url = safeUrl(plainText(button.url, inner, budget), env.httpsOnly ?? false);
       return url ? { text: label, url } : null;
     }
     const style = styleOf(button, inner, place);
