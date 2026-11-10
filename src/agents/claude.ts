@@ -7,8 +7,11 @@ import { enqueue, relayState } from "../relay";
 import { fire, firePayload, guestPayload, loadRoutine, scenePayload } from "../routine";
 import { sessionLink, type Provider, type StartRequest } from "./types";
 
-function payloadOf(request: StartRequest): string {
+/** What a start tells the session; OpenAI's sessions get the same, with their id added. */
+export function payloadOf(request: StartRequest): string {
   switch (request.kind) {
+    case "test":
+      return firePayload({ chat: request.chat, message: request.message, by: "test" });
     case "message":
       return firePayload(request);
     case "guest":

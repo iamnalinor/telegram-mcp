@@ -109,11 +109,12 @@ async function handleMcp(
     return tooManyRequests("Too many requests for this user. Wait a minute and try again.");
   }
 
-  const { userId, username, name, client } = authInfo.extra as unknown as McpAuth;
+  const { userId, username, name, client, session } = authInfo.extra as unknown as McpAuth;
   const toolCtx = await toolContext(core, publicOrigin(request), userId, {
     username,
     name,
     client,
+    session,
   });
   // A scene's held-back redraw finishes after the answer is sent.
   toolCtx.defer = defer;
@@ -259,6 +260,9 @@ export default {
     }
     for (const userId of await core.store.routineUsers()) {
       if (!isAllowed(core.config, userId)) await core.store.deleteRoutine(userId);
+    }
+    for (const userId of await core.store.agentUsers()) {
+      if (!isAllowed(core.config, userId)) await core.store.dropAgents(userId);
     }
     const origin = await core.store.getMeta("public_origin");
     if (origin) {

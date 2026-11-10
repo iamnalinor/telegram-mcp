@@ -1,13 +1,16 @@
 /**
- * Setting up the user's routine from the private chat, and its test start.
+ * Setting up the user's assistant from the private chat — Claude's routine,
+ * or an OpenAI API key — and its test start.
  *
- * The routine's token arrives as an ordinary message. Such a message — or
- * anything else that looks like an Anthropic key — never reaches storage:
- * the webhook hands it here first, and it is deleted from the chat.
+ * Tokens and keys arrive as ordinary messages. Such a message — or anything
+ * else that looks like a key (src/secrets.ts) — never reaches storage: the
+ * webhook hands it here first, and it is deleted from the chat.
  */
 
+import { loadOpenAI, MODELS, openai, saveOpenAI } from "../agents/openai";
 import { isAllowed } from "../env";
 import { fire, firePayload, loadRoutine, parseRoutine, saveRoutine } from "../routine";
+import { openaiKey, webhookSecret } from "../secrets";
 import type { Message, User } from "../telegram/types";
 import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { texts } from "./texts";
@@ -35,6 +38,17 @@ export function resetTestStarts(): void {
   lastTest.clear();
 }
 
+/** False, and the user told so, when a test start went out less than a minute ago. */
+async function testAllowed(ctx: BotContext, user: User): Promise<boolean> {
+  const last = lastTest.get(user.id);
+  if (last !== undefined && Date.now() - last < TEST_COOLDOWN_MS) {
+    await say(ctx, user.id, texts(user.language_code).testTooSoon);
+    return false;
+  }
+  lastTest.set(user.id, Date.now());
+  return true;
+}
+
 /** Start the routine once, as a check: the session answers "ok" in the private chat. */
 export async function testRoutine(ctx: BotContext, user: User, messageId: number): Promise<void> {
   const t = texts(user.language_code);
@@ -43,12 +57,7 @@ export async function testRoutine(ctx: BotContext, user: User, messageId: number
     await say(ctx, user.id, t.fireFailed(routine));
     return;
   }
-  const last = lastTest.get(user.id);
-  if (last !== undefined && Date.now() - last < TEST_COOLDOWN_MS) {
-    await say(ctx, user.id, t.testTooSoon);
-    return;
-  }
-  lastTest.set(user.id, Date.now());
+  if (!(await testAllowed(ctx, user))) return;
   const result = await fire(
     routine.triggerId,
     routine.token,
@@ -67,9 +76,33 @@ export async function testRoutine(ctx: BotContext, user: User, messageId: number
   await say(ctx, user.id, t.fireFailed(result.reason, minutes));
 }
 
+/** Start an OpenAI session once, as a check, the same way. */
+export async function testOpenAI(ctx: BotContext, user: User, messageId: number): Promise<void> {
+  const t = texts(user.language_code);
+  const config = await loadOpenAI(ctx.store, ctx.config.secretKey, user.id);
+  if (typeof config === "string") {
+    await say(ctx, user.id, t.fireFailed(config, undefined, "openai"));
+    return;
+  }
+  if (!(await testAllowed(ctx, user))) return;
+  const result = await openai.start(ctx, user.id, {
+    kind: "test",
+    chat: user.id,
+    message: messageId,
+  });
+  if (result.ok) {
+    await say(ctx, user.id, t.testStarted(null));
+    return;
+  }
+  lastTest.delete(user.id);
+  const minutes = result.retryAfter ? Math.ceil(result.retryAfter / 60) : undefined;
+  await say(ctx, user.id, t.fireFailed(result.reason, minutes, "openai"));
+}
+
 /**
- * A private message that holds a key: deleted, never stored. If it carries a
- * trigger id and a token, it sets the user's routine, followed by a test start.
+ * A private message that holds a key: deleted, never stored. A trigger id
+ * with a token sets the user's routine; an OpenAI key, their OpenAI setup;
+ * either is followed by a test start. A webhook secret joins the OpenAI setup.
  */
 export async function handleSecret(
   ctx: BotContext,
@@ -83,14 +116,54 @@ export async function handleSecret(
     .catch(() => false);
   // If it stays in the chat, the key is exposed there: the user has to know.
   const after = deleted ? "" : `\n\n${t.deleteYourself}`;
-  const routine = parseRoutine(message.text ?? message.caption ?? "");
-  if (!routine || !isAllowed(ctx.config, user.id) || !(await hasConnected(ctx, user.id))) {
+  const text = message.text ?? message.caption ?? "";
+  const routine = parseRoutine(text);
+  const key = routine ? null : openaiKey(text);
+  const hook = routine || key ? null : webhookSecret(text);
+  if (
+    !(routine || key || hook) ||
+    !isAllowed(ctx.config, user.id) ||
+    !(await hasConnected(ctx, user.id))
+  ) {
     await say(ctx, message.chat.id, t.secretDropped(deleted) + after);
     return null;
   }
-  const first = !(await ctx.store.getRoutine(user.id));
+  // Answering in the private chat comes on with the first assistant; groups are turned on one by one.
+  const first = !(await ctx.store.hasAssistant(user.id));
+  if (hook) {
+    const config = await loadOpenAI(ctx.store, ctx.config.secretKey, user.id);
+    if (typeof config === "string") {
+      await say(ctx, message.chat.id, t.webhookNoKey + after);
+      return null;
+    }
+    await saveOpenAI(ctx.store, ctx.config.secretKey, user.id, { ...config, webhookSecret: hook });
+    await say(ctx, message.chat.id, t.webhookSaved(deleted) + after);
+    return null;
+  }
+  if (key) {
+    const config = await loadOpenAI(ctx.store, ctx.config.secretKey, user.id);
+    try {
+      // A new key keeps the models chosen before.
+      await saveOpenAI(ctx.store, ctx.config.secretKey, user.id, {
+        ...(typeof config === "string" ? { chatModel: MODELS[0], taskModel: MODELS[1] } : config),
+        key,
+      });
+    } catch (error) {
+      console.error(
+        JSON.stringify({ event: "openai_save_failed", user: user.id, error: String(error) }),
+      );
+      await say(ctx, message.chat.id, t.openaiNotSaved + after);
+      return null;
+    }
+    // Sent to be used: OpenAI answers from now on, until the user switches back.
+    await ctx.store.setActiveProvider(user.id, "openai");
+    if (first) await ctx.store.claimClaudeChat(user.id, user.id);
+    await say(ctx, message.chat.id, t.openaiSaved(deleted, true) + after);
+    await testOpenAI(ctx, user, message.message_id);
+    return null;
+  }
   try {
-    await saveRoutine(ctx.store, ctx.config.secretKey, user.id, routine);
+    await saveRoutine(ctx.store, ctx.config.secretKey, user.id, routine!);
   } catch (error) {
     console.error(
       JSON.stringify({ event: "routine_save_failed", user: user.id, error: String(error) }),
@@ -98,9 +171,12 @@ export async function handleSecret(
     await say(ctx, message.chat.id, t.routineNotSaved + after);
     return null;
   }
-  // Answering in the private chat comes on with the first routine; groups are turned on one by one.
+  // Likewise a routine: Claude answers again.
+  if ((await ctx.store.getUser(user.id))?.active_provider) {
+    await ctx.store.setActiveProvider(user.id, null);
+  }
   if (first) await ctx.store.claimClaudeChat(user.id, user.id);
-  await say(ctx, message.chat.id, t.routineSaved(routine.triggerId, deleted) + after);
+  await say(ctx, message.chat.id, t.routineSaved(routine!.triggerId, deleted) + after);
   await testRoutine(ctx, user, message.message_id);
   return null;
 }

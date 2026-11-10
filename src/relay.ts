@@ -60,7 +60,7 @@ export function relayProblem(state: RelayState, user: UserRef): string | null {
   const name = user.username ? `@${user.username}` : "the user";
   if (state === "online") return null;
   if (state === "none") {
-    return `Messages to other sessions need the relay, and ${name} has not set one up (bot menu → 🤖 Claude → 🛰 Relay).`;
+    return `Messages to other sessions need the relay, and ${name} has not set one up (bot menu → 🤖 Assistant → ⚙️ Claude → 🛰 Relay).`;
   }
   if (state === "login") {
     return `The relay cannot pass messages on: its Claude sign-in expired. ${name} has to sign in again there (\`claude\`, then /login) — tell them.`;

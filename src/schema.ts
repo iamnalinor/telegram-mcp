@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 19;
+const SCHEMA_VERSION = 20;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -76,7 +76,9 @@ const SCHEMA: string[] = [
     token_version INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL,
     -- When the user first signed an assistant in. Only such users may link groups.
-    connected_at INTEGER
+    connected_at INTEGER,
+    -- Whose sessions new starts go to (src/agents/route.ts); null: Claude's routine.
+    active_provider TEXT
   )`,
 
   `CREATE TABLE IF NOT EXISTS chats (
@@ -213,6 +215,29 @@ const SCHEMA: string[] = [
     test_session TEXT,
     test_at INTEGER
   )`,
+
+  // Other providers' settings (src/agents/openai.ts): one encrypted JSON per
+  // user and provider, kept when the user switches to another one.
+  `CREATE TABLE IF NOT EXISTS agent_configs (
+    user_id INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    config_enc TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (user_id, provider)
+  ) WITHOUT ROWID`,
+
+  // Sessions the Worker runs itself, under ids it gives them (oa_…), and the
+  // provider's own id for each. `token_exp`: when the MCP token it was handed
+  // runs out, so a delivery near that hands it a new one.
+  `CREATE TABLE IF NOT EXISTS agent_sessions (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    provider TEXT NOT NULL,
+    external_id TEXT,
+    kind TEXT NOT NULL,
+    token_exp INTEGER,
+    created_at INTEGER NOT NULL
+  ) WITHOUT ROWID`,
 
   // Chats where a tag starts the routine, and for whom: one user per chat,
   // whoever turned it on first. `others`: tags from other members count too.
@@ -511,6 +536,7 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
       "ALTER TABLE scenes ADD COLUMN template_version INTEGER",
     ],
   },
+  { target: 20, alter: ["ALTER TABLE users ADD COLUMN active_provider TEXT"] },
 ];
 
 const ready = new WeakMap<D1Database, Promise<void>>();

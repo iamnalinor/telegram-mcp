@@ -1,8 +1,9 @@
 /**
- * Other Claude Code sessions: which ones the bot knows of, and messages to
- * them through the user's relay (src/relay.ts). A message is a question or a
- * request; the receiving session answers with answer_session, and the asker
- * waits for it like for a Telegram answer.
+ * The user's other assistant sessions: which ones the bot knows of, and
+ * messages to them — through the user's relay (src/relay.ts) for Claude Code
+ * sessions, straight in for the ones the Worker runs (src/agents/openai.ts).
+ * A message is a question or a request; the receiving session answers with
+ * answer_session, and the asker waits for it like for a Telegram answer.
  *
  * Without a relay these tools still answer — they say what is missing, so the
  * model can tell the user instead of guessing.
@@ -13,11 +14,11 @@ import { z } from "zod";
 
 import { sessionEnvelope } from "../agents/envelopes";
 import { route } from "../agents/route";
-import { parseSession, sessionId, sessionLink } from "../agents/types";
+import { parseSession, providerOf, sessionLink } from "../agents/types";
 import { Fence, formatTime } from "../format";
 import { relayProblem, relayState } from "../relay";
 import { isGuestKey, type KnownSession, type RelayOrigin } from "../store";
-import { sessionArg, text, ToolError, toolError, type ToolContext } from "./common";
+import { callerSession, sessionArg, text, ToolError, toolError, type ToolContext } from "./common";
 
 const SHOWN = 20;
 const PREVIEW = 160;
@@ -50,9 +51,10 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
   server.registerTool(
     "list_sessions",
     {
-      title: "Claude sessions the bot knows of",
+      title: "Sessions the bot knows of",
       description:
-        "The user's Claude Code cloud sessions the bot knows of: started from Telegram, wrote through the bot, or " +
+        "The user's assistant sessions the bot knows of (Claude Code cloud sessions, OpenAI agent sessions): " +
+        "started from Telegram, wrote through the bot, or " +
         "were messaged — what each was asked, where, and its latest message. Use it to find the session a " +
         "request belongs to before starting the same work again. Sessions it does not list exist too: ask the " +
         "user for the link. Also says whether the relay that carries messages to sessions is up.",
@@ -97,21 +99,21 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
   server.registerTool(
     "message_session",
     {
-      title: "Message another Claude session",
+      title: "Message another session",
       description:
-        "Send a message to another of the user's Claude Code cloud sessions, by its id or claude.ai/code link — " +
+        "Send a message to another of the user's sessions, by its id or claude.ai/code link — " +
         "to ask how its work is going, or to hand it a request that belongs there. It arrives as a message in " +
         "that session, marked as data and with who stands behind it; that session answers with answer_session. " +
         "Say which with expect_answer. A question waits for the answer up to wait_seconds; if none comes, call " +
         'wait_for_session later. expect_answer false sends a notice that needs no answer ("done, the PR is ' +
-        "merged\") and returns once queued. Needs the user's " +
+        "merged\") and returns once queued. A Claude Code session needs the user's " +
         "relay: if it is down, the result says so — tell whoever asked. Only for the user, or for others as far " +
         "as the chat's memory Trust allows.",
       inputSchema: z.object({
         to: z
           .string()
           .max(200)
-          .describe("The session: session_…, cse_… or its claude.ai/code link."),
+          .describe("The session: session_…, cse_…, oa_… or its claude.ai/code link."),
         text: z
           .string()
           .min(1)
@@ -147,9 +149,13 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
         const target = parseSession(args.to);
         if (!target)
           throw new ToolError(`"${args.to}" is not a session id or a claude.ai/code link.`);
-        const { online, line } = await stateLine(ctx);
-        if (!online) throw new ToolError(`Not sent. ${line}`);
-        const from = sessionId(args.session);
+        // Only Claude Code sessions are reached through the relay.
+        const relayed = providerOf(target) === "claude";
+        if (relayed) {
+          const { online, line } = await stateLine(ctx);
+          if (!online) throw new ToolError(`Not sent. ${line}`);
+        }
+        const from = callerSession(ctx, args.session);
         if (from === target) throw new ToolError("That is this session.");
         const origin = await originOf(ctx, from, args.on_behalf_of);
         const expectAnswer = args.expect_answer;
@@ -178,6 +184,7 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
           },
         });
         if (routed.via !== "delivered") {
+          if (!relayed) throw new ToolError("Not sent: that session cannot be reached any more.");
           const reach = routed.via === "unreachable" ? routed.reach : "none";
           throw new ToolError(`Not sent. Relay: ${reach}. ${relayProblem(reach, ctx.user)}`);
         }

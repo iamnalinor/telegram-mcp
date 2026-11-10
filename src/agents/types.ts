@@ -3,8 +3,9 @@
  * sessions with the holder's provider and passes messages into existing ones
  * through the provider that made them, told apart by the session id.
  *
- * Today Claude is the only one (src/agents/claude.ts): its routine starts
- * sessions, its relay passes messages on.
+ * Claude (src/agents/claude.ts): its routine starts sessions, its relay passes
+ * messages on. OpenAI (src/agents/openai.ts): the Worker runs Agents API
+ * sessions itself, under ids it gives them.
  */
 
 import type { RelayJob, Store } from "../store";
@@ -16,16 +17,21 @@ export type ProviderKind = "claude" | "openai" | "codex";
 const CLAUDE_ID = /^(?:session|cse)_([0-9A-Za-z]{16,64})$/;
 /** The same, inside a claude.ai/code link too. */
 const CLAUDE_IN = /(?:^|\/)(?:session|cse)_([0-9A-Za-z]{16,64})(?:[/?#]|$)/;
+/** Ids the Worker gives the sessions it runs: `oa_…` (OpenAI), `cx_…` (Codex). */
+const WORKER_ID = /^(?:oa|cx)_[0-9a-f]{24}$/;
 
-/** One spelling in storage: session_…, as in claude.ai/code links. Anything else is null. */
+/** One spelling in storage: session_…, as in claude.ai/code links, or the Worker's id. Anything else is null. */
 export function sessionId(value: string | undefined): string | null {
+  if (value && WORKER_ID.test(value)) return value;
   const match = value ? CLAUDE_ID.exec(value) : null;
   return match ? `session_${match[1]}` : null;
 }
 
 /** One spelling of the session, from an id or a link; null if neither. */
 export function parseSession(value: string): string | null {
-  const match = CLAUDE_IN.exec(value.trim());
+  const trimmed = value.trim();
+  if (WORKER_ID.test(trimmed)) return trimmed;
+  const match = CLAUDE_IN.exec(trimmed);
   return match ? `session_${match[1]}` : null;
 }
 
@@ -70,11 +76,14 @@ export type StartRequest =
       relay: "login" | "offline" | "failed" | null;
     }
   | { kind: "guest"; call: number; by: "user" | "other"; continues: string | null }
-  | { kind: "scene"; scene: number; seq: number; by: "user" | "other" | "session" };
+  | { kind: "scene"; scene: number; seq: number; by: "user" | "other" | "session" }
+  /** A start from the bot's menu, to check the setup: it answers "ok" in the private chat. */
+  | { kind: "test"; chat: number; message: number };
 
-export type StartFailure = "none" | "broken" | "token" | "missing" | "paused" | "limit" | "other";
+export type StartFailure =
+  "none" | "broken" | "token" | "missing" | "paused" | "limit" | "quota" | "other";
 
-type StartResult =
+export type StartResult =
   | { ok: true; sessionId: string; sessionUrl: string | null }
   | { ok: false; reason: StartFailure; retryAfter?: number; detail: string };
 

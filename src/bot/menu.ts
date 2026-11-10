@@ -17,6 +17,12 @@
  *   m:add         how to connect a group
  *   m:personal    personal chats through Telegram Business
  *   m:help        how it works, retention, commands
+ *   m:as          the assistant: which provider answers, a screen for each;
+ *                 m:ap:<kind> makes that one answer
+ *   m:oa          OpenAI: the key, the models, a test; m:oaset asks for the key,
+ *                 m:oam:<chat|task> picks a model and m:oan:<chat|task>:<n> sets it,
+ *                 m:oatest starts a test session, m:oadm toggles the private chat,
+ *                 m:oadel removes the key (asks first; m:oadely does it)
  *   m:cl          Claude on tag: the routine, if set
  *   m:clh         how to set the routine up; m:clp sends its prompt
  *   m:clset       asks for the trigger and token
@@ -43,6 +49,7 @@
 import { nowSeconds } from "../crypto";
 import { formatTime } from "../format";
 import { isAllowed } from "../env";
+import { loadOpenAI, MODELS, saveOpenAI } from "../agents/openai";
 import { relayState, relayToken, tokenHash } from "../relay";
 import { routinePrompt, tokenOf } from "../routine";
 import { GUEST_BASE, type SceneRow } from "../store";
@@ -51,7 +58,7 @@ import { TelegramError } from "../telegram/api";
 import type { CallbackQuery, InlineKeyboardMarkup, Message, User } from "../telegram/types";
 import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { fallBack } from "./fallback";
-import { testRoutine } from "./routine";
+import { testOpenAI, testRoutine } from "./routine";
 import { endScene, revokeAccess, signOutAll } from "./scenes";
 import { holderName, stillMember } from "./triggers";
 import { escapeHtml, formatDate, sessionRef, texts } from "./texts";
@@ -82,7 +89,7 @@ export async function mainScreen(ctx: BotContext, user: User): Promise<Screen> {
       inline_keyboard: [
         [button(t.buttonGroups, "groups"), button(t.buttonAdd, "add")],
         [button(t.buttonMemory, "mem"), button(t.buttonSignIns, "si")],
-        [button(t.buttonRoutine, "cl"), button(t.buttonPersonal, "personal")],
+        [button(t.buttonRoutine, "as"), button(t.buttonPersonal, "personal")],
         [button(t.buttonHelp, "help")],
       ],
     },
@@ -238,14 +245,96 @@ async function sendPrompt(ctx: BotContext, user: User, intro: string): Promise<v
   });
 }
 
-async function routineScreen(ctx: BotContext, user: User): Promise<Screen> {
-  const t = texts(user.language_code);
-  const row = await ctx.store.getRoutine(user.id);
-  const state = !row
+/** Whether the routine is set, and whether its token still opens. */
+async function routineState(ctx: BotContext, userId: number) {
+  const row = await ctx.store.getRoutine(userId);
+  const state: "none" | "set" | "broken" = !row
     ? "none"
     : (await tokenOf(ctx.config.secretKey, row)) === null
       ? "broken"
       : "set";
+  return { row, state };
+}
+
+const PROVIDER_NAMES = { claude: "Claude", openai: "OpenAI" } as const;
+
+/** Which provider answers, and a way into each one's own screen. */
+async function assistantScreen(ctx: BotContext, user: User): Promise<Screen> {
+  const t = texts(user.language_code);
+  const active =
+    (await ctx.store.getUser(user.id))?.active_provider === "openai" ? "openai" : "claude";
+  const openai = await loadOpenAI(ctx.store, ctx.config.secretKey, user.id);
+  const row = (kind: "claude" | "openai") => [
+    button(t.buttonUse(PROVIDER_NAMES[kind], kind === active), `ap:${kind}`),
+    button(t.buttonSettings(PROVIDER_NAMES[kind]), kind === "claude" ? "cl" : "oa"),
+  ];
+  return {
+    text: t.assistantScreen({
+      active,
+      claude: (await routineState(ctx, user.id)).state,
+      openai: typeof openai === "string" ? openai : "set",
+    }),
+    reply_markup: {
+      inline_keyboard: [row("claude"), row("openai"), [button(t.buttonBack, "main")]],
+    },
+  };
+}
+
+async function openaiScreen(ctx: BotContext, user: User): Promise<Screen> {
+  const t = texts(user.language_code);
+  const config = await loadOpenAI(ctx.store, ctx.config.secretKey, user.id);
+  const set = typeof config !== "string";
+  const since = set ? await ctx.store.agentConfigSince(user.id, "openai") : null;
+  const here = (await ctx.store.getClaudeChat(user.id))?.user_id === user.id;
+  return {
+    text: t.openaiScreen({
+      state: set ? "set" : config,
+      chatModel: set ? config.chatModel : MODELS[0],
+      taskModel: set ? config.taskModel : MODELS[1],
+      since: since === null ? undefined : formatDate(since),
+    }),
+    reply_markup: {
+      inline_keyboard: [
+        [button(t.buttonOpenAIKey, "oaset")],
+        ...(set
+          ? [
+              [button(t.buttonChatModel(config.chatModel), "oam:chat")],
+              [button(t.buttonTaskModel(config.taskModel), "oam:task")],
+              [button(t.claudeHere(here), "oadm"), button(t.buttonTestRoutine, "oatest")],
+              [button(t.buttonGuestChats, "gq")],
+            ]
+          : []),
+        ...(config !== "none" ? [[button(t.buttonDeleteRoutine, "oadel")]] : []),
+        [button(t.buttonBack, "as")],
+      ],
+    },
+  };
+}
+
+/** Pick the model for chat or for tasks; the current one ticked. */
+function modelPicker(user: User, kind: "chat" | "task", current: string): Screen {
+  const t = texts(user.language_code);
+  return {
+    text: t.modelPicker(kind),
+    reply_markup: {
+      inline_keyboard: [
+        ...MODELS.map((model, n) => [
+          button(model === current ? `✓ ${model}` : model, `oan:${kind}:${n}`),
+        ]),
+        [button(t.buttonBack, "oa")],
+      ],
+    },
+  };
+}
+
+/** Nothing left to start for the user: the chats they hold go, as when the routine went. */
+async function dropIfNoAssistant(ctx: BotContext, userId: number): Promise<void> {
+  if (!(await ctx.store.hasAssistant(userId))) await ctx.store.dropClaudeChats(userId);
+}
+
+async function routineScreen(ctx: BotContext, user: User): Promise<Screen> {
+  const t = texts(user.language_code);
+  const { row, state } = await routineState(ctx, user.id);
   const here = (await ctx.store.getClaudeChat(user.id))?.user_id === user.id;
   const scenes = (await ctx.store.scenesOf(user.id, user.id)).length;
   let test = "";
@@ -276,7 +365,7 @@ async function routineScreen(ctx: BotContext, user: User): Promise<Screen> {
         ...(state === "set" ? [[button(t.buttonGuestChats, "gq")]] : []),
         ...(scenes ? [[button(t.buttonScenes(scenes), `sc:${user.id}`)]] : []),
         ...(row ? [[button(t.buttonDeleteRoutine, "cldel")]] : []),
-        [button(t.buttonBack, "main")],
+        [button(t.buttonBack, "as")],
       ],
     },
   };
@@ -551,7 +640,7 @@ async function toggleClaude(
     await ctx.store.releaseClaudeChat(user.id, chatId);
     return undefined;
   }
-  if (!(await ctx.store.getRoutine(user.id))) return t.routineFirst;
+  if (!(await ctx.store.hasAssistant(user.id))) return t.routineFirst;
   if (claim) {
     if ((await stillMember(ctx, chatId, claim.user_id)) !== false) return t.chatHeld;
     await revokeAccess(ctx, claim.user_id, chatId);
@@ -660,11 +749,75 @@ async function render(
     });
     return { ...(await routineScreen(ctx, user)), note: t.setRoutineNote };
   }
-  if (name === "cldm") {
+  if (name === "cldm" || name === "oadm") {
     const claim = await ctx.store.getClaudeChat(user.id);
     if (claim) await ctx.store.releaseClaudeChat(user.id, user.id);
-    else if (await ctx.store.getRoutine(user.id)) await ctx.store.claimClaudeChat(user.id, user.id);
-    return routineScreen(ctx, user);
+    else if (await ctx.store.hasAssistant(user.id)) {
+      await ctx.store.claimClaudeChat(user.id, user.id);
+    }
+    return name === "cldm" ? routineScreen(ctx, user) : openaiScreen(ctx, user);
+  }
+  if (name === "as") return assistantScreen(ctx, user);
+  const choose = /^ap:(claude|openai)$/.exec(name);
+  if (choose) {
+    const kind = choose[1] as "claude" | "openai";
+    const ready =
+      kind === "claude"
+        ? (await routineState(ctx, user.id)).state === "set"
+        : typeof (await loadOpenAI(ctx.store, ctx.config.secretKey, user.id)) !== "string";
+    if (!ready) {
+      return { ...(await assistantScreen(ctx, user)), note: t.providerFirst(PROVIDER_NAMES[kind]) };
+    }
+    // The other one's settings stay: switching back needs nothing sent again.
+    await ctx.store.setActiveProvider(user.id, kind === "claude" ? null : kind);
+    return {
+      ...(await assistantScreen(ctx, user)),
+      note: t.providerChosen(PROVIDER_NAMES[kind]),
+    };
+  }
+  if (name === "oa") return openaiScreen(ctx, user);
+  if (name === "oaset") {
+    await ctx.api.call("sendMessage", {
+      chat_id: user.id,
+      text: t.openaiKeyAsk,
+      parse_mode: "HTML",
+      reply_markup: { force_reply: true, input_field_placeholder: "sk-proj-…" },
+    });
+    return { ...(await openaiScreen(ctx, user)), note: t.openaiKeyNote };
+  }
+  const model = /^(oam|oan):(chat|task)(?::(\d))?$/.exec(name);
+  if (model) {
+    const kind = model[2] as "chat" | "task";
+    const config = await loadOpenAI(ctx.store, ctx.config.secretKey, user.id);
+    if (typeof config === "string") return openaiScreen(ctx, user);
+    const field = kind === "chat" ? "chatModel" : "taskModel";
+    if (model[1] === "oam") return modelPicker(user, kind, config[field]);
+    const picked = MODELS[Number(model[3])];
+    if (!picked) return openaiScreen(ctx, user);
+    await saveOpenAI(ctx.store, ctx.config.secretKey, user.id, { ...config, [field]: picked });
+    return { ...(await openaiScreen(ctx, user)), note: t.modelSet };
+  }
+  if (name === "oatest") {
+    await testOpenAI(ctx, user, 0);
+    return openaiScreen(ctx, user);
+  }
+  if (name === "oadel") {
+    return {
+      text: t.confirmDeleteOpenAI,
+      reply_markup: {
+        inline_keyboard: [
+          [button(t.buttonConfirmRemove, "oadely")],
+          [button(t.buttonCancel, "oa")],
+        ],
+      },
+    };
+  }
+  if (name === "oadely") {
+    await ctx.store.deleteAgentConfig(user.id, "openai");
+    // Claude answers again, if it is set up; if nothing is, the chats held go.
+    await ctx.store.setActiveProvider(user.id, null);
+    await dropIfNoAssistant(ctx, user.id);
+    return { ...(await openaiScreen(ctx, user)), note: t.routineDeleted };
   }
   if (name === "rl") return relayScreen(ctx, user);
   if (name === "rlnew") {
@@ -699,8 +852,12 @@ async function render(
   }
   if (name === "cldely") {
     await ctx.store.deleteRoutine(user.id);
-    // Nothing would start in them any more, and others could not turn Claude on there.
-    await ctx.store.dropClaudeChats(user.id);
+    // With OpenAI set up, it answers from now on.
+    if (typeof (await loadOpenAI(ctx.store, ctx.config.secretKey, user.id)) !== "string") {
+      await ctx.store.setActiveProvider(user.id, "openai");
+    }
+    // Otherwise nothing would start in them any more, and others could not turn Claude on there.
+    await dropIfNoAssistant(ctx, user.id);
     return { ...(await routineScreen(ctx, user)), note: t.routineDeleted };
   }
   if (name === "add") {

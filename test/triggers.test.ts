@@ -412,9 +412,7 @@ describe("in a group", () => {
         message: { message_id: 77, date: 1, chat: dm(ALICE) },
       },
     });
-    expect((await response.json<{ text?: string }>()).text).toContain(
-      "Set up 🤖 Claude on tag first",
-    );
+    expect((await response.json<{ text?: string }>()).text).toContain("Set up 🤖 Assistant first");
     expect(h.db.raw.query("SELECT * FROM claude_chats WHERE chat_id < 0").get()).toBeNull();
   });
 });

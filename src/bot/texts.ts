@@ -19,6 +19,10 @@ export function sessionRef(id: string, label: string): string {
     : `${label} <code>${escapeHtml(id)}</code>`;
 }
 
+/** How a provider's setup is named on the assistant screen. */
+const STATE_EN = { set: "set up", none: "not set up", broken: "needs setting up again" };
+const STATE_RU = { set: "настроен", none: "не настроен", broken: "нужно настроить заново" };
+
 const en = {
   notAllowed: (id: number) =>
     `This bot is private. Your Telegram ID is <code>${id}</code> — ask its owner to add it to <code>ALLOWED_USER_IDS</code>.`,
@@ -165,7 +169,53 @@ const en = {
     ].join("\n"),
   businessOff:
     "🔗 You disconnected me from your account. Everything I stored from your personal chats is deleted.",
-  buttonRoutine: "🤖 Claude on tag",
+  buttonRoutine: "🤖 Assistant",
+  assistantScreen: (p: {
+    active: "claude" | "openai";
+    claude: "none" | "set" | "broken";
+    openai: "none" | "set" | "broken";
+  }) =>
+    "<b>Assistant</b>\n\nWho answers when you write to me or tag me: one at a time. The other one keeps its settings, and replies to its earlier messages still go to it.\n\n" +
+    `${p.active === "claude" ? "✓" : "•"} Claude — a routine on claude.ai: ${STATE_EN[p.claude]}\n` +
+    `${p.active === "openai" ? "✓" : "•"} OpenAI — Agents API with your key: ${STATE_EN[p.openai]}`,
+  buttonUse: (name: string, active: boolean) => (active ? `✓ ${name}` : `Use ${name}`),
+  buttonSettings: (name: string) => `⚙️ ${name}`,
+  providerChosen: (name: string) => `${name} answers now.`,
+  providerFirst: (name: string) => `Set ${name} up first.`,
+  openaiScreen: (p: {
+    state: "none" | "set" | "broken";
+    chatModel: string;
+    taskModel: string;
+    since?: string;
+  }) =>
+    "<b>OpenAI</b>\n\nI run sessions on OpenAI's Agents API with your API key: a chat session answers, and hands real work to a task session with a machine of its own. You pay OpenAI per use: a chat message on terra costs roughly $0.02–0.05, a task on sol $0.3–1.5 (terra $1/$5, sol $2/$10 per 1M tokens in/out).\n\n" +
+    (p.state === "set"
+      ? `✅ Key set ${p.since}.\nChat: <code>${escapeHtml(p.chatModel)}</code>, tasks: <code>${escapeHtml(p.taskModel)}</code>.\n\nA session that fails on OpenAI's side does not tell me yet: if no answer comes, check the logs on platform.openai.com.`
+      : p.state === "broken"
+        ? "⚠️ I can no longer read the saved key: the bot's token changed. Send the key again."
+        : "Not set up yet: create a project key on platform.openai.com (API keys) and send it to me."),
+  buttonOpenAIKey: "🔑 Send the API key",
+  openaiKeyAsk:
+    "Send your OpenAI API key (<code>sk-proj-…</code> or <code>sk-svcacct-…</code>). I delete the message right away and keep the key encrypted.",
+  openaiKeyNote: "Waiting for the key.",
+  buttonChatModel: (model: string) => `💬 Chat: ${model}`,
+  buttonTaskModel: (model: string) => `🛠 Tasks: ${model}`,
+  modelPicker: (kind: "chat" | "task"): string =>
+    kind === "chat"
+      ? "The model for the chat session: it talks, reads Telegram and starts tasks."
+      : "The model for task sessions: research, code, many-step work.",
+  modelSet: "Saved.",
+  confirmDeleteOpenAI:
+    "Remove the OpenAI key here? I will stop starting sessions with it. Revoke it on platform.openai.com too.",
+  openaiSaved: (deleted: boolean, active: boolean) =>
+    "✅ Saved your OpenAI key, kept only encrypted" +
+    (deleted ? ", and I deleted your message." : ".") +
+    (active ? " OpenAI answers for you now (🤖 Assistant to switch)." : ""),
+  openaiNotSaved: "⚠️ Could not save the key. Send it again in a minute.",
+  webhookSaved: (deleted: boolean) =>
+    "✅ Saved the webhook secret, kept only encrypted" +
+    (deleted ? ", and I deleted your message." : "."),
+  webhookNoKey: "That is an OpenAI webhook secret: send the API key first, then the secret.",
   routineScreen: (p: { state: "none" | "set" | "broken"; trigger?: string; since?: string }) =>
     "<b>Claude on tag</b>\n\nA Claude Code cloud session that I start for you: it does the work and answers in Telegram. It is your routine on claude.ai and runs on your account.\n\n" +
     (p.state === "set"
@@ -202,20 +252,37 @@ const en = {
     "⚠️ I could not delete your message: delete it yourself, and if others can see this chat, generate a new token.",
   testTooSoon:
     "A test session was started less than a minute ago. Wait for its «ok», or try again shortly.",
-  testStarted: (url: string) =>
-    `▶️ Started a test session (<a href="${escapeHtml(url)}">open</a>). If everything is set up, it writes «ok» here within a minute or two.`,
-  fireFailed: (reason: FireFailure, retryMinutes?: number) =>
-    "⚠️ Could not start the routine: " +
-    {
-      token:
-        "its token was refused. Generate a new one in the routine's trigger and send it again.",
-      missing: "there is no such trigger. Check the trig_… id.",
-      paused: "it is paused on claude.ai.",
-      limit: `its start limit is reached. Try again in ${retryMinutes ?? 60} min.`,
-      other: "Anthropic's API did not accept the start. Try again later.",
-      none: "none is set up.",
-      broken: "I can no longer read its token. Send the routine again.",
-    }[reason],
+  testStarted: (url: string | null) =>
+    `▶️ Started a test session${url ? ` (<a href="${escapeHtml(url)}">open</a>)` : ""}. If everything is set up, it writes «ok» here within a minute or two.`,
+  fireFailed: (
+    reason: FireFailure,
+    retryMinutes?: number,
+    provider: "claude" | "openai" | "codex" = "claude",
+  ) =>
+    provider === "openai"
+      ? "⚠️ Could not start OpenAI: " +
+        {
+          token: "the API key was refused. Send a new one.",
+          missing: "OpenAI's API answered «not found». Try again later.",
+          paused: "OpenAI's API did not accept the start. Try again later.",
+          limit: `its rate limit is reached. Try again in ${retryMinutes ?? 1} min.`,
+          quota: "the key has no quota left. Check billing on platform.openai.com.",
+          other: "OpenAI's API did not accept the start. Try again later.",
+          none: "no API key is set.",
+          broken: "I can no longer read the key. Send it again.",
+        }[reason]
+      : "⚠️ Could not start the routine: " +
+        {
+          token:
+            "its token was refused. Generate a new one in the routine's trigger and send it again.",
+          missing: "there is no such trigger. Check the trig_… id.",
+          paused: "it is paused on claude.ai.",
+          limit: `its start limit is reached. Try again in ${retryMinutes ?? 60} min.`,
+          quota: "Anthropic's API did not accept the start. Try again later.",
+          other: "Anthropic's API did not accept the start. Try again later.",
+          none: "none is set up.",
+          broken: "I can no longer read its token. Send the routine again.",
+        }[reason],
   inChat: (title: string) => `«${escapeHtml(title)}»:`,
   tooManyStarts: "⚠️ Too many starts in the last hour; I start no more until it passes.",
   guestFailed: "⚠️ Could not start Claude.",
@@ -318,7 +385,7 @@ const en = {
   sceneStopped: "Stopped: the buttons are gone.",
   othersLimited: (limit: number) =>
     `😴 Other members used up ${limit} starts this hour; theirs wait until it passes (they see 😴). Change the limit in 👥 Groups.`,
-  routineFirst: "Set up 🤖 Claude on tag first.",
+  routineFirst: "Set up 🤖 Assistant first.",
   othersWarning: (title: string) =>
     `⚠️ Claude will answer the members of «${escapeHtml(title)}». It is told not to do what they ask or share your data unless your memory for this chat allows it. But that is a guard of instructions, not of access: the session has your connectors, chats and repositories, and a clever message can talk it round. Turn it on where you trust people. Every start goes into 📜 Starts here.`,
   buttonTurnOn: "Turn on",
@@ -334,7 +401,7 @@ const en = {
     " To set the routine, send its trig_… id and the token together, in one message.",
 };
 
-type FireFailure = "token" | "missing" | "paused" | "limit" | "other" | "none" | "broken";
+type FireFailure = "token" | "missing" | "paused" | "limit" | "quota" | "other" | "none" | "broken";
 
 interface BusinessStatus {
   changed: boolean;
@@ -490,7 +557,44 @@ const ru: Texts = {
     ].join("\n"),
   businessOff:
     "🔗 Ты отключил(а) меня от своего аккаунта. Всё, что я сохранил из личных переписок, удалено.",
-  buttonRoutine: "🤖 Claude по тегу",
+  buttonRoutine: "🤖 Ассистент",
+  assistantScreen: (p) =>
+    "<b>Ассистент</b>\n\nКто отвечает, когда ты пишешь мне или тегаешь меня: только один. У второго настройки сохраняются, а ответы на его прежние сообщения по-прежнему идут ему.\n\n" +
+    `${p.active === "claude" ? "✓" : "•"} Claude — рутина на claude.ai: ${STATE_RU[p.claude]}\n` +
+    `${p.active === "openai" ? "✓" : "•"} OpenAI — Agents API с твоим ключом: ${STATE_RU[p.openai]}`,
+  buttonUse: (name, active) => (active ? `✓ ${name}` : `Выбрать ${name}`),
+  buttonSettings: (name) => `⚙️ ${name}`,
+  providerChosen: (name) => `Теперь отвечает ${name}.`,
+  providerFirst: (name) => `Сначала настрой ${name}.`,
+  openaiScreen: (p) =>
+    "<b>OpenAI</b>\n\nЯ запускаю сессии в Agents API от OpenAI с твоим API-ключом: чат-сессия отвечает, а настоящую работу отдаёт сессии-задаче со своей машиной. Платишь OpenAI по факту: сообщение в чате на terra — примерно $0.02–0.05, задача на sol — $0.3–1.5 (terra $1/$5, sol $2/$10 за 1M токенов на вход/выход).\n\n" +
+    (p.state === "set"
+      ? `✅ Ключ задан ${p.since}.\nЧат: <code>${escapeHtml(p.chatModel)}</code>, задачи: <code>${escapeHtml(p.taskModel)}</code>.\n\nЕсли сессия упала на стороне OpenAI, я пока об этом не узнаю: если ответа нет, посмотри логи на platform.openai.com.`
+      : p.state === "broken"
+        ? "⚠️ Я больше не могу прочитать сохранённый ключ: сменился токен бота. Пришли ключ заново."
+        : "Ещё не настроено: создай ключ проекта на platform.openai.com (API keys) и пришли его мне."),
+  buttonOpenAIKey: "🔑 Прислать API-ключ",
+  openaiKeyAsk:
+    "Пришли свой API-ключ OpenAI (<code>sk-proj-…</code> или <code>sk-svcacct-…</code>). Я сразу удалю сообщение, а ключ сохраню только в зашифрованном виде.",
+  openaiKeyNote: "Жду ключ.",
+  buttonChatModel: (model) => `💬 Чат: ${model}`,
+  buttonTaskModel: (model) => `🛠 Задачи: ${model}`,
+  modelPicker: (kind) =>
+    kind === "chat"
+      ? "Модель чат-сессии: она общается, читает Telegram и запускает задачи."
+      : "Модель сессий-задач: исследования, код, многошаговая работа.",
+  modelSet: "Сохранено.",
+  confirmDeleteOpenAI:
+    "Удалить ключ OpenAI отсюда? Я перестану запускать с ним сессии. Отзови его и на platform.openai.com.",
+  openaiSaved: (deleted, active) =>
+    "✅ Ключ OpenAI сохранён, только в зашифрованном виде" +
+    (deleted ? ", а твоё сообщение я удалил." : ".") +
+    (active ? " Теперь тебе отвечает OpenAI (переключить — в 🤖 Ассистенте)." : ""),
+  openaiNotSaved: "⚠️ Не получилось сохранить ключ. Пришли его ещё раз через минуту.",
+  webhookSaved: (deleted) =>
+    "✅ Секрет вебхука сохранён, только в зашифрованном виде" +
+    (deleted ? ", а твоё сообщение я удалил." : "."),
+  webhookNoKey: "Это секрет вебхука OpenAI: сначала пришли API-ключ, потом секрет.",
   routineScreen: (p) =>
     "<b>Claude по тегу</b>\n\nОблачная сессия Claude Code, которую я запускаю для тебя: она делает работу и отвечает в Telegram. Это твоя рутина на claude.ai, она работает от твоего аккаунта.\n\n" +
     (p.state === "set"
@@ -527,18 +631,31 @@ const ru: Texts = {
   testTooSoon:
     "Тестовая сессия уже запущена меньше минуты назад. Дождись её «ok» или попробуй чуть позже.",
   testStarted: (url) =>
-    `▶️ Запустил тестовую сессию (<a href="${escapeHtml(url)}">открыть</a>). Если всё настроено, через минуту-две она напишет сюда «ok».`,
-  fireFailed: (reason, retryMinutes) =>
-    "⚠️ Не получилось запустить рутину: " +
-    {
-      token: "её токен не принят. Сгенерируй новый в триггере рутины и пришли заново.",
-      missing: "такого триггера нет. Проверь id trig_….",
-      paused: "она на паузе на claude.ai.",
-      limit: `исчерпан лимит запусков. Попробуй через ${retryMinutes ?? 60} мин.`,
-      other: "API Anthropic не принял запуск. Попробуй позже.",
-      none: "она не задана.",
-      broken: "я больше не могу прочитать её токен. Пришли рутину заново.",
-    }[reason],
+    `▶️ Запустил тестовую сессию${url ? ` (<a href="${escapeHtml(url)}">открыть</a>)` : ""}. Если всё настроено, через минуту-две она напишет сюда «ok».`,
+  fireFailed: (reason, retryMinutes, provider = "claude") =>
+    provider === "openai"
+      ? "⚠️ Не получилось запустить OpenAI: " +
+        {
+          token: "API-ключ не принят. Пришли новый.",
+          missing: "API OpenAI ответил «не найдено». Попробуй позже.",
+          paused: "API OpenAI не принял запуск. Попробуй позже.",
+          limit: `исчерпан лимит запросов. Попробуй через ${retryMinutes ?? 1} мин.`,
+          quota: "у ключа закончилась квота. Проверь оплату на platform.openai.com.",
+          other: "API OpenAI не принял запуск. Попробуй позже.",
+          none: "API-ключ не задан.",
+          broken: "я больше не могу прочитать ключ. Пришли его заново.",
+        }[reason]
+      : "⚠️ Не получилось запустить рутину: " +
+        {
+          token: "её токен не принят. Сгенерируй новый в триггере рутины и пришли заново.",
+          missing: "такого триггера нет. Проверь id trig_….",
+          paused: "она на паузе на claude.ai.",
+          limit: `исчерпан лимит запусков. Попробуй через ${retryMinutes ?? 60} мин.`,
+          quota: "API Anthropic не принял запуск. Попробуй позже.",
+          other: "API Anthropic не принял запуск. Попробуй позже.",
+          none: "она не задана.",
+          broken: "я больше не могу прочитать её токен. Пришли рутину заново.",
+        }[reason],
   inChat: (title) => `«${escapeHtml(title)}»:`,
   tooManyStarts: "⚠️ Слишком много запусков за последний час; новых не будет, пока он не пройдёт.",
   guestFailed: "⚠️ Не получилось запустить Claude.",
@@ -635,7 +752,7 @@ const ru: Texts = {
   sceneStopped: "Остановлена: кнопок больше нет.",
   othersLimited: (limit) =>
     `😴 Остальные участники исчерпали ${limit} запусков за час; их теги подождут, пока он пройдёт (они видят 😴). Лимит меняется в 👥 Группах.`,
-  routineFirst: "Сначала настрой 🤖 Claude по тегу.",
+  routineFirst: "Сначала настрой 🤖 Ассистента.",
   othersWarning: (title) =>
     `⚠️ Claude будет отвечать участникам «${escapeHtml(title)}». Он настроен не выполнять их просьбы и не делиться твоими данными, если память этого чата это не разрешает. Но это защита инструкциями, а не доступом: у сессии твои коннекторы, чаты и репозитории, и хитрое сообщение может её переубедить. Включай там, где доверяешь людям. Все запуски видны в 📜 Запусках здесь.`,
   buttonTurnOn: "Включить",

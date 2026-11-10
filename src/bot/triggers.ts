@@ -107,7 +107,7 @@ export async function maybeStart(
     album: message.media_group_id ?? null,
   };
   const claimed = await ctx.store.beginFire(entry, {
-    user: activeProvider().limits.startsPerHour,
+    user: (await activeProvider(ctx, holder)).limits.startsPerHour,
     others: claim.others_limit,
   });
   if (claimed === "again") return;
@@ -272,7 +272,7 @@ export async function launch(
   if (!quiet) {
     const { tell, where, t } = await holderVoice(ctx, p.holder, p.chat.id, p.chat.title);
     const minutes = routed.retryAfter ? Math.ceil(routed.retryAfter / 60) : undefined;
-    await tell(where + t.fireFailed(routed.reason, minutes));
+    await tell(where + t.fireFailed(routed.reason, minutes, routed.provider));
   }
   return false;
 }

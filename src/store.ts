@@ -79,6 +79,17 @@ export interface Routine {
   test_at: number | null;
 }
 
+/** A session the Worker runs itself (src/agents/openai.ts), under the id it gave it. */
+export interface AgentSession {
+  id: string;
+  user_id: number;
+  provider: string;
+  external_id: string | null;
+  kind: "chat" | "task";
+  token_exp: number | null;
+  created_at: number;
+}
+
 export interface ClaudeChat {
   chat_id: number;
   user_id: number;
@@ -279,6 +290,8 @@ export interface UserRow {
   token_version: number;
   created_at: number;
   connected_at: number | null;
+  /** Whose sessions new starts go to; null: Claude's routine. */
+  active_provider: string | null;
 }
 
 export interface ChatRow {
@@ -1758,6 +1771,128 @@ export class Store {
     await this.db.prepare("DELETE FROM routines WHERE user_id = ?").bind(userId).run();
   }
 
+  // --- other providers -----------------------------------------------------
+
+  async getAgentConfig(userId: number, provider: string): Promise<string | null> {
+    const row = await this.db
+      .prepare("SELECT config_enc FROM agent_configs WHERE user_id = ? AND provider = ?")
+      .bind(userId, provider)
+      .first<{ config_enc: string }>();
+    return row?.config_enc ?? null;
+  }
+
+  /** When the user last changed that provider's settings; null when there are none. */
+  async agentConfigSince(userId: number, provider: string): Promise<number | null> {
+    const row = await this.db
+      .prepare("SELECT updated_at FROM agent_configs WHERE user_id = ? AND provider = ?")
+      .bind(userId, provider)
+      .first<{ updated_at: number }>();
+    return row?.updated_at ?? null;
+  }
+
+  async setAgentConfig(userId: number, provider: string, configEnc: string): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO agent_configs (user_id, provider, config_enc, updated_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (user_id, provider) DO UPDATE SET
+           config_enc = excluded.config_enc, updated_at = excluded.updated_at`,
+      )
+      .bind(userId, provider, configEnc, nowSeconds())
+      .run();
+  }
+
+  /** One provider's settings go; the user's sessions with it are no longer reached. */
+  async deleteAgentConfig(userId: number, provider: string): Promise<void> {
+    await this.db.batch([
+      this.db
+        .prepare("DELETE FROM agent_configs WHERE user_id = ? AND provider = ?")
+        .bind(userId, provider),
+      this.db
+        .prepare("DELETE FROM agent_sessions WHERE user_id = ? AND provider = ?")
+        .bind(userId, provider),
+    ]);
+  }
+
+  /** Every provider's settings and sessions of the user, and the choice between them. */
+  async dropAgents(userId: number): Promise<void> {
+    await this.db.batch([
+      this.db.prepare("DELETE FROM agent_configs WHERE user_id = ?").bind(userId),
+      this.db.prepare("DELETE FROM agent_sessions WHERE user_id = ?").bind(userId),
+      this.db.prepare("UPDATE users SET active_provider = NULL WHERE user_id = ?").bind(userId),
+    ]);
+  }
+
+  async agentUsers(): Promise<number[]> {
+    const { results } = await this.db
+      .prepare("SELECT DISTINCT user_id FROM agent_configs")
+      .all<{ user_id: number }>();
+    return results.map((row) => row.user_id);
+  }
+
+  /** Null: Claude's routine. */
+  async setActiveProvider(userId: number, provider: string | null): Promise<void> {
+    await this.db
+      .prepare("UPDATE users SET active_provider = ? WHERE user_id = ?")
+      .bind(provider, userId)
+      .run();
+  }
+
+  /** Whether any assistant is set up to start for the user: a routine or another provider. */
+  async hasAssistant(userId: number): Promise<boolean> {
+    const row = await this.db
+      .prepare(
+        `SELECT EXISTS (SELECT 1 FROM routines WHERE user_id = ?1)
+             OR EXISTS (SELECT 1 FROM agent_configs WHERE user_id = ?1) AS any`,
+      )
+      .bind(userId)
+      .first<{ any: number }>();
+    return row?.any === 1;
+  }
+
+  async addAgentSession(session: Omit<AgentSession, "created_at">): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO agent_sessions (id, user_id, provider, external_id, kind, token_exp, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .bind(
+        session.id,
+        session.user_id,
+        session.provider,
+        session.external_id,
+        session.kind,
+        session.token_exp,
+        nowSeconds(),
+      )
+      .run();
+  }
+
+  /** The user's session by the Worker's id; null when it is not theirs or gone. */
+  getAgentSession(userId: number, id: string): Promise<AgentSession | null> {
+    return this.db
+      .prepare("SELECT * FROM agent_sessions WHERE id = ? AND user_id = ?")
+      .bind(id, userId)
+      .first<AgentSession>();
+  }
+
+  /** How many sessions of this kind the user's agents started since `since`. */
+  async agentSessionsSince(userId: number, kind: "chat" | "task", since: number): Promise<number> {
+    const row = await this.db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM agent_sessions WHERE user_id = ? AND kind = ? AND created_at >= ?",
+      )
+      .bind(userId, kind, since)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  async setAgentTokenExp(id: string, tokenExp: number): Promise<void> {
+    await this.db
+      .prepare("UPDATE agent_sessions SET token_exp = ? WHERE id = ?")
+      .bind(tokenExp, id)
+      .run();
+  }
+
   // --- where Claude answers -------------------------------------------------
 
   getClaudeChat(chatId: number): Promise<ClaudeChat | null> {
@@ -2128,12 +2263,14 @@ export class Store {
       | "wants_answer"
       | "kind"
     >,
+    /** `done`: passed on already, by a provider that needs no relay (src/agents/openai.ts). */
+    status: "queued" | "done" = "queued",
   ): Promise<void> {
     await this.db
       .prepare(
         `INSERT INTO relay_jobs (id, user_id, target_session, body, origin, from_session,
            chat_id, message_id, thread_id, wants_answer, kind, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         job.id,
@@ -2147,6 +2284,7 @@ export class Store {
         job.thread_id,
         job.wants_answer,
         job.kind,
+        status,
         nowSeconds(),
       )
       .run();
@@ -2447,6 +2585,33 @@ export class Store {
       .run();
   }
 
+  /**
+   * The user's standing sign-in named `clientName`, kept until at least
+   * `expiresAt`; a new one when there is none. For sign-ins the Worker holds
+   * itself (src/oauth.ts `mintSessionToken`): no refresh token, one row.
+   */
+  async workerSignIn(
+    userId: number,
+    clientName: string,
+    expiresAt: number,
+    newId: string,
+  ): Promise<string> {
+    const now = nowSeconds();
+    const found = await this.db
+      .prepare(
+        `UPDATE refresh_sessions SET rotated_at = ?1, expires_at = MAX(expires_at, ?2)
+         WHERE id = (SELECT id FROM refresh_sessions
+                     WHERE user_id = ?3 AND client_name = ?4 AND revoked = 0 AND expires_at > ?1
+                     ORDER BY created_at DESC LIMIT 1)
+         RETURNING id`,
+      )
+      .bind(now, expiresAt, userId, clientName)
+      .first<{ id: string }>();
+    if (found) return found.id;
+    await this.createSignIn(newId, userId, clientName, expiresAt);
+    return newId;
+  }
+
   /** The user's row and, when `sessionId` is given, whether that sign-in is revoked. */
   tokenState(userId: number, sessionId: string | null): Promise<TokenState | null> {
     return this.db
@@ -2525,6 +2690,7 @@ export class Store {
       this.db.prepare("DELETE FROM day_marks WHERE day < ?").bind(Math.floor(cutoff / DAY)),
       this.db.prepare("DELETE FROM fires WHERE at < ?").bind(cutoff),
       this.db.prepare("DELETE FROM relay_jobs WHERE created_at < ?").bind(cutoff),
+      this.db.prepare("DELETE FROM agent_sessions WHERE created_at < ?").bind(cutoff),
       this.db.prepare("DELETE FROM guest_calls WHERE at < ?").bind(cutoff),
       // Guest chats nobody holds any more: disconnected in the menu, or their holder is gone.
       this.db

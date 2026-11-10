@@ -99,6 +99,8 @@ interface TokenBlob {
   v: number;
   /** The sign-in (session) id, so ending one sign-in stops its access tokens at once. */
   s?: string;
+  /** The assistant session the token was minted for (`mintSessionToken`): it speaks as that one. */
+  as?: string;
 }
 interface RefreshBlob extends TokenBlob {
   /** Absent on refresh tokens from before rotation: the token's hash stands in. */
@@ -736,6 +738,44 @@ async function handleToken(request: Request, deps: OAuthDeps): Promise<Response>
 
 // --- public surface --------------------------------------------------------
 
+/** How the sign-in behind the Worker's own sessions' tokens is listed and revoked. */
+const AGENTS_CLIENT = "OpenAI agents";
+/**
+ * Tokens for a session the Worker runs itself live this long: a session is
+ * handed one when it starts and a new one when a message for it comes with
+ * less than a day left (src/agents/openai.ts), so they need no refresh.
+ */
+const SESSION_TOKEN_TTL = 7 * 24 * 60 * 60;
+
+/**
+ * An access token for a session the Worker starts itself, bound to that
+ * session (`session`, the Worker's id for it): whatever the session passes as
+ * `session`, its calls are filed under this one. It hangs off one sign-in per
+ * user, listed in the bot's menu, so it is revoked like any other — and a
+ * token version bump (/disconnect) ends it too. Never logged.
+ */
+export async function mintSessionToken(
+  deps: Pick<OAuthDeps, "config" | "store">,
+  userId: number,
+  session: string,
+): Promise<{ token: string; expiresAt: number }> {
+  const user = await deps.store.getUser(userId);
+  const expiresAt = nowSeconds() + SESSION_TOKEN_TTL;
+  const signIn = await deps.store.workerSignIn(
+    userId,
+    AGENTS_CLIENT,
+    nowSeconds() + REFRESH_TTL,
+    randomId(),
+  );
+  const token = await sign<TokenBlob>(
+    deps.config.signingKey,
+    "access",
+    { u: userId, v: user?.token_version ?? 0, s: signIn, as: session },
+    SESSION_TOKEN_TTL,
+  );
+  return { token, expiresAt };
+}
+
 const RATE_LIMITED = new Set(["/register", "/auth/telegram"]);
 
 /** Discovery, /register, /authorize, /auth/telegram and /token; undefined for anything else. */
@@ -790,6 +830,8 @@ export interface McpAuth {
   name: string | null;
   /** Who the sign-in went to ("Claude", "ChatGPT"…), when known. */
   client: string | null;
+  /** The session the token is bound to (`mintSessionToken`), if any. */
+  session: string | null;
 }
 
 /** Bearer gate for the MCP endpoint: the verified user, or a ready 401. */
@@ -815,10 +857,11 @@ export function authorizeMcpRequest(
           clientId: "telegram",
           scopes: [SCOPE],
           expiresAt: blob.exp,
-          extra: { userId: blob.u, ...profile } satisfies McpAuth as unknown as Record<
-            string,
-            unknown
-          >,
+          extra: {
+            userId: blob.u,
+            ...profile,
+            session: blob.as ?? null,
+          } satisfies McpAuth as unknown as Record<string, unknown>,
         };
       },
     },

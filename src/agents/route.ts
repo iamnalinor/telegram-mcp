@@ -8,6 +8,7 @@
  */
 
 import { claude } from "./claude";
+import { openai } from "./openai";
 import {
   providerOf,
   type AgentContext,
@@ -19,11 +20,15 @@ import {
   type StartRequest,
 } from "./types";
 
-const PROVIDERS: Partial<Record<ProviderKind, Provider>> = { claude };
+const PROVIDERS: Partial<Record<ProviderKind, Provider>> = { claude, openai };
 
-/** The provider the holder's new sessions start with: Claude, the only one so far. */
-export function activeProvider(): Provider {
-  return claude;
+/** The provider the holder's new sessions start with: the one they chose, Claude by default. */
+export async function activeProvider(
+  ctx: Pick<AgentContext, "store">,
+  holder: number,
+): Promise<Provider> {
+  const chosen = (await ctx.store.getUser(holder))?.active_provider;
+  return (chosen && PROVIDERS[chosen as ProviderKind]) || claude;
 }
 
 export interface Intent {
@@ -37,7 +42,13 @@ export interface Intent {
 export type Routed =
   | { via: "delivered"; session: string; ask: string }
   | { via: "started"; session: string; url: string | null }
-  | { via: "failed"; reason: StartFailure; retryAfter?: number; detail: string }
+  | {
+      via: "failed";
+      reason: StartFailure;
+      retryAfter?: number;
+      detail: string;
+      provider: ProviderKind;
+    }
   | { via: "unreachable"; reach: Reach };
 
 export async function route(ctx: AgentContext, intent: Intent): Promise<Routed> {
@@ -61,7 +72,8 @@ export async function route(ctx: AgentContext, intent: Intent): Promise<Routed> 
   ) {
     request = { ...request, relay: reach };
   }
-  const result = await activeProvider().start(ctx, intent.holder, request);
+  const provider = await activeProvider(ctx, intent.holder);
+  const result = await provider.start(ctx, intent.holder, request);
   return result.ok
     ? { via: "started", session: result.sessionId, url: result.sessionUrl }
     : {
@@ -69,6 +81,7 @@ export async function route(ctx: AgentContext, intent: Intent): Promise<Routed> 
         reason: result.reason,
         ...(result.retryAfter ? { retryAfter: result.retryAfter } : {}),
         detail: result.detail,
+        provider: provider.kind,
       };
 }
 
@@ -81,7 +94,7 @@ export async function reachable(
   holder: number,
   session: string | null,
 ): Promise<true | "none" | "broken"> {
-  const active = activeProvider();
+  const active = await activeProvider(ctx, holder);
   const status = await active.status(ctx, holder);
   const own = session ? PROVIDERS[providerOf(session)] : undefined;
   if (own) {

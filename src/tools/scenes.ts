@@ -11,7 +11,6 @@ import { applyEvent, endScene, loaded, mergeState, startScene } from "../bot/sce
 import { Fence, formatTime, person } from "../format";
 import type { ChatView } from "../access";
 import { reachable } from "../agents/route";
-import { sessionId } from "../agents/types";
 import { compile, DefinitionError, wakingRules, type Compiled } from "../scenes/definition";
 import { guide, PRESETS } from "../scenes/guide";
 import type { Value } from "../scenes/lang";
@@ -24,6 +23,7 @@ import {
   mayPost,
   notPersonal,
   sentLink,
+  callerSession,
   sessionArg,
   text,
   ToolError,
@@ -265,7 +265,7 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
         }
         const saveAs = args.save_as === undefined ? null : await checkSaveAs(ctx, args.save_as);
         const { compiled: scene, state } = compiled(source);
-        const session = sessionId(args.session);
+        const session = callerSession(ctx, args.session);
         const report = await accessReport(ctx, chat, scene, session);
         if (args.dry_run) {
           const shown = render(scene, "main", state, {
@@ -408,7 +408,7 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
           throw new ToolError(`act's arg is at most ${ACT_ARG_BYTES} bytes of JSON.`);
         }
         // Not the user in Telegram: a session, standing for whoever its records say.
-        const caller = sessionId(args.session);
+        const caller = callerSession(ctx, args.session);
         const answer = await applyEvent(
           ctx,
           row.id,

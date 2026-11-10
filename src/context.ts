@@ -45,14 +45,19 @@ export async function botContext(
 }
 
 /**
- * `profile`: how the user is named in Telegram, and which assistant is
- * calling, when the caller already has them.
+ * `profile`: how the user is named in Telegram, which assistant is calling,
+ * and the session its token is bound to, when the caller already has them.
  */
 export async function toolContext(
   core: Base,
   origin: string,
   userId: number,
-  profile: { username: string | null; name: string | null; client?: string | null } = {
+  profile: {
+    username: string | null;
+    name: string | null;
+    client?: string | null;
+    session?: string | null;
+  } = {
     username: null,
     name: null,
   },
@@ -65,6 +70,7 @@ export async function toolContext(
     userId,
     user: { id: userId, username: profile.username, name: profile.name },
     client: profile.client ?? null,
+    session: profile.session ?? null,
     bot: {
       id: me.id,
       username,

@@ -81,7 +81,7 @@ async function holderOf(
   }
   if (!claim) {
     // The first call binds the chat — for someone who could turn Claude on in a group, too.
-    if (!isAllowed(ctx.config, callerId) || !(await ctx.store.getRoutine(callerId))) return null;
+    if (!isAllowed(ctx.config, callerId) || !(await ctx.store.hasAssistant(callerId))) return null;
     known = await ctx.store.upsertGuestChat(type, chat.id, title);
     await ctx.store.claimClaudeChat(callerId, GUEST_BASE + known.id);
     claim = await ctx.store.getClaudeChat(GUEST_BASE + known.id);
@@ -112,7 +112,7 @@ async function tellHeld(
 ): Promise<void> {
   const mark = `${chat}:${callerId}`;
   if (toldHeld.has(mark) || !isAllowed(ctx.config, callerId)) return;
-  if (!(await ctx.store.getRoutine(callerId))) return;
+  if (!(await ctx.store.hasAssistant(callerId))) return;
   toldHeld.add(mark);
   const t = texts(message.from?.language_code);
   await ctx.api
@@ -187,7 +187,7 @@ export async function onGuestMessage(ctx: BotContext, message: Message): Promise
     album: null,
   };
   const claimed = await ctx.store.beginFire(entry, {
-    user: activeProvider().limits.startsPerHour,
+    user: (await activeProvider(ctx, holder)).limits.startsPerHour,
     others: claim.others_limit,
   });
   if (claimed === "again") return;

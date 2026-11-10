@@ -90,7 +90,7 @@ export async function gateWake(
   };
   // The scene's limit is counted in the same statement that claims the start: wakes at once cannot all pass.
   const claimed = await ctx.store.beginFire(entry, {
-    user: activeProvider().limits.startsPerHour,
+    user: (await activeProvider(ctx, scene.owner)).limits.startsPerHour,
     others: claim?.others_limit ?? 0,
     scene: scene.wake_limit,
   });
@@ -252,7 +252,7 @@ async function wake(
       chat?.title ?? null,
     );
     const minutes = routed.retryAfter ? Math.ceil(routed.retryAfter / 60) : undefined;
-    await tell(where + t.fireFailed(routed.reason, minutes));
+    await tell(where + t.fireFailed(routed.reason, minutes, routed.provider));
   }
 }
 

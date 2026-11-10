@@ -33,6 +33,11 @@ export interface ToolContext {
   user: UserRef;
   /** The calling assistant by its sign-in: "Claude", "ChatGPT"… Null when unknown. */
   client: string | null;
+  /**
+   * The session the caller's token is bound to: one the Worker started itself
+   * (src/agents/openai.ts). It stands for `session` whatever the model passes.
+   */
+  session: string | null;
   /** Public origin of the Worker, for upload and download links. */
   origin: string;
   bot: { id: number; username: string; aliases?: string[]; canReadAll: boolean };
@@ -123,7 +128,18 @@ export const sessionArg = z
   .string()
   .max(100)
   .optional()
-  .describe("Your Claude Code session id (cse_… or session_…), if you are a cloud session.");
+  .describe(
+    "Your session id, if you have one: a Claude Code cloud session's (cse_… or session_…), or the one " +
+      "your start named (oa_…).",
+  );
+
+/** The calling session: the one its token is bound to, else the id it passed as `session`. */
+export function callerSession(
+  ctx: Pick<ToolContext, "session">,
+  value: string | undefined,
+): string | null {
+  return ctx.session ?? sessionId(value);
+}
 
 /** A subagent's name: plain enough to travel in a start payload and a relayed line. */
 const AGENT_NAME = /^[\w.:-]{1,64}$/;
@@ -330,7 +346,7 @@ export async function recordSent(
   stored.buttons = extra.buttons ?? null;
   stored.mark_choice = extra.markChoice ?? false;
   stored.sent_by = ctx.userId;
-  stored.session_id = sessionId(extra.session);
+  stored.session_id = callerSession(ctx, extra.session);
   stored.agent = stored.session_id ? agentName(extra.agent) : null;
   await ctx.store.insertMessage(stored, personal ? "personal" : "always");
 }
