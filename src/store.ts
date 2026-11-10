@@ -88,6 +88,8 @@ export interface AgentSession {
   kind: "chat" | "task";
   token_exp: number | null;
   created_at: number;
+  /** What the user last heard of it from the provider's webhooks. */
+  told: "failed" | "action" | null;
 }
 
 export interface ClaudeChat {
@@ -1790,15 +1792,30 @@ export class Store {
     return row?.updated_at ?? null;
   }
 
-  async setAgentConfig(userId: number, provider: string, configEnc: string): Promise<void> {
+  /** `hook`: a hash of the path the provider's webhooks come to, if it sends any. */
+  async setAgentConfig(
+    userId: number,
+    provider: string,
+    configEnc: string,
+    hook: string | null = null,
+  ): Promise<void> {
     await this.db
       .prepare(
-        `INSERT INTO agent_configs (user_id, provider, config_enc, updated_at) VALUES (?1, ?2, ?3, ?4)
+        `INSERT INTO agent_configs (user_id, provider, config_enc, updated_at, hook)
+         VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT (user_id, provider) DO UPDATE SET
-           config_enc = excluded.config_enc, updated_at = excluded.updated_at`,
+           config_enc = excluded.config_enc, updated_at = excluded.updated_at, hook = excluded.hook`,
       )
-      .bind(userId, provider, configEnc, nowSeconds())
+      .bind(userId, provider, configEnc, nowSeconds(), hook)
       .run();
+  }
+
+  /** Whose settings a webhook path belongs to, by its hash. */
+  async agentByHook(hook: string): Promise<{ user_id: number; provider: string } | null> {
+    return this.db
+      .prepare("SELECT user_id, provider FROM agent_configs WHERE hook = ?")
+      .bind(hook)
+      .first<{ user_id: number; provider: string }>();
   }
 
   /** One provider's settings go; the user's sessions with it are no longer reached. */
@@ -1849,7 +1866,7 @@ export class Store {
     return row?.any === 1;
   }
 
-  async addAgentSession(session: Omit<AgentSession, "created_at">): Promise<void> {
+  async addAgentSession(session: Omit<AgentSession, "created_at" | "told">): Promise<void> {
     await this.db
       .prepare(
         `INSERT INTO agent_sessions (id, user_id, provider, external_id, kind, token_exp, created_at)
@@ -1884,6 +1901,51 @@ export class Store {
       .bind(userId, kind, since)
       .first<{ n: number }>();
     return row?.n ?? 0;
+  }
+
+  /**
+   * The user's session by the provider's own id. No index: only a failure or
+   * a stuck session asks, and the table keeps a retention's worth of rows.
+   */
+  agentSessionByExternal(
+    userId: number,
+    provider: string,
+    externalId: string,
+  ): Promise<AgentSession | null> {
+    return this.db
+      .prepare(
+        "SELECT * FROM agent_sessions WHERE user_id = ? AND provider = ? AND external_id = ?",
+      )
+      .bind(userId, provider, externalId)
+      .first<AgentSession>();
+  }
+
+  /**
+   * Note that the user was told this of the session; false when they were
+   * already, or heard it failed (nothing comes after that).
+   */
+  async tellOnce(id: string, what: "failed" | "action"): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        "UPDATE agent_sessions SET told = ?2 WHERE id = ?1 AND told IS NOT ?2 AND told IS NOT 'failed'",
+      )
+      .bind(id, what)
+      .run();
+    return (result.meta.changes ?? 0) > 0;
+  }
+
+  /** The message whose start made the session, if a start in the log did. */
+  firstFireOf(
+    userId: number,
+    sessionId: string,
+  ): Promise<{ chat_id: number; message_id: number } | null> {
+    return this.db
+      .prepare(
+        `SELECT chat_id, message_id FROM fires WHERE user_id = ? AND session_id = ?
+         ORDER BY at LIMIT 1`,
+      )
+      .bind(userId, sessionId)
+      .first<{ chat_id: number; message_id: number }>();
   }
 
   async setAgentTokenExp(id: string, tokenExp: number): Promise<void> {

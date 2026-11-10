@@ -11,11 +11,11 @@
  * `mintSessionToken`), so their calls are filed under it whatever they pass.
  *
  * The key is kept encrypted with the models, like the routine's token. A
- * session that fails on OpenAI's side says nothing yet: that comes with the
- * Agents API's webhooks.
+ * session that fails on OpenAI's side says nothing in Telegram; OpenAI's
+ * webhooks (src/bot/openaiWebhook.ts) tell the bot, when the user set them up.
  */
 
-import { bytesToHex, decrypt, encrypt, nowSeconds, randomId } from "../crypto";
+import { bytesToHex, decrypt, encrypt, nowSeconds, randomId, sha256 } from "../crypto";
 import { Fence } from "../format";
 import { mintSessionToken } from "../oauth";
 import type { UserRef } from "../prompts";
@@ -33,8 +33,15 @@ export interface OpenAIConfig {
   key: string;
   chatModel: string;
   taskModel: string;
-  /** For the Agents API's webhooks (`whsec_…`), kept until they are handled. */
+  /** What OpenAI signs its webhooks with (`whsec_…`), once the user sent it. */
   webhookSecret?: string;
+  /** The webhooks' address under /openai/webhook/: random, the same for every key. */
+  webhookPath?: string;
+}
+
+/** What `agent_configs.hook` holds for a webhook path: the path itself never is. */
+export async function hookHash(path: string): Promise<string> {
+  return bytesToHex(await sha256(`openai-webhook:${path}`));
 }
 
 const sealedFor = (userId: number) => `agent:openai:${userId}`;
@@ -66,12 +73,16 @@ export async function saveOpenAI(
   key: CryptoKey,
   userId: number,
   config: OpenAIConfig,
-): Promise<void> {
+): Promise<OpenAIConfig> {
+  // The first save gives the webhooks their address, kept from then on.
+  const saved = { ...config, webhookPath: config.webhookPath ?? randomId(24) };
   await store.setAgentConfig(
     userId,
     "openai",
-    await encrypt(key, JSON.stringify(config), sealedFor(userId)),
+    await encrypt(key, JSON.stringify(saved), sealedFor(userId)),
+    await hookHash(saved.webhookPath),
   );
+  return saved;
 }
 
 type Answer =

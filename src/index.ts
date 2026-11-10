@@ -10,6 +10,7 @@
  *   GET  /file/<signed>    attachment download
  *   GET  /health           liveness
  *   /relay/…               the user's relay to Claude Code sessions, see src/relay.ts
+ *   POST /openai/webhook/<path>  OpenAI's events about the user's sessions, see src/bot/openaiWebhook.ts
  *
  * Scheduled: daily, delete messages past retention and re-check the webhook;
  * every few minutes, fail relay jobs nobody picked up (src/relay.ts).
@@ -20,6 +21,7 @@ import { createMcpHandler, type McpHttpHandler } from "@modelcontextprotocol/ser
 import { escapeHtml } from "./bot/texts";
 import { ensureWebhook, WEBHOOK_PATH } from "./bot/setup";
 import { handleWebhook } from "./bot/webhook";
+import { handleOpenAIWebhook, OPENAI_WEBHOOK_PATH } from "./bot/openaiWebhook";
 import { base, botContext, toolContext, type Base } from "./context";
 import { nowSeconds } from "./crypto";
 import { isAllowed, type Env } from "./env";
@@ -185,6 +187,12 @@ export default {
         fallBack,
       );
       if (response) return response;
+    }
+
+    if (pathname.startsWith(OPENAI_WEBHOOK_PATH)) {
+      return handleOpenAIWebhook(request, pathname, core, () =>
+        botContext(core, publicOrigin(request)),
+      );
     }
 
     const contextFor = (userId: number) => toolContext(core, publicOrigin(request), userId);

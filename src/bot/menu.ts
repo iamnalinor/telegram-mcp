@@ -20,6 +20,7 @@
  *   m:as          the assistant: which provider answers, a screen for each;
  *                 m:ap:<kind> makes that one answer
  *   m:oa          OpenAI: the key, the models, a test; m:oaset asks for the key,
+ *                 m:oawh shows the webhook's URL and whether its secret is set,
  *                 m:oam:<chat|task> picks a model and m:oan:<chat|task>:<n> sets it,
  *                 m:oatest starts a test session, m:oadm toggles the private chat,
  *                 m:oadel removes the key (asks first; m:oadely does it)
@@ -58,6 +59,7 @@ import { TelegramError } from "../telegram/api";
 import type { CallbackQuery, InlineKeyboardMarkup, Message, User } from "../telegram/types";
 import { hasConnected, type BotContext, type WebhookReply } from "./context";
 import { fallBack } from "./fallback";
+import { OPENAI_WEBHOOK_PATH } from "./openaiWebhook";
 import { testOpenAI, testRoutine } from "./routine";
 import { endScene, revokeAccess, signOutAll } from "./scenes";
 import { holderName, stillMember } from "./triggers";
@@ -292,6 +294,7 @@ async function openaiScreen(ctx: BotContext, user: User): Promise<Screen> {
       chatModel: set ? config.chatModel : MODELS[0],
       taskModel: set ? config.taskModel : MODELS[1],
       since: since === null ? undefined : formatDate(since),
+      hooked: set && !!config.webhookSecret,
     }),
     reply_markup: {
       inline_keyboard: [
@@ -300,6 +303,7 @@ async function openaiScreen(ctx: BotContext, user: User): Promise<Screen> {
           ? [
               [button(t.buttonChatModel(config.chatModel), "oam:chat")],
               [button(t.buttonTaskModel(config.taskModel), "oam:task")],
+              [button(t.buttonWebhook, "oawh")],
               [button(t.claudeHere(here), "oadm"), button(t.buttonTestRoutine, "oatest")],
               [button(t.buttonGuestChats, "gq")],
             ]
@@ -776,6 +780,20 @@ async function render(
     };
   }
   if (name === "oa") return openaiScreen(ctx, user);
+  if (name === "oawh") {
+    let config = await loadOpenAI(ctx.store, ctx.config.secretKey, user.id);
+    if (typeof config === "string") return openaiScreen(ctx, user);
+    // Settings saved before webhooks existed get their address now.
+    if (!config.webhookPath)
+      config = await saveOpenAI(ctx.store, ctx.config.secretKey, user.id, config);
+    return {
+      text: t.webhookScreen(
+        `${ctx.origin}${OPENAI_WEBHOOK_PATH}${config.webhookPath}`,
+        !!config.webhookSecret,
+      ),
+      reply_markup: { inline_keyboard: [[button(t.buttonBack, "oa")]] },
+    };
+  }
   if (name === "oaset") {
     await ctx.api.call("sendMessage", {
       chat_id: user.id,

@@ -14,7 +14,7 @@
  *   - Small, rarely written tables (grants, presses) get the indexes they need.
  */
 
-const SCHEMA_VERSION = 20;
+const SCHEMA_VERSION = 21;
 
 const MESSAGES_COLUMNS = `
     account_id INTEGER NOT NULL DEFAULT 0,
@@ -217,18 +217,23 @@ const SCHEMA: string[] = [
   )`,
 
   // Other providers' settings (src/agents/openai.ts): one encrypted JSON per
-  // user and provider, kept when the user switches to another one.
+  // user and provider, kept when the user switches to another one. `hook`: a
+  // hash of the path the provider's webhooks come to, which finds the user
+  // without decrypting anything.
   `CREATE TABLE IF NOT EXISTS agent_configs (
     user_id INTEGER NOT NULL,
     provider TEXT NOT NULL,
     config_enc TEXT NOT NULL,
     updated_at INTEGER NOT NULL,
+    hook TEXT,
     PRIMARY KEY (user_id, provider)
   ) WITHOUT ROWID`,
+  `CREATE INDEX IF NOT EXISTS agent_configs_by_hook ON agent_configs (hook)`,
 
   // Sessions the Worker runs itself, under ids it gives them (oa_…), and the
   // provider's own id for each. `token_exp`: when the MCP token it was handed
-  // runs out, so a delivery near that hands it a new one.
+  // runs out, so a delivery near that hands it a new one. `told`: what the
+  // user last heard of it from the provider's webhooks (failed, action).
   `CREATE TABLE IF NOT EXISTS agent_sessions (
     id TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL,
@@ -236,7 +241,8 @@ const SCHEMA: string[] = [
     external_id TEXT,
     kind TEXT NOT NULL,
     token_exp INTEGER,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    told TEXT
   ) WITHOUT ROWID`,
 
   // Chats where a tag starts the routine, and for whom: one user per chat,
@@ -537,6 +543,13 @@ const UPGRADES: { target: number; alter?: string[]; rebuild?: string[] }[] = [
     ],
   },
   { target: 20, alter: ["ALTER TABLE users ADD COLUMN active_provider TEXT"] },
+  {
+    target: 21,
+    alter: [
+      "ALTER TABLE agent_configs ADD COLUMN hook TEXT",
+      "ALTER TABLE agent_sessions ADD COLUMN told TEXT",
+    ],
+  },
 ];
 
 const ready = new WeakMap<D1Database, Promise<void>>();

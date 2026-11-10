@@ -187,10 +187,15 @@ const en = {
     chatModel: string;
     taskModel: string;
     since?: string;
+    /** Whether OpenAI's webhooks are set up: failures reach the user then. */
+    hooked: boolean;
   }) =>
     "<b>OpenAI</b>\n\nI run sessions on OpenAI's Agents API with your API key: a chat session answers, and hands real work to a task session with a machine of its own. You pay OpenAI per use: a chat message on terra costs roughly $0.02–0.05, a task on sol $0.3–1.5 (terra $1/$5, sol $2/$10 per 1M tokens in/out).\n\n" +
     (p.state === "set"
-      ? `✅ Key set ${p.since}.\nChat: <code>${escapeHtml(p.chatModel)}</code>, tasks: <code>${escapeHtml(p.taskModel)}</code>.\n\nA session that fails on OpenAI's side does not tell me yet: if no answer comes, check the logs on platform.openai.com.`
+      ? `✅ Key set ${p.since}.\nChat: <code>${escapeHtml(p.chatModel)}</code>, tasks: <code>${escapeHtml(p.taskModel)}</code>.` +
+        (p.hooked
+          ? ""
+          : "\n\nA session that fails on OpenAI's side does not tell me until you set up the webhook (🔔 Webhook): until then, if no answer comes, check the logs on platform.openai.com.")
       : p.state === "broken"
         ? "⚠️ I can no longer read the saved key: the bot's token changed. Send the key again."
         : "Not set up yet: create a project key on platform.openai.com (API keys) and send it to me."),
@@ -216,6 +221,28 @@ const en = {
     "✅ Saved the webhook secret, kept only encrypted" +
     (deleted ? ", and I deleted your message." : "."),
   webhookNoKey: "That is an OpenAI webhook secret: send the API key first, then the secret.",
+  buttonWebhook: "🔔 Webhook",
+  webhookScreen: (url: string, secret: boolean) =>
+    "<b>OpenAI webhook</b>\n\nSo that I can tell you when a session fails or gets stuck:\n\n" +
+    "1. On platform.openai.com open Settings → Webhooks → Create.\n" +
+    `2. Paste this URL:\n<code>${escapeHtml(url)}</code>\n` +
+    "3. Select the Agents API session events and save.\n" +
+    "4. Send me the signing secret it shows (<code>whsec_…</code>). I delete the message right away and keep the secret encrypted.\n\n" +
+    (secret
+      ? "✅ The secret is set: failed sessions reach you here."
+      : "The secret is not set yet: until it is, I ignore what comes to this URL."),
+  agentFailed: (session: string, from: { chat: string; link: string | null } | null) =>
+    `⚠️ An OpenAI session failed: <code>${escapeHtml(session)}</code>.` +
+    (from
+      ? ` It started from ${from.link ? `<a href="${escapeHtml(from.link)}">a message</a>` : "a message"} in «${escapeHtml(from.chat)}».`
+      : "") +
+    " What it was doing did not finish: write again to start a new one, or check its logs on platform.openai.com.",
+  agentStuck: (session: string, from: { chat: string; link: string | null } | null) =>
+    `⏸ An OpenAI session is waiting for an action I cannot give: <code>${escapeHtml(session)}</code>.` +
+    (from
+      ? ` It started from ${from.link ? `<a href="${escapeHtml(from.link)}">a message</a>` : "a message"} in «${escapeHtml(from.chat)}».`
+      : "") +
+    " It will not go on by itself: write again to start a new one.",
   routineScreen: (p: { state: "none" | "set" | "broken"; trigger?: string; since?: string }) =>
     "<b>Claude on tag</b>\n\nA Claude Code cloud session that I start for you: it does the work and answers in Telegram. It is your routine on claude.ai and runs on your account.\n\n" +
     (p.state === "set"
@@ -569,7 +596,10 @@ const ru: Texts = {
   openaiScreen: (p) =>
     "<b>OpenAI</b>\n\nЯ запускаю сессии в Agents API от OpenAI с твоим API-ключом: чат-сессия отвечает, а настоящую работу отдаёт сессии-задаче со своей машиной. Платишь OpenAI по факту: сообщение в чате на terra — примерно $0.02–0.05, задача на sol — $0.3–1.5 (terra $1/$5, sol $2/$10 за 1M токенов на вход/выход).\n\n" +
     (p.state === "set"
-      ? `✅ Ключ задан ${p.since}.\nЧат: <code>${escapeHtml(p.chatModel)}</code>, задачи: <code>${escapeHtml(p.taskModel)}</code>.\n\nЕсли сессия упала на стороне OpenAI, я пока об этом не узнаю: если ответа нет, посмотри логи на platform.openai.com.`
+      ? `✅ Ключ задан ${p.since}.\nЧат: <code>${escapeHtml(p.chatModel)}</code>, задачи: <code>${escapeHtml(p.taskModel)}</code>.` +
+        (p.hooked
+          ? ""
+          : "\n\nЕсли сессия упала на стороне OpenAI, я не узнаю об этом, пока ты не настроишь вебхук (🔔 Вебхук): до тех пор, если ответа нет, посмотри логи на platform.openai.com.")
       : p.state === "broken"
         ? "⚠️ Я больше не могу прочитать сохранённый ключ: сменился токен бота. Пришли ключ заново."
         : "Ещё не настроено: создай ключ проекта на platform.openai.com (API keys) и пришли его мне."),
@@ -595,6 +625,28 @@ const ru: Texts = {
     "✅ Секрет вебхука сохранён, только в зашифрованном виде" +
     (deleted ? ", а твоё сообщение я удалил." : "."),
   webhookNoKey: "Это секрет вебхука OpenAI: сначала пришли API-ключ, потом секрет.",
+  buttonWebhook: "🔔 Вебхук",
+  webhookScreen: (url, secret) =>
+    "<b>Вебхук OpenAI</b>\n\nЧтобы я сообщал, когда сессия упала или застряла:\n\n" +
+    "1. На platform.openai.com открой Settings → Webhooks → Create.\n" +
+    `2. Вставь этот URL:\n<code>${escapeHtml(url)}</code>\n` +
+    "3. Выбери события сессий Agents API и сохрани.\n" +
+    "4. Пришли мне секрет подписи, который он покажет (<code>whsec_…</code>). Я сразу удалю сообщение, а секрет сохраню только в зашифрованном виде.\n\n" +
+    (secret
+      ? "✅ Секрет задан: об упавших сессиях я сообщу сюда."
+      : "Секрет ещё не задан: пока его нет, я не слушаю, что приходит на этот URL."),
+  agentFailed: (session, from) =>
+    `⚠️ Сессия OpenAI упала: <code>${escapeHtml(session)}</code>.` +
+    (from
+      ? ` Её запустило ${from.link ? `<a href="${escapeHtml(from.link)}">сообщение</a>` : "сообщение"} в «${escapeHtml(from.chat)}».`
+      : "") +
+    " Начатое она не закончила: напиши ещё раз, чтобы запустить новую, или посмотри её логи на platform.openai.com.",
+  agentStuck: (session, from) =>
+    `⏸ Сессия OpenAI ждёт действия, которое я дать не могу: <code>${escapeHtml(session)}</code>.` +
+    (from
+      ? ` Её запустило ${from.link ? `<a href="${escapeHtml(from.link)}">сообщение</a>` : "сообщение"} в «${escapeHtml(from.chat)}».`
+      : "") +
+    " Сама она дальше не пойдёт: напиши ещё раз, чтобы запустить новую.",
   routineScreen: (p) =>
     "<b>Claude по тегу</b>\n\nОблачная сессия Claude Code, которую я запускаю для тебя: она делает работу и отвечает в Telegram. Это твоя рутина на claude.ai, она работает от твоего аккаунта.\n\n" +
     (p.state === "set"
