@@ -239,6 +239,11 @@ allowlist.
 | `answer_session`      | Answer a session that asked you                                            |
 | `get_guest_call`      | Read a call from a chat the bot is not in                                  |
 | `answer_guest`        | Answer it, by editing the bot's one message there                          |
+| `scene_guide`         | The scene language in brief, and ready scenes to adapt (see Scenes)        |
+| `create_scene`        | A message the bot runs by itself: state, screens, rules; or a dry run      |
+| `get_scene`           | A scene's state, its creator's note and its latest events                  |
+| `update_scene`        | Change a scene's state, fire one of its `act:` rules, or finish it         |
+| `wait_for_scene`      | Wait for the next event a scene logs or wakes Claude with                  |
 
 Every send returns a `t.me` link Claude can hand you. Buttons are recorded when pressed;
 reactions on the bot's messages are recorded too (in groups, that needs the bot to be an admin).
@@ -258,6 +263,62 @@ What Telegram added in Bot API 10 is used where it helps:
   what the widget shows with `set_widget_state`.
 - **Polls**: quizzes with several right answers, a description, revoting, options added by
   members, hidden results, a closing time.
+
+## Scenes
+
+A scene is a message the bot runs by itself. Claude describes it once — its state, how the
+message looks, and rules for each press, vote, reply or reaction — and goes. From then on the
+Worker takes every event, changes the state, redraws the message and answers whoever pressed,
+without a session. Claude is woken only where its own rules call `wake()`.
+
+On it: a who's-coming list, a checklist, a board for a long task with Pause and Stop, a triage of
+findings that wakes Claude when you press Done, a pinned control panel, tic-tac-toe, a quiz, mafia
+with Claude as host. `scene_guide` hands out these as presets to adapt.
+
+```json
+{
+  "title": "Lunch?",
+  "state": { "yes": {} },
+  "view": {
+    "text": "**Coming:** {len(yes)} {join(values(yes))}",
+    "buttons": [
+      [
+        { "text": "Me", "press": "me" },
+        { "text": "Ask Claude", "press": "ask" }
+      ]
+    ]
+  },
+  "rules": [
+    { "on": "press:me", "do": ["yes[user.id] = user.name"] },
+    { "on": "press:ask", "who": "owner", "do": ["wake('ask')"] }
+  ]
+}
+```
+
+The rules are written in a small language of its own (paths, arithmetic, `?:`, a few dozen pure
+functions), parsed once when the scene is created and run with a step budget — never `eval`. Names
+and replies from the chat are shown as text, never as markup, and reach Claude fenced as data.
+
+**Who can press what.** Anyone in the chat can press a button whose rule says `anyone`; `owner`
+rules answer only you. Every press gets an answer: the rule's own, or why not ("not now", "only for
+@you", "out of date" for an old keyboard or forged button data, "not so fast" past 10 events in 10
+seconds per person).
+
+**Waking Claude.** A rule with `wake()` runs only if the wake may happen: it is your press, or the
+chat has «Others too» on in the menu; your routine is set up (or the relay is up and knows the
+scene's session); and the limits allow it — the scene's own wakes an hour (10 by default; change it
+in the menu: chat → 🎬 Scenes) and the starts every tag shares. Otherwise the press is refused and
+nothing changes. A wake goes into the session that made the scene, through the relay, or starts
+your routine; either way it shows in 📜 Starts.
+
+**Cost.** A press that changes something is one Worker request, one row read and one row written; a
+refused press writes nothing; `log()` and `wake()` write one more row. Edits keep to one a second
+per message. Up to 20 active scenes per chat; an untouched scene ends after `RETENTION_DAYS` and is
+deleted a retention later. Scenes end when you lose access to the group or `/disconnect`.
+
+Scenes were tested against a fake Bot API only. On a live bot, check: the ephemeral reply to a press
+(`whisper`), poll updates reaching the bot, `setChatMemberTag` (`tag`, needs the bot to be an admin
+with that right), and how fast Telegram lets a busy scene be edited.
 
 ## Memory
 
@@ -401,6 +462,7 @@ low:
 - `messages` has no secondary index (each index entry is one more billed row).
 - OAuth codes, tokens and file links are signed, not stored.
 - Command answers go back in the webhook response itself, without a separate Bot API call.
+- A scene writes one row per press that changes it, and nothing for one that does not.
 
 Reads are cheaper but not free: a keyword search scans the stored messages of the chats and time
 window it covers (pass `since` and it starts at that day), so searching a very busy group hundreds

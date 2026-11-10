@@ -679,6 +679,8 @@ export class Store {
       this.db
         .prepare("UPDATE refresh_sessions SET revoked = 1 WHERE user_id = ? AND revoked = 0")
         .bind(userId),
+      // No assistant of theirs is left to answer their scenes.
+      this.finishScenesStatement("owner = ?", [userId]),
     ]);
   }
 
@@ -736,6 +738,7 @@ export class Store {
   /** Forget a group entirely: the bot left, or nobody has access any more. */
   async deleteChat(chatId: number): Promise<void> {
     await this.db.batch([
+      ...this.dropScenesStatements("chat_id = ?", [chatId]),
       ...USER_CHAT_TABLES.map((table) =>
         this.db.prepare(`DELETE FROM ${table} WHERE chat_id = ?`).bind(chatId),
       ),
@@ -753,6 +756,14 @@ export class Store {
   /** A group became a supergroup and got a new id; carry everything over. */
   async migrateChat(from: number, to: number): Promise<void> {
     await this.db.batch([
+      // Scenes move along; a reply or reaction finds them by "<chat>:<message>".
+      this.db.prepare("UPDATE scenes SET chat_id = ?2 WHERE chat_id = ?1").bind(from, to),
+      this.db
+        .prepare(
+          `UPDATE OR IGNORE scene_links SET key = ?2 || ':' || substr(key, length(?1) + 2)
+           WHERE kind = 'message' AND substr(key, 1, length(?1) + 1) = ?1 || ':'`,
+        )
+        .bind(String(from), String(to)),
       ...[
         "grants",
         "button_presses",
@@ -856,6 +867,8 @@ export class Store {
       this.db
         .prepare("DELETE FROM claude_chats WHERE user_id = ? AND chat_id = ?")
         .bind(userId, chatId),
+      // Their scenes there end with their access.
+      this.finishScenesStatement("owner = ? AND chat_id = ?", [userId, chatId]),
       this.db.prepare("DELETE FROM grants WHERE user_id = ? AND chat_id = ?").bind(userId, chatId),
       ...this.purgeOrphanStatements(chatId),
     ]);
@@ -2571,6 +2584,41 @@ export class Store {
       .bind(id)
       .run();
     return (result.meta.changes ?? 0) > 0;
+  }
+
+  private finishScenesStatement(where: string, values: unknown[]): D1PreparedStatement {
+    return this.db
+      .prepare(
+        `UPDATE scenes SET status = 'finished', version = version + 1, updated = ?
+         WHERE status = 'active' AND ${where}`,
+      )
+      .bind(nowSeconds(), ...values);
+  }
+
+  /** Scenes matching `where`, with their links and events. */
+  private dropScenesStatements(where: string, values: unknown[]): D1PreparedStatement[] {
+    return [
+      ...["scene_links", "scene_events"].map((table) =>
+        this.db
+          .prepare(`DELETE FROM ${table} WHERE scene_id IN (SELECT id FROM scenes WHERE ${where})`)
+          .bind(...values),
+      ),
+      this.db.prepare(`DELETE FROM scenes WHERE ${where}`).bind(...values),
+    ];
+  }
+
+  /** Active scenes nobody touched since `before`: the daily cleanup ends them. */
+  async idleScenes(before: number, limit: number): Promise<SceneRow[]> {
+    const { results } = await this.db
+      .prepare("SELECT * FROM scenes WHERE status = 'active' AND updated < ? LIMIT ?")
+      .bind(before, limit)
+      .all<SceneRow>();
+    return results;
+  }
+
+  /** Scenes finished before `before` go, with their links and events. */
+  async dropFinishedScenes(before: number): Promise<void> {
+    await this.db.batch(this.dropScenesStatements("status = 'finished' AND updated < ?", [before]));
   }
 
   /** A scene and everything that leads to it or came of it. */

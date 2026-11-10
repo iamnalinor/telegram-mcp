@@ -38,6 +38,7 @@ import {
 import { botIdentity } from "./telegram/api";
 import type { WebhookInfo } from "./telegram/types";
 import type { ToolContext } from "./tools/common";
+import { endScene } from "./bot/scenes";
 import { stillMember } from "./bot/triggers";
 
 /**
@@ -112,6 +113,9 @@ async function handleMcp(request: Request, env: Env, core: Base): Promise<Respon
     authInfo: { ...authInfo, extra: { ...authInfo.extra, toolContext: toolCtx } },
   });
 }
+
+/** Scenes ended per daily run: each may be an edit, and a Worker run makes only so many calls. */
+const IDLE_SCENES_PER_RUN = 30;
 
 /** Must match the second cron in wrangler.jsonc. */
 const RELAY_SWEEP = "*/5 * * * *";
@@ -200,6 +204,21 @@ export default {
     const cutoff = nowSeconds() - core.config.retentionDays * 86_400;
     const purged = await core.store.purge(cutoff);
     console.log(JSON.stringify({ event: "retention_purge", purged, cutoff }));
+
+    // Scenes nobody touched within retention end (their buttons go, where Telegram
+    // still lets the bot edit); finished ones go a retention later.
+    const idle = await core.store.idleScenes(cutoff, IDLE_SCENES_PER_RUN);
+    if (idle.length) {
+      const bot = await botContext(core, (await core.store.getMeta("public_origin")) ?? "");
+      for (const scene of idle) {
+        await endScene(bot, scene.id).catch((error: unknown) =>
+          console.error(
+            JSON.stringify({ event: "scene_end_failed", scene: scene.id, error: String(error) }),
+          ),
+        );
+      }
+    }
+    await core.store.dropFinishedScenes(cutoff);
 
     // Someone taken off ALLOWED_USER_IDS keeps no personal chats here, even if Telegram stays quiet.
     for (const userId of await core.store.businessUsers()) {
