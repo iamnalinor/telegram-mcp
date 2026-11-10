@@ -3330,14 +3330,14 @@ export class Store {
     return results.map((row) => row.id);
   }
 
-  /** The owner's finished scenes in one chat whose last drawing is owed. */
-  async undrawnScenesOf(owner: number, limit: number, chatId: number): Promise<number[]> {
+  /** The owner's finished scenes whose last drawing is owed, in one chat or everywhere. */
+  async undrawnScenesOf(owner: number, limit: number, chatId?: number): Promise<number[]> {
     const { results } = await this.db
       .prepare(
         `SELECT id FROM scenes WHERE status = 'finished' AND dirty = 1 AND owner = ?1
-         AND chat_id = ?2 LIMIT ?3`,
+         AND (?2 IS NULL OR chat_id = ?2) LIMIT ?3`,
       )
-      .bind(owner, chatId, limit)
+      .bind(owner, chatId ?? null, limit)
       .all<{ id: number }>();
     return results.map((row) => row.id);
   }
@@ -3430,18 +3430,34 @@ export class Store {
       .run();
   }
 
-  /** The user's active scenes everywhere, the newest first, for the menu. */
+  /** The user's active scenes everywhere, the newest first, a page at a time, for the menu. */
   async activeScenesOf(
     owner: number,
     limit: number,
+    offset = 0,
   ): Promise<{ id: number; title: string; chat_id: number }[]> {
     const { results } = await this.db
       .prepare(
-        "SELECT id, title, chat_id FROM scenes WHERE owner = ? AND status = 'active' ORDER BY id DESC LIMIT ?",
+        "SELECT id, title, chat_id FROM scenes WHERE owner = ? AND status = 'active' ORDER BY id DESC LIMIT ? OFFSET ?",
       )
-      .bind(owner, limit)
+      .bind(owner, limit, offset)
       .all<{ id: number; title: string; chat_id: number }>();
     return results;
+  }
+
+  /** How many scenes the user has running anywhere. */
+  async countActiveScenesOf(owner: number): Promise<number> {
+    const row = await this.db
+      .prepare("SELECT COUNT(*) AS n FROM scenes WHERE owner = ? AND status = 'active'")
+      .bind(owner)
+      .first<{ n: number }>();
+    return row?.n ?? 0;
+  }
+
+  /** End every running scene of the user's, everywhere; how many ended. Their drawing is owed. */
+  async finishScenesOf(owner: number): Promise<number> {
+    const result = await this.finishScenesStatement("owner = ?", [owner]).run();
+    return result.meta.changes ?? 0;
   }
 
   /** The user's active scenes in a chat, for the menu. */
@@ -3700,6 +3716,35 @@ export class Store {
   }
 
   /** It started a scene. */
+  /**
+   * Count a start from the menu, if the saved scene is still at `version`
+   * and started `uses` times: what the card showed. Two presses on one card
+   * cannot both pass; a changed scene passes neither.
+   */
+  async claimTemplateStart(
+    owner: number,
+    id: number,
+    version: number,
+    uses: number,
+  ): Promise<boolean> {
+    const result = await this.db
+      .prepare(
+        `UPDATE scene_templates SET uses = uses + 1, used = ?
+         WHERE id = ? AND owner = ? AND version = ? AND uses = ?`,
+      )
+      .bind(nowSeconds(), id, owner, version, uses)
+      .run();
+    return (result.meta.changes ?? 0) > 0;
+  }
+
+  /** A claimed start that did not happen after all. */
+  async unclaimTemplateStart(id: number): Promise<void> {
+    await this.db
+      .prepare("UPDATE scene_templates SET uses = MAX(uses - 1, 0) WHERE id = ?")
+      .bind(id)
+      .run();
+  }
+
   async useTemplate(id: number): Promise<void> {
     await this.db
       .prepare("UPDATE scene_templates SET uses = uses + 1, used = ? WHERE id = ?")

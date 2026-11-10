@@ -156,13 +156,20 @@ async function accessReport(
     return "Nothing in this scene wakes you: read it with get_scene or wait_for_scene.";
   }
   const reach = await reachable(ctx, ctx.userId, session);
-  if (reach !== true) {
-    const runs =
+  if (reach === "none") {
+    return (
+      `Nothing can wake you: the user has no assistant set up to start sessions${session ? "" : ", and you named no session"}. ` +
       "The scene still runs, and its wake() rules still run, without waking anyone; read it yourself " +
-      "(get_scene, wait_for_scene).";
+      "(get_scene, wait_for_scene)."
+    );
+  }
+  if (reach !== true) {
+    const refused =
+      "Until that is fixed its wake() rules are refused (the presser is told to try later); the rest of " +
+      "the scene runs. Read it yourself (get_scene, wait_for_scene).";
     return reach === "broken"
-      ? `Nothing can wake you: the user's assistant settings can no longer be read (they must send them again). ${runs}`
-      : `Nothing can wake you: the user has no assistant set up to start sessions${session ? "" : ", and you named no session"}. ${runs}`;
+      ? `Nothing can wake you now: the user's assistant settings can no longer be read (they must send them again). ${refused}`
+      : `Nothing can wake you now: your session cannot be reached (its relay is offline) and the user has no assistant set up to start another. ${refused}`;
   }
   const acts = waking.filter((rule) => rule.on.startsWith("act:"));
   const members = waking.filter((rule) => !rule.on.startsWith("act:"));
@@ -493,8 +500,10 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
       title: "Change a scene",
       description:
         "As the scene's owner: merge fields into its state, fire one of its act:<name> rules (with arg), or " +
-        "finish it. Exactly one of state, act, finish. The message is redrawn. A wake() in an act wakes only " +
-        "the session that set the scene up (pass it as `session`); on a scene with no session it only logs.",
+        "finish it. Exactly one of state, act, finish. The message is redrawn. On a scene set up by a session, " +
+        "an act whose rule calls wake() runs only from that session (pass it as `session`) and wakes it. On a " +
+        "scene with no session (one the user started from the menu, say), any act runs and its wake() only " +
+        "logs.",
       inputSchema: z.object({
         scene: sceneArg,
         state: z
@@ -548,7 +557,8 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
           throw new ToolError(`Refused. ${fence.note()}\n${fence.wrap(said)}`);
         }
         const unwoken = answer.unwoken
-          ? " Its wake() was logged, but nobody was woken: there is no session or assistant to wake."
+          ? " Its wake() was only logged: nobody was woken (the scene has no session, or nothing the user " +
+            "set up could take the wake)."
           : "";
         return text(
           `act:${act.name} applied.${unwoken}` +

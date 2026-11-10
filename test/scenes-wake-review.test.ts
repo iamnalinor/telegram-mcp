@@ -214,7 +214,7 @@ describe("B2: a wake caused by the session's own act", () => {
         ...(session ? { session } : {}),
       });
       expect(result.isError).toBe(true);
-      expect(result.text).toContain("only from the session that set the scene up");
+      expect(result.text).toContain("runs only from that session");
     }
     expect(h.db.raw.query("SELECT COUNT(*) AS n FROM relay_jobs").get()).toEqual({ n: 0 });
     expect(h.fires).toHaveLength(0);
@@ -369,15 +369,16 @@ describe("waking from every source", () => {
     expect(h.fires).toHaveLength(0);
   });
 
-  it("an owner taken off the allowlist wakes nobody", async () => {
+  it("an owner taken off the allowlist wakes nobody, and the rule waits", async () => {
     const at = await create();
     h.restore();
     const db = h.db;
     h = new Harness({ ALLOWED_USER_IDS: String(BOB.id) });
     h.db = db;
     h.env.DB = db.asD1();
-    // The rule runs; only its wake() is left out.
-    expect((await press(ALICE, at)).text).toBe("No assistant is connected, so nobody was woken.");
+    // Something is set up, but cannot be reached: refused, to be tried again, not run unwoken.
+    expect((await press(ALICE, at)).text).toBe("Nobody can answer right now. Try again later.");
+    expect(JSON.parse(scene(at.id).state)).toMatchObject({ n: 0 });
     expect(h.fires).toHaveLength(0);
   });
 });

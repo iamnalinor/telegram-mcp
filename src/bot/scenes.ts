@@ -544,6 +544,7 @@ async function attempt(
       } else {
         if (gate.answer === "not_for_you") return { text: t.sceneNotForYou(owner.name) };
         if (gate.answer === "session") return { text: SESSION_REFUSAL };
+        if (gate.answer === "unreachable") return { text: t.sceneUnreachable };
         return { text: t.sceneResting(gate.minutes ?? 60) };
       }
     }
@@ -688,10 +689,14 @@ async function perform(
   return answer;
 }
 
-/** For the model, in update_scene's result: only the scene's own session may wake through act. */
+/**
+ * For the model, in update_scene's result: on a scene with a session, only
+ * that session may wake through act (a scene with none runs the rule unwoken).
+ */
 const SESSION_REFUSAL =
-  "wake() through act works only from the session that set the scene up: pass your session id as " +
-  "`session`, and only on a scene that session created.";
+  "This scene was set up by a session, and a rule with wake() through act runs only from that " +
+  "session: pass its id as `session`. (On a scene with no session, act runs the rule and its wake() " +
+  "only logs.)";
 
 /** Posts a minute per scene; a die counts as one. */
 const POSTS_PER_MINUTE = 5;
@@ -935,16 +940,17 @@ function later(ctx: SceneContext, sceneId: number): void {
   if (ctx.defer) ctx.defer(work);
 }
 
-/** How many ended scenes one revoke redraws; the daily run takes the rest. */
+/** How many ended scenes one revoke or stop-all redraws; the daily run takes the rest. */
 const ENDED_DRAWS = 10;
 
 /**
- * Access went (a revoke, leaving the group, letting a guest chat go): the store ended the
- * owner's scenes there, and their buttons come off now, after the reply. What
+ * Access went (a revoke, leaving the group, letting a guest chat go), or the
+ * user stopped them all: the store ended the owner's scenes there (or
+ * everywhere), and their buttons come off now, after the reply. What
  * Telegram keeps quiet, a failure here, or more than a few scenes is left to
  * the daily run.
  */
-async function drawEnded(ctx: SceneContext, owner: number, chatId: number): Promise<void> {
+async function drawEnded(ctx: SceneContext, owner: number, chatId?: number): Promise<void> {
   const work = (async () => {
     for (const scene of await ctx.store.undrawnScenesOf(owner, ENDED_DRAWS, chatId)) {
       await drawOwed(ctx, scene);
@@ -978,6 +984,13 @@ export async function releaseChat(
 ): Promise<void> {
   await ctx.store.releaseClaudeChat(userId, chatId);
   if (isGuestKey(chatId)) await drawEnded(ctx, userId, chatId);
+}
+
+/** The user's panic button: every scene of theirs ends, in every chat. How many did. */
+export async function stopAllScenes(ctx: SceneContext, userId: number): Promise<number> {
+  const stopped = await ctx.store.finishScenesOf(userId);
+  if (stopped) await drawEnded(ctx, userId);
+  return stopped;
 }
 
 /** Sign out every assistant of the user. Their scenes go on: they need no assistant. */

@@ -35,7 +35,7 @@ Actions
 - post(text) or post('view'): a new message in the chat (5 a minute; a view becomes another live message, 3 at most). show('view'): the main message switches view.
 - poll(question, options, {anonymous?, multiple?}), close_poll(): one open poll per scene; its votes come as vote events.
 - dice(emoji): a die (🎲 🎯 🏀 ⚽ 🎳 🎰); its value comes back as a dice event. tag(user, text): a member tag (≤16 chars, the bot needs the right) — only the event's user.
-- log(name): an event you can read with get_scene or wait_for_scene. wake(name): wakes your session; checked first — only the user, or others where the chat allows them, within limits. With nobody to wake (no session, and no assistant set up to start one) the rule still runs and wake() only logs. finish(): ends the scene and removes the buttons.
+- log(name): an event you can read with get_scene or wait_for_scene. wake(name): wakes your session; checked first — only the user, or others where the chat allows them, within limits. With nobody to wake (no session that anything reaches, and no assistant set up to start one) the rule still runs and wake() only logs; set up but unreachable now, the event is refused, to try again. finish(): ends the scene and removes the buttons.
 
 Limits: definition 16 KB, state 8 KB, 40 rules, 8 views, 100 buttons shown a view, 8 shown a row (a row may define more and let show pick), 2000 steps an event, 20 active scenes a chat. An event that breaks a limit or a rule changes nothing.
 

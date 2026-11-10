@@ -44,11 +44,14 @@
  *   m:gl:<id>     their hourly limit: a picker; m:gn:<id>:<n> sets it, m:gk:<id> asks
  *                 for a number typed as a reply (see `takeLimitAnswer`)
  *   m:gs:<id>     the log of starts there
- *   m:scn         scenes: the user's running scenes everywhere, and their saved ones
+ *   m:scn         scenes: the user's running scenes everywhere (m:scn:<page> a page at
+ *                 a time), and their saved ones; m:scx stops them all (asks first;
+ *                 m:scxy does it)
  *   m:sl:<page>   saved scenes, the most recently used first, a page at a time
- *   m:st:<id>     one saved scene; m:sgo:<id> starts it in the private chat, as the
- *                 user's own with no session; m:sdel:<id> deletes it (asks first;
- *                 m:sdely:<id> does it)
+ *   m:st:<id>:<page>  one saved scene, from that page of the list;
+ *                 m:sgo:<id>:<version>:<uses>:<page> starts it in the private chat, as
+ *                 the user's own with no session, if it is still as the card showed it;
+ *                 m:sdel:<id>:<page> deletes it (asks first; m:sdely:<id>:<page> does it)
  *   m:sc:<chat>   the user's running scenes in a chat (a group, or their private chat)
  *   m:sv:<id>     one scene; m:sw / m:swn / m:swk its wakes an hour as for a limit,
  *                 m:ss stops it
@@ -74,7 +77,7 @@ import {
 import { loadOpenAI, MODELS, saveOpenAI } from "../agents/openai";
 import { codexRelayState, relaySandboxes, relayState, relayToken, tokenHash } from "../relay";
 import { routinePrompt, tokenOf } from "../routine";
-import { compile, DefinitionError } from "../scenes/definition";
+import { compile, DefinitionError, outline } from "../scenes/definition";
 import { GUEST_BASE, isGuestKey, type SceneRow, type SceneTemplateRow } from "../store";
 import { memoryTitle } from "../tools/memory";
 import { TelegramError } from "../telegram/api";
@@ -90,6 +93,7 @@ import {
   revokeAccess,
   signOutAll,
   startScene,
+  stopAllScenes,
 } from "./scenes";
 import { holderName, stillMember } from "./triggers";
 import { escapeHtml, formatDate, sessionRef, texts } from "./texts";
@@ -615,6 +619,12 @@ async function startsScreen(
   };
 }
 
+/** Short enough for a button, or for a line of a list that must fit one message. */
+function label(text: string, length = 50): string {
+  const chars = Array.from(text);
+  return chars.length > length ? `${chars.slice(0, length - 1).join("")}…` : text;
+}
+
 /** Where a chat's scenes are listed from: the group's screen, or 🎬 Scenes for the private chat. */
 const chatBack = (user: User, chatId: number) => (chatId === user.id ? "scn" : `g:${chatId}`);
 
@@ -633,13 +643,11 @@ async function scenesScreen(ctx: BotContext, user: User, chatId: number): Promis
   return {
     text: t.scenesScreen(
       await chatTitle(ctx, user, chatId),
-      scenes.map((scene) => `▶ ${escapeHtml(scene.title)}`),
+      scenes.map((scene) => `▶ ${escapeHtml(label(scene.title, 60))}`),
     ),
     reply_markup: {
       inline_keyboard: [
-        ...scenes.map((scene) => [
-          button(`▶ ${Array.from(scene.title).slice(0, 50).join("")}`, `sv:${scene.id}`),
-        ]),
+        ...scenes.map((scene) => [button(`▶ ${label(scene.title)}`, `sv:${scene.id}`)]),
         [button(t.buttonBack, chatBack(user, chatId))],
       ],
     },
@@ -667,12 +675,9 @@ async function sceneScreen(ctx: BotContext, user: User, scene: SceneRow): Promis
   };
 }
 
-/** Running scenes shown in 🎬 Scenes, and saved ones a page. */
-const HUB_SCENES = 20;
+/** Running scenes in 🎬 Scenes a page, and saved ones a page. */
+const HUB_PAGE = 10;
 const SAVED_PAGE = 10;
-
-/** Short enough for a button. */
-const label = (text: string, length = 50) => Array.from(text).slice(0, length).join("");
 
 /** Where a running scene is, as the user would name it. */
 async function placeOf(ctx: BotContext, user: User, chatId: number): Promise<string> {
@@ -684,20 +689,45 @@ async function placeOf(ctx: BotContext, user: User, chatId: number): Promise<str
   return (await ctx.store.getChat(chatId))?.title ?? String(chatId);
 }
 
-/** 🎬 Scenes: what runs anywhere, and the way to the saved ones. No assistant needed. */
-async function scenesHub(ctx: BotContext, user: User): Promise<Screen> {
+/** ← and → between pages, where there is somewhere to go. */
+function pager(user: User, at: number, last: number, screen: (page: number) => string) {
   const t = texts(user.language_code);
-  const running = await ctx.store.activeScenesOf(user.id, HUB_SCENES);
+  const turn = [
+    ...(at > 0 ? [button(t.buttonPrev, screen(at - 1))] : []),
+    ...(at < last ? [button(t.buttonNext, screen(at + 1))] : []),
+  ];
+  return turn.length ? [turn] : [];
+}
+
+/**
+ * 🎬 Scenes: what runs anywhere, a page at a time, the panic button, and the
+ * way to the saved ones. No assistant needed. Titles and places are cut so a
+ * page always fits a message.
+ */
+async function scenesHub(ctx: BotContext, user: User, page = 0): Promise<Screen> {
+  const t = texts(user.language_code);
+  const total = await ctx.store.countActiveScenesOf(user.id);
+  const last = Math.max(0, Math.ceil(total / HUB_PAGE) - 1);
+  const at = Math.min(page, last);
+  const running = await ctx.store.activeScenesOf(user.id, HUB_PAGE, at * HUB_PAGE);
   const places = await Promise.all(running.map((scene) => placeOf(ctx, user, scene.chat_id)));
   const saved = await ctx.store.countTemplates(user.id);
   return {
-    text: t.scenesHub(
-      running.map((scene, i) => `▶ ${escapeHtml(scene.title)} — ${escapeHtml(places[i])}`),
+    text: t.scenesHub({
+      lines: running.map(
+        (scene, i) =>
+          `▶ ${escapeHtml(label(scene.title, 60))} — ${escapeHtml(label(places[i], 40))}`,
+      ),
+      running: total,
+      page: at,
+      pages: last + 1,
       saved,
-    ),
+    }),
     reply_markup: {
       inline_keyboard: [
         ...running.map((scene) => [button(`▶ ${label(scene.title)}`, `sv:${scene.id}`)]),
+        ...pager(user, at, last, (n) => `scn:${n}`),
+        ...(total ? [[button(t.buttonStopAllScenes, "scx")]] : []),
         ...(saved ? [[button(t.buttonSavedScenes(saved), "sl:0")]] : []),
         [button(t.buttonBack, "main")],
       ],
@@ -712,26 +742,40 @@ async function savedScenesScreen(ctx: BotContext, user: User, page: number): Pro
   const last = Math.ceil(all.length / SAVED_PAGE) - 1;
   const at = Math.min(page, last);
   const shown = all.slice(at * SAVED_PAGE, (at + 1) * SAVED_PAGE);
-  const pages = [
-    ...(at > 0 ? [button(t.buttonPrev, `sl:${at - 1}`)] : []),
-    ...(at < last ? [button(t.buttonNext, `sl:${at + 1}`)] : []),
-  ];
   return {
     text: t.savedScenesScreen(
-      shown.map((row) => `• <code>${escapeHtml(row.name)}</code> — ${escapeHtml(row.title)}`),
+      shown.map(
+        (row) => `• <code>${escapeHtml(row.name)}</code> — ${escapeHtml(label(row.title, 60))}`,
+      ),
     ),
     reply_markup: {
       inline_keyboard: [
-        ...shown.map((row) => [button(`📄 ${label(row.title)}`, `st:${row.id}`)]),
-        ...(pages.length ? [pages] : []),
+        ...shown.map((row) => [button(`📄 ${label(row.title)}`, `st:${row.id}:${at}`)]),
+        ...pager(user, at, last, (n) => `sl:${n}`),
         [button(t.buttonBack, "scn")],
       ],
     },
   };
 }
 
-function savedSceneScreen(user: User, row: SceneTemplateRow): Screen {
+/** A saved scene's definition, compiled; null when it no longer checks out. */
+function compiledOf(row: SceneTemplateRow): ReturnType<typeof compile> | null {
+  try {
+    return compile(JSON.parse(row.definition));
+  } catch (error) {
+    if (error instanceof DefinitionError || error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+
+/**
+ * One saved scene, with what it holds (buttons, links, what it sends and
+ * wakes on), from the list's page `page`. ▶ names the version and the count
+ * of starts shown here, so a press starts what the user saw, once.
+ */
+function savedSceneScreen(user: User, row: SceneTemplateRow, page: number): Screen {
   const t = texts(user.language_code);
+  const start = compiledOf(row);
   return {
     text: t.savedSceneScreen({
       name: row.name,
@@ -739,12 +783,15 @@ function savedSceneScreen(user: User, row: SceneTemplateRow): Screen {
       brief: row.brief,
       version: row.version,
       uses: row.uses,
+      outline: start && outline(start.compiled),
     }),
     reply_markup: {
       inline_keyboard: [
-        [button(t.buttonStartScene, `sgo:${row.id}`)],
-        [button(t.buttonDeleteSaved, `sdel:${row.id}`)],
-        [button(t.buttonBack, "sl:0")],
+        ...(start
+          ? [[button(t.buttonStartScene, `sgo:${row.id}:${row.version}:${row.uses}:${page}`)]]
+          : []),
+        [button(t.buttonDeleteSaved, `sdel:${row.id}:${page}`)],
+        [button(t.buttonBack, `sl:${page}`)],
       ],
     },
   };
@@ -752,21 +799,31 @@ function savedSceneScreen(user: User, row: SceneTemplateRow): Screen {
 
 /**
  * Start a saved scene from the menu: in the user's private chat, as theirs,
- * with no session behind it. Its wake() starts the user's assistant if one is
- * set up, and otherwise wakes nobody (src/scenes/wake.ts); the rest needs none.
- * A note for the screen: what went wrong, or that it started.
+ * with no session behind it, and only as the card showed it (`version`,
+ * `uses`). Its wake() starts the user's assistant if one is set up, and
+ * otherwise wakes nobody (src/scenes/wake.ts); the rest needs none. A note
+ * for the screen, and whether the card should be shown again.
  */
-async function startSaved(ctx: BotContext, user: User, row: SceneTemplateRow): Promise<string> {
+async function startSaved(
+  ctx: BotContext,
+  user: User,
+  row: SceneTemplateRow,
+  shown: { version: number; uses: number },
+): Promise<{ note: string; again: boolean }> {
   const t = texts(user.language_code);
-  let start: ReturnType<typeof compile>;
-  try {
-    start = compile(JSON.parse(row.definition));
-  } catch (error) {
-    if (error instanceof DefinitionError || error instanceof SyntaxError) return t.sceneCannotStart;
-    throw error;
-  }
+  if (row.version !== shown.version) return { note: t.savedChanged, again: true };
+  const start = compiledOf(row);
+  if (!start) return { note: t.sceneCannotStart, again: true };
   if ((await ctx.store.countScenesOf(user.id, user.id)) >= ACTIVE_PER_CHAT) {
-    return t.scenesFull(ACTIVE_PER_CHAT);
+    return { note: t.scenesFull(ACTIVE_PER_CHAT), again: true };
+  }
+  // Counted before it starts, in one statement: a second tap on the same card finds it taken.
+  if (!(await ctx.store.claimTemplateStart(user.id, row.id, shown.version, shown.uses))) {
+    const now = await ctx.store.getTemplateById(user.id, row.id);
+    return {
+      note: now && now.version !== shown.version ? t.savedChanged : t.savedStartedAlready,
+      again: true,
+    };
   }
   try {
     await startScene(ctx, {
@@ -780,11 +837,11 @@ async function startSaved(ctx: BotContext, user: User, row: SceneTemplateRow): P
       template: { id: row.id, version: row.version },
     });
   } catch (error) {
-    if (error instanceof TelegramError) return t.sceneStartRefused;
+    await ctx.store.unclaimTemplateStart(row.id);
+    if (error instanceof TelegramError) return { note: t.sceneStartRefused, again: true };
     throw error;
   }
-  await ctx.store.useTemplate(row.id);
-  return t.sceneStarted;
+  return { note: t.sceneStarted, again: false };
 }
 
 /** The chats this user holds as a guest: called there by a tag, never a member. */
@@ -921,6 +978,7 @@ async function render(
       reply_markup: {
         inline_keyboard: [
           [button(t.buttonConfirmSignOut, "outyes")],
+          [button(t.buttonStopAllScenes, "scx")],
           [button(t.buttonCancel, "si")],
         ],
       },
@@ -1180,34 +1238,60 @@ async function render(
     };
   }
 
-  if (name === "scn") return scenesHub(ctx, user);
+  const hub = /^scn(?::(\d{1,4}))?$/.exec(name);
+  if (hub) return scenesHub(ctx, user, Number(hub[1] ?? 0));
+  if (name === "scx") {
+    const running = await ctx.store.countActiveScenesOf(user.id);
+    if (!running) return { ...(await scenesHub(ctx, user)), note: t.allScenesStopped(0) };
+    return {
+      text: t.confirmStopAll(running),
+      reply_markup: {
+        inline_keyboard: [
+          [button(t.buttonConfirmStopAll, "scxy")],
+          [button(t.buttonCancel, "scn")],
+        ],
+      },
+    };
+  }
+  if (name === "scxy") {
+    const stopped = await stopAllScenes(ctx, user.id);
+    return { ...(await scenesHub(ctx, user)), note: t.allScenesStopped(stopped) };
+  }
   const savedPage = /^sl:(\d{1,3})$/.exec(name);
   if (savedPage) return savedScenesScreen(ctx, user, Number(savedPage[1]));
-  const saved = /^(st|sgo|sdel|sdely):(\d{1,15})$/.exec(name);
+  const saved = /^(st|sgo|sdel|sdely):(\d{1,15})((?::\d{1,10}){0,3})$/.exec(name);
   if (saved) {
     // Only one's own: an id from someone else's library is as good as gone.
     const row = await ctx.store.getTemplateById(user.id, Number(saved[2]));
     if (!row) return { ...(await scenesHub(ctx, user)), note: t.sceneMenuGone };
+    const rest = saved[3].split(":").slice(1).map(Number);
     if (saved[1] === "sgo") {
-      const note = await startSaved(ctx, user, row);
-      return { ...(await scenesHub(ctx, user)), note };
+      const page = rest[2] ?? 0;
+      // A ▶ from before cards named what they showed is out of date like a changed scene.
+      if (rest.length < 2) return { ...savedSceneScreen(user, row, page), note: t.savedChanged };
+      const { note, again } = await startSaved(ctx, user, row, { version: rest[0], uses: rest[1] });
+      if (!again) return { ...(await scenesHub(ctx, user)), note };
+      const now = await ctx.store.getTemplateById(user.id, row.id);
+      if (!now) return { ...(await scenesHub(ctx, user)), note: t.sceneMenuGone };
+      return { ...savedSceneScreen(user, now, page), note };
     }
+    const page = rest[0] ?? 0;
     if (saved[1] === "sdel") {
       return {
         text: t.confirmDeleteSaved(row.name),
         reply_markup: {
           inline_keyboard: [
-            [button(t.buttonConfirmDelete, `sdely:${row.id}`)],
-            [button(t.buttonCancel, `st:${row.id}`)],
+            [button(t.buttonConfirmDelete, `sdely:${row.id}:${page}`)],
+            [button(t.buttonCancel, `st:${row.id}:${page}`)],
           ],
         },
       };
     }
     if (saved[1] === "sdely") {
       await ctx.store.deleteTemplate(user.id, row.name);
-      return { ...(await savedScenesScreen(ctx, user, 0)), note: t.savedDeleted };
+      return { ...(await savedScenesScreen(ctx, user, page)), note: t.savedDeleted };
     }
-    return savedSceneScreen(user, row);
+    return savedSceneScreen(user, row, page);
   }
 
   const list = /^sc:(-?\d+)$/.exec(name);

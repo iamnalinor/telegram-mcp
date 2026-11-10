@@ -90,9 +90,22 @@ export async function handleCommand(
     case "groups":
       return replyTo(message, ...(await groupsMessage(ctx, user)));
 
-    case "disconnect":
+    case "disconnect": {
       await signOutAll(ctx, user.id);
-      return replyTo(message, t.disconnected);
+      // Scenes go on without an assistant: the way to stop them is a press away.
+      const running = (await ctx.store.countActiveScenesOf(user.id)) > 0;
+      return replyTo(
+        message,
+        t.disconnected,
+        running
+          ? {
+              reply_markup: {
+                inline_keyboard: [[{ text: t.buttonStopAllScenes, callback_data: "m:scx" }]],
+              },
+            }
+          : {},
+      );
+    }
 
     default:
       return replyTo(message, t.unknownCommand);

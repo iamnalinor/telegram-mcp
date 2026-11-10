@@ -94,6 +94,14 @@ async function menu(data: string, who: { id: number; language_code?: string } = 
   };
 }
 
+/** Open a saved scene's card and press its ▶, as the user would. */
+async function startSaved(id: number, page = 0) {
+  const card = await menu(`m:st:${id}:${page}`);
+  const go = card.buttons.find((b) => b.callback_data?.startsWith("m:sgo:"));
+  if (!go) throw new Error(`no ▶ on the card: ${card.text}`);
+  return menu(go.callback_data!);
+}
+
 const sceneRow = (id: number) =>
   h.db.raw.query("SELECT * FROM scenes WHERE id = ?").get(id) as {
     status: string;
@@ -148,7 +156,7 @@ describe("a scene without an assistant to wake", () => {
     const at = await create({ session: SESSION });
     const result = await h.tool(alice, "update_scene", { scene: at.id, act: { name: "hint" } });
     expect(result.isError).toBe(true);
-    expect(result.text).toContain("only from the session that set the scene up");
+    expect(result.text).toContain("runs only from that session");
   });
 
   it("with a routine set up, the wake still starts a session", async () => {
@@ -191,22 +199,22 @@ describe("the 🎬 Scenes menu", () => {
 
     const saved = await menu("m:sl:0");
     expect(saved.text).toContain("<code>guess</code> — Guess");
-    expect(saved.buttons.map((b) => b.callback_data)).toContain(`m:st:${templateId("guess")}`);
+    expect(saved.buttons.map((b) => b.callback_data)).toContain(`m:st:${templateId("guess")}:0`);
   });
 
   it("starts a saved scene in the private chat, owned by the user, with no session", async () => {
     await create();
     const id = templateId("guess")!;
-    const card = await menu(`m:st:${id}`);
+    const card = await menu(`m:st:${id}:0`);
     expect(card.text).toContain("Guess");
     expect(card.text).toContain("A guessing game");
     expect(card.buttons.map((b) => b.callback_data)).toEqual([
-      `m:sgo:${id}`,
-      `m:sdel:${id}`,
+      `m:sgo:${id}:1:1:0`,
+      `m:sdel:${id}:0`,
       "m:sl:0",
     ]);
 
-    const started = await menu(`m:sgo:${id}`);
+    const started = await menu(`m:sgo:${id}:1:1:0`);
     expect(started.note).toBe("Started: it is in this chat now.");
     const sent = h.telegram.called("sendMessage").at(-1)!;
     expect(sent.params.chat_id).toBe(ALICE.id);
@@ -234,7 +242,7 @@ describe("the 🎬 Scenes menu", () => {
   it("works after every assistant signed out", async () => {
     await create();
     await h.say(dm(ALICE), ALICE, "/disconnect");
-    const started = await menu(`m:sgo:${templateId("guess")}`);
+    const started = await startSaved(templateId("guess")!);
     expect(started.note).toBe("Started: it is in this chat now.");
   });
 
@@ -275,17 +283,22 @@ describe("the 🎬 Scenes menu", () => {
   it("refuses a saved scene that no longer compiles, and a full chat", async () => {
     await create();
     const id = templateId("guess")!;
+    const card = await menu(`m:st:${id}:0`);
+    const go = card.buttons.find((b) => b.callback_data?.startsWith("m:sgo:"))!.callback_data!;
     h.db.raw
       .query("UPDATE scene_templates SET definition = ? WHERE id = ?")
       .run(JSON.stringify({ title: "Broken" }), id);
-    const broken = await menu(`m:sgo:${id}`);
+    const broken = await menu(go);
     expect(broken.note).toContain("cannot start");
+    // The card shown again says so, and has no ▶.
+    expect(broken.text).toContain("no longer checks out");
+    expect(broken.buttons.some((b) => b.callback_data?.startsWith("m:sgo:"))).toBe(false);
 
     h.db.raw
       .query("UPDATE scene_templates SET definition = ? WHERE id = ?")
       .run(JSON.stringify(GAME), id);
-    for (let i = 0; i < 20; i++) await menu(`m:sgo:${id}`);
-    const full = await menu(`m:sgo:${id}`);
+    for (let i = 0; i < 20; i++) await startSaved(id);
+    const full = await startSaved(id);
     expect(full.note).toContain("20 scenes running");
   });
 

@@ -320,16 +320,20 @@ seconds per person).
 or the chat is a group where your assistant answers with «Others too» on; and the limits allow it —
 the scene's own wakes an hour (10 by default; change it in the menu: 🎬 Scenes) and the starts every
 tag shares. Otherwise the press is refused and nothing changes. When there is simply nobody to wake —
-no assistant set up and chosen, and no session that can take messages — the rule runs all the same,
-its `wake()` is only logged, and the presser hears that nobody was woken. The scene's own limit starts
-afresh if a scene is finished and created again; the shared limits do not.
+no assistant set up and chosen, and no session behind the scene that anything set up reaches — the
+rule runs all the same, its `wake()` is only logged, and the presser hears that nobody was woken.
+Something set up that cannot be reached right now (the relay that carries the scene's session
+offline with no routine to start another, settings that no longer read, an owner taken off
+`ALLOWED_USER_IDS`) refuses the press like a limit does ("Nobody can answer right now"), so it can be
+tried again. The scene's own limit starts afresh if a scene is finished and created again; the shared
+limits do not.
 
 Like a group's sessions of the day, a scene keeps two audiences apart. Your wakes go into the
 session that made the scene, where it can take messages, or start a new one. Other members' wakes never go
 into that session: the first starts a session of its own for them, and later ones go there where it
 can take them (or start another). A session that drives its scene with
-`update_scene` `act` may wake only itself, and is never taken for you; a client that names no session,
-on a scene that has none, runs its `act` rules without waking anyone. Each wake is a start in the
+`update_scene` `act` may wake only itself, and is never taken for you; on a scene that has no
+session (one started from the menu, say), any client's `act` runs its rules without waking anyone. Each wake is a start in the
 chat's log (📜 Starts, in a group where your assistant answers).
 
 **Cost.** A press that changes something is one Worker request; it reads the scene's row and, for
@@ -340,8 +344,8 @@ mark the scene as in use). `log()` and `wake()` write one more row each; a scene
 events. Edits keep to one a second per message. Up to 20 active scenes per person per chat; a scene
 nobody used for `RETENTION_DAYS` ends and is deleted a retention later, and its messages are kept as
 long as it is. Scenes end, and their messages lose their buttons, when you lose access to the group
-(or let a guest chat go); `/disconnect` signs assistants out but leaves scenes running — stop them in
-🎬 Scenes. A vote the scene could not take (too fast, a full state) shows as an error in
+(or let a guest chat go); `/disconnect` signs assistants out but leaves scenes running — stop them
+all with ■ Stop all scenes (in 🎬 Scenes, and under `/disconnect`'s reply). A vote the scene could not take (too fast, a full state) shows as an error in
 `get_scene`, since nobody sees the answer to a vote.
 
 **Saved scenes.** Every scene an assistant creates is saved in your library, as written, under a name
@@ -352,9 +356,12 @@ session lists the library before building a scene and starts one that fits with 
 `template` (with `state` and `title` for that run), changes it for good with `save_scene` and the
 version it read — the 20 versions before it are kept — or copies and adapts it under a new name.
 
-**🎬 Scenes in the menu.** `/start` → 🎬 Scenes lists your running scenes in every chat (open one to
-change its wakes an hour or stop it) and 📚 Saved scenes. Pick a saved scene to read its title and
-note, ▶ start it in your private chat with the bot, or delete it. A scene started there is yours and
+**🎬 Scenes in the menu.** `/start` → 🎬 Scenes lists your running scenes in every chat, ten a page
+(open one to change its wakes an hour or stop it), ■ Stop all scenes (asks first) and 📚 Saved
+scenes. Pick a saved scene to read its title, note and what it holds (buttons, links, rules that send
+messages, the events that wake the assistant), ▶ start it in your private chat with the bot, or delete
+it. ▶ starts the version the card showed, once: if the scene changed meanwhile, or the press is a
+second tap, you get the card again. A scene started there is yours and
 has no session behind it: everything in it works with no assistant connected, and a `wake()` starts
 your assistant if one is set up, or else wakes nobody and says so. The 20-a-chat limit applies.
 
@@ -638,7 +645,8 @@ Increasing `RETENTION_DAYS` costs storage, not writes.
   ChatGPT, an app on your computer), with when it signed in and was last seen. Signing one out stops
   its tokens on the next call (tokens issued before this list existed run out within a day instead). Upload and download links it already made keep working until they
   expire (10 to 15 minutes); signing out everywhere stops those too.
-- **`/disconnect`** (or **Sign out everywhere**) revokes every token you issued. Removing an ID from
+- **`/disconnect`** (or **Sign out everywhere**) revokes every token you issued. Your scenes keep
+  running (they need no assistant); **■ Stop all scenes** ends them. Removing an ID from
   `ALLOWED_USER_IDS` cuts access on the next call.
 - **What is stored**: message text and attachment metadata (Telegram file ids, not the files), for
   `RETENTION_DAYS`. Whoever runs the Worker can read the database. Run your own.

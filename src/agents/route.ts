@@ -124,20 +124,25 @@ export async function route(ctx: AgentContext, intent: Intent): Promise<Routed> 
 
 /**
  * Whether something for `session` would get anywhere — passed into it, or a
- * new session started — and when not, why nothing starts.
+ * new session started — and when not, why: "none", nothing is set up that
+ * could take it; "broken", the settings that would start a session can no
+ * longer be read; "away", the session's provider is set up but cannot pass
+ * it on now (the relay is offline, say) and nothing would start a new one.
  */
 export async function reachable(
   ctx: AgentContext,
   holder: number,
   session: string | null,
-): Promise<true | "none" | "broken"> {
+): Promise<true | "none" | "broken" | "away"> {
   const active = await activeProvider(ctx, holder);
   const status = active ? await active.status(ctx, holder) : null;
   const own = session ? PROVIDERS[providerOf(session)] : undefined;
+  let ownReach: Reach = "none";
   if (own) {
-    const reach = own === active && status ? status.reach : (await own.status(ctx, holder)).reach;
-    if (reach === "online") return true;
+    ownReach = own === active && status ? status.reach : (await own.status(ctx, holder)).reach;
+    if (ownReach === "online") return true;
   }
-  if (!status) return "none";
-  return status.start === "set" ? true : status.start;
+  if (status?.start === "set") return true;
+  if (status?.start === "broken") return "broken";
+  return ownReach === "none" ? "none" : "away";
 }

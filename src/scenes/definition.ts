@@ -515,6 +515,31 @@ function flatten(statements: CompiledStmt[]): Stmt[] {
   );
 }
 
+/** What a definition holds, for the user to see before starting it: buttons, links, what it sends and wakes. */
+export function outline(compiled: Compiled): {
+  buttons: number;
+  links: number;
+  /** Rules that send messages of their own: post(), poll(), dice(), tag(). */
+  sends: number;
+  /** The events whose rules call wake(). */
+  wakes: string[];
+} {
+  const buttons = Object.values(compiled.views).flatMap((view) =>
+    view.rows.flatMap((row) =>
+      row.kind === "row" ? row.buttons : row.kind === "each" ? row.row : [row.button],
+    ),
+  );
+  const sending = new Set(["post", "poll", "dice", "tag"]);
+  return {
+    buttons: buttons.length,
+    links: buttons.filter((button) => button.url).length,
+    sends: compiled.rules.filter((rule) =>
+      flatten(rule.do ?? []).some((stmt) => stmt.kind === "call" && sending.has(stmt.name)),
+    ).length,
+    wakes: [...new Set(compiled.rules.filter((rule) => rule.wakes).map((rule) => rule.on))],
+  };
+}
+
 /** The rules that wake the session, and who the rule itself lets trigger them. */
 export function wakingRules(
   compiled: Compiled,
