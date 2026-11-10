@@ -193,7 +193,7 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
         "Shape: {title, brief (your note for when it wakes you), state, let?, view: {text, buttons}, rules: " +
         "[{on, when?, who?, do?, say?}]}. on: press:<name>, vote, reply, reaction, act:<name>. who: anyone | " +
         'owner | expression. do: "path = expr", "+=", actions toast() alert() post() show() log() wake() ' +
-        "finish(), {if, do, else}. Text and labels take {expression}. Functions: len, count, has, each, line.\n" +
+        "finish(), {if, do, else}. Text, labels and a button's style take {expression}. Functions: len, count, has, each, line.\n" +
         'Example: {"title":"Lunch?","state":{"yes":{}},"view":{"text":"Coming: {len(yes)}","buttons":' +
         '[[{"text":"Me","press":"me"}]]},"rules":[{"on":"press:me","do":["yes[user.id] = user.name"]}]}\n' +
         `dry_run checks and previews without sending. The result says who can wake you. ${GROUP_NOTE}`,

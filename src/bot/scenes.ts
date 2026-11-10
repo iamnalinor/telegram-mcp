@@ -128,7 +128,7 @@ function keyboard(rows: RenderedButton[][], sceneId: number): InlineKeyboardMark
       row.map((button) => ({
         text: button.text,
         ...(button.url ? { url: button.url } : { callback_data: callbackData(sceneId, button) }),
-        ...(button.style ? { style: button.style as "primary" | "success" | "danger" } : {}),
+        ...(button.style ? { style: button.style } : {}),
       })),
     ),
   };
@@ -141,6 +141,8 @@ function storedButtons(rows: RenderedButton[][], sceneId: number): string | null
     row.map((button) => ({
       text: button.text,
       ...(button.url ? { url: button.url } : { data: callbackData(sceneId, button) }),
+      // Kept so that a change of colour alone still counts as a change to redraw.
+      ...(button.style ? { style: button.style } : {}),
     })),
   );
   return JSON.stringify(stored);

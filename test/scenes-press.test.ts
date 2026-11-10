@@ -321,6 +321,24 @@ describe("concurrency and edits", () => {
     expect((await press(BOB, at, "add")).text).toBe("This scene is over.");
   });
 
+  it("a press that changes only a button's colour redraws the keyboard", async () => {
+    const at = await scene({
+      title: "Toggle",
+      state: { on: false },
+      view: {
+        text: "toggle",
+        buttons: [[{ text: "Light", press: "flip", style: "{on ? 'success' : ''}" }]],
+      },
+      rules: [{ on: "press:flip", do: ["on = !on"] }],
+    });
+    h.db.raw.exec(`UPDATE scenes SET edited_at = 0 WHERE id = ${at.id}`);
+    await press(BOB, at, "flip");
+    expect(state(at.id).on).toBe(true);
+    const keyboard = edits(at.message).at(-1)?.params.reply_markup as
+      { inline_keyboard: { style?: string }[][] } | undefined;
+    expect(keyboard?.inline_keyboard[0][0].style).toBe("success");
+  });
+
   it("finishing removes the keyboard", async () => {
     const at = await scene(COUNTER);
     h.db.raw.exec(`UPDATE scenes SET edited_at = 0 WHERE id = ${at.id}`);
