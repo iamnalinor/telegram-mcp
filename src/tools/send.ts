@@ -189,7 +189,8 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         "sends a rich message (a real table, collapsible <details>, formulas): only where the content needs " +
         "what plain Markdown lacks, as some Telegram clients do not show rich messages yet. Optional buttons " +
         "(presses are recorded) and reply_to. Returns the message id and a t.me link to give the user. For a " +
-        `question that needs an answer, use ask_user instead. ${GROUP_NOTE}`,
+        "question that needs an answer, use ask_user instead; for buttons that keep reacting (a game, a sign-up, " +
+        `a tally), create_scene, not a wait_for_reply loop. ${GROUP_NOTE}`,
       inputSchema: z.object({
         text: z.string().min(1).max(32_000),
         chat: chatArg,
@@ -255,7 +256,8 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         "to a question in prose whenever the answer is one of a few options. Use when " +
         'you need a decision and the user may not be watching this conversation ("ask me in Telegram before ' +
         `deploying"). Waits up to ${WAIT_MAX_SECONDS} s; if nothing comes, call wait_for_reply with the returned ` +
-        "message id. Never act as if an answer came when it did not.",
+        "message id. Never act as if an answer came when it did not. It is for one decision; something many " +
+        "people press or play is a scene (create_scene).",
       inputSchema: z.object({
         question: z.string().min(1).max(4000),
         options: z
@@ -588,7 +590,7 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
         'Post a native Telegram poll, typically in a group ("poll the team on Friday vs Monday") — the way ' +
         "to settle something several people decide. With " +
         "correct_options it is a quiz. Votes are not reported back to you; for one person's decision, use " +
-        `ask_user. ${GROUP_NOTE}`,
+        `ask_user; for a vote you need counted or acted on, create_scene. ${GROUP_NOTE}`,
       inputSchema: z.object({
         question: z.string().min(1).max(300),
         options: z
@@ -727,7 +729,8 @@ export function registerSendTools(server: McpServer, ctx: ToolContext): void {
       description:
         "Send a small interactive block drawn inside a message: a checklist to tick off, a counter, a " +
         "tracker, a board, a chart, a picker, a small game. Offer it unasked when tapping or a live view " +
-        "beats text. For now Telegram shows widgets only in the private chat with the bot. A widget is one " +
+        "beats text. For now Telegram shows widgets only in the private chat with the bot; in a group, use " +
+        "create_scene. A widget is one " +
         "self-contained HTML document with inline <style> and <script>: at most 32768 bytes and 4096 after " +
         "zlib compression, no network, no external files, no keyboard input; images only as inline SVG or " +
         "data: URLs; design for 320 px wide and at most 600 px tall; use the --tg-theme-* CSS variables " +

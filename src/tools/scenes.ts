@@ -17,7 +17,7 @@ import { guide, PRESETS } from "../scenes/guide";
 import type { Value } from "../scenes/lang";
 import { render } from "../scenes/render";
 import { GROUP_NOTE } from "../prompts";
-import type { SceneEventRow, SceneRow } from "../store";
+import type { SceneEventRow, SceneRow, SceneTemplateRow } from "../store";
 import {
   agentArg,
   chatArg,
@@ -33,6 +33,16 @@ import {
   where,
   type ToolContext,
 } from "./common";
+import {
+  autoSave,
+  checkSaveAs,
+  nameArg,
+  noSuchSaved,
+  registerSavedSceneTools,
+  type Saved,
+  savedName,
+  savedForGuide,
+} from "./saved-scenes";
 import { originOf } from "./sessions";
 
 const ACTIVE_PER_CHAT = 20;
@@ -147,7 +157,8 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
       title: "Scene reference and presets",
       description:
         "The reference for scenes (create_scene): events, buttons, the language, actions, limits — and ready " +
-        "scenes to adapt. Read it before your first scene. topic: language (default), presets, or a preset name.",
+        "scenes to adapt, beside your saved ones. Read it before your first scene. topic: language (default), " +
+        "presets, or a preset name.",
       inputSchema: z.object({
         topic: z
           .string()
@@ -157,7 +168,17 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
       }),
       annotations: { readOnlyHint: true },
     },
-    (args) => Promise.resolve(text(guide(args.topic))),
+    async (args) => {
+      try {
+        const answer = guide(args.topic);
+        if (args.topic && args.topic !== "language" && args.topic !== "presets") {
+          return text(answer);
+        }
+        return text(answer + (await savedForGuide(ctx)));
+      } catch (error) {
+        return toolError(error, ctx);
+      }
+    },
   );
 
   server.registerTool(
@@ -167,7 +188,10 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
       description:
         "A message the bot runs by itself: state, screens and rules; presses, votes and replies change it " +
         "without you, and you are woken only where a rule calls wake(). For something a group taps, votes on " +
-        "or plays, or a control panel for your work. Call scene_guide before your first scene; take a preset.\n" +
+        "or plays (a game, a sign-up, a vote you need counted, a shared checklist), or a control panel for your " +
+        "work — prefer it to send_message buttons with a wait_for_reply loop, or to an HTML file. One question " +
+        "to one person stays ask_user. Every new definition is saved by itself (list_saved_scenes): look there " +
+        "first and pass template to start one that fits; otherwise read scene_guide and adapt a preset.\n" +
         "Shape: {title, brief (your note for when it wakes you), state, let?, view: {text, buttons}, rules: " +
         "[{on, when?, who?, do?, say?}]}. on: press:<name>, vote, reply, reaction, act:<name>. who: anyone | " +
         'owner | expression. do: "path = expr", "+=", actions toast() alert() post() show() log() wake() ' +
@@ -176,7 +200,29 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
         '[[{"text":"Me","press":"me"}]]},"rules":[{"on":"press:me","do":["yes[user.id] = user.name"]}]}\n' +
         `dry_run checks and previews without sending. The result says who can wake you. ${GROUP_NOTE}`,
       inputSchema: z.object({
-        definition: z.record(z.string(), z.unknown()).describe("The scene, as described above."),
+        definition: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe("The scene, as described above. Or template instead."),
+        template: nameArg
+          .optional()
+          .describe("Start a saved scene (list_saved_scenes) instead of passing a definition."),
+        state: z
+          .record(z.string(), z.unknown())
+          .optional()
+          .describe("With template: state fields to start with this time; the saved scene stays."),
+        title: z
+          .string()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe("With template: the title this time."),
+        save_as: z
+          .string()
+          .min(1)
+          .max(40)
+          .optional()
+          .describe("With definition: the name to save it under (by default, one from its title)."),
         chat: chatArg,
         topic: topicArg,
         reply_to: z.number().int().positive().optional().describe("Reply to this message id."),
@@ -192,7 +238,35 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
         const chat = await ctx.access.resolve(args.chat);
         notPersonal(chat, "scenes run only in the bot's own chats.");
         await mayPost(ctx, chat);
-        const { compiled: scene, state } = compiled(args.definition);
+        if (args.definition && args.template) {
+          throw new ToolError("Pass definition or template, not both.");
+        }
+        if (args.definition && (args.state || args.title)) {
+          throw new ToolError(
+            "state and title go with template; with a definition, change the definition itself.",
+          );
+        }
+        if (args.template && args.save_as) {
+          throw new ToolError(
+            "save_as goes with definition; to rename a saved scene use save_scene.",
+          );
+        }
+        let source: Record<string, unknown>;
+        let template: SceneTemplateRow | null = null;
+        if (args.template) {
+          const name = savedName(args.template);
+          template = await ctx.store.getTemplate(ctx.userId, name);
+          if (!template) throw await noSuchSaved(ctx, name);
+          source = JSON.parse(template.definition) as Record<string, unknown>;
+          if (args.state) source.state = { ...(source.state as object | undefined), ...args.state };
+          if (args.title) source.title = args.title;
+        } else if (args.definition) {
+          source = args.definition;
+        } else {
+          throw new ToolError("Pass definition or template (a saved scene's name).");
+        }
+        const saveAs = args.save_as === undefined ? null : await checkSaveAs(ctx, args.save_as);
+        const { compiled: scene, state } = compiled(source);
         const session = sessionId(args.session);
         const report = await accessReport(ctx, chat, scene, session);
         if (args.dry_run) {
@@ -212,6 +286,13 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
             `You have ${ACTIVE_PER_CHAT} active scenes in ${where(chat)} already: finish one (update_scene finish).`,
           );
         }
+        // Saved before it is sent: a definition that compiled is worth keeping even if Telegram refuses.
+        const saved: Saved = template
+          ? {
+              template: { id: template.id, version: template.version },
+              note: `From saved scene ${JSON.stringify(template.name)} (version ${template.version}).`,
+            }
+          : await autoSave(ctx, source, scene, saveAs);
         const { id, message } = await startScene(ctx, {
           chatId: chat.chat_id,
           threadId: args.topic ?? null,
@@ -220,13 +301,16 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
           agent: session && args.agent && /^[\w.:-]{1,64}$/.test(args.agent) ? args.agent : null,
           compiled: scene,
           state,
+          template: saved.template,
           replyTo: args.reply_to,
           silent: args.silent,
         });
+        // Counted once it runs: a scene Telegram refused is no use of it.
+        if (saved.template) await ctx.store.useTemplate(saved.template.id);
         const link = sentLink(ctx, chat, message);
         return text(
           `Scene ${id} is running in ${where(chat)} as #${message.message_id}.` +
-            `${link ? ` Link for the user: ${link}` : ""}\n${report}`,
+            `${link ? ` Link for the user: ${link}` : ""}\n${saved.note}\n${report}`,
         );
       } catch (error) {
         return toolError(error, ctx);
@@ -257,10 +341,25 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
             : await ctx.store.sceneEvents(row.id, args.events_after, EVENTS_SHOWN);
         const { lines, contents } = eventsBlock(ctx, events);
         const stateText = JSON.stringify(state);
+        const template =
+          row.template_id === null
+            ? null
+            : await ctx.store.getTemplateById(ctx.userId, row.template_id);
+        // The version it started from: the saved scene may have changed since.
+        const saved = template
+          ? `Started from saved scene ${JSON.stringify(template.name)}, version ` +
+            `${row.template_version ?? template.version}.\n`
+          : "";
         const body =
-          `Title: ${row.title}\nYour note when you set it up: ${row.brief ?? "(none)"}\n` +
+          `${saved}Title: ${row.title}\nYour note when you set it up: ${row.brief ?? "(none)"}\n` +
           `State: ${stateText}\nEvents:\n${lines || "(none)"}`;
-        const fence = new Fence(ctx.user, [row.title, row.brief ?? "", stateText, ...contents]);
+        const fence = new Fence(ctx.user, [
+          saved,
+          row.title,
+          row.brief ?? "",
+          stateText,
+          ...contents,
+        ]);
         return text(
           `Scene ${row.id} — ${row.status}, version ${row.version}, chat ${row.chat_id}, view ${row.view}, ` +
             `wakes at most ${row.wake_limit} an hour.\n${fence.note()}\n${fence.wrap(body)}`,
@@ -381,4 +480,6 @@ export function registerSceneTools(server: McpServer, ctx: ToolContext): void {
       }
     },
   );
+
+  registerSavedSceneTools(server, ctx, describeMistake);
 }

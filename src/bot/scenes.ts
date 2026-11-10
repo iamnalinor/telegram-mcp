@@ -220,6 +220,8 @@ export async function startScene(
     agent: string | null;
     compiled: Compiled;
     state: Record<string, Value>;
+    /** The saved scene it comes from, at which version. */
+    template?: { id: number; version: number } | null;
     replyTo?: number;
     silent?: boolean;
   },
@@ -236,6 +238,8 @@ export async function startScene(
     def: JSON.stringify(p.compiled),
     state: JSON.stringify(p.state),
     wake_limit: p.compiled.wakeLimit,
+    template_id: p.template?.id ?? null,
+    template_version: p.template?.version ?? null,
   });
   const row = (await ctx.store.getScene(id))!;
   let message: Message;
