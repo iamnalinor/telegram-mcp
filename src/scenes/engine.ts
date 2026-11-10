@@ -13,6 +13,7 @@ import {
   isMap,
   LangError,
   renderTemplate,
+  sizeOf,
   str,
   truthy,
   type Budget,
@@ -65,8 +66,9 @@ function scopeOf(compiled: Compiled, state: Record<string, Value>, event: SceneE
     lets: compiled.lets,
     vars: {
       user: { ...event.user },
-      arg: event.arg ?? null,
-      event: event.event ?? null,
+      // Copies: a rule that changes what it was given must not reach back into the caller's values.
+      arg: event.arg === undefined ? null : structuredClone(event.arg),
+      event: event.event === undefined ? null : structuredClone(event.event),
       now: event.now,
       owner: { ...event.owner },
     },
@@ -91,7 +93,9 @@ export function match(compiled: Compiled, state: Record<string, Value>, event: S
       if (!rule.do) {
         return {
           refused: "said",
-          ...(rule.say ? { text: renderTemplate(rule.say, scope, budget, plain) } : {}),
+          ...(rule.say
+            ? { text: cut(renderTemplate(rule.say, scope, budget, plain), ANSWER_LENGTH) }
+            : {}),
         };
       }
       return { rule: index, wakes: rule.wakes };
@@ -128,9 +132,9 @@ export function run(
     if (error instanceof LangError) return { refused: "broken", detail: error.message };
     throw error;
   }
-  const size = new TextEncoder().encode(JSON.stringify(next)).byteLength;
-  if (size > STATE_BYTES) {
-    return { refused: "full", detail: `the state would be ${size} bytes, over ${STATE_BYTES}` };
+  // Measured without printing it: the count stops just past the cap.
+  if (sizeOf(next, STATE_BYTES) > STATE_BYTES) {
+    return { refused: "full", detail: `the state would be over ${STATE_BYTES} bytes` };
   }
   return { state: next, effects };
 }
@@ -157,7 +161,16 @@ function execute(
       assign(state, stmt, scope, budget);
     } else {
       const args = stmt.args.map((arg) => evaluate(arg, scope, budget));
-      effects.push(action(stmt.name, args, compiled, event, stmt.args[0]?.at ?? 0));
+      const first = stmt.args[0];
+      // post('name') is a view only when the definition names it: never what a member typed.
+      const view =
+        stmt.name === "post" &&
+        first?.k === "lit" &&
+        typeof first.v === "string" &&
+        Object.hasOwn(compiled.views, first.v)
+          ? first.v
+          : null;
+      effects.push(action(stmt.name, args, compiled, event, first?.at ?? 0, view));
     }
   }
 }
@@ -168,6 +181,7 @@ function action(
   compiled: Compiled,
   event: SceneEvent,
   at: number,
+  view: string | null,
 ): Effect {
   const text = (length: number) => cut(str(args[0] ?? null), length);
   const eventName = () => {
@@ -181,12 +195,8 @@ function action(
     case "alert":
     case "whisper":
       return { kind: name, text: text(ANSWER_LENGTH) };
-    case "post": {
-      const value = str(args[0] ?? null);
-      return Object.hasOwn(compiled.views, value)
-        ? { kind: "post", view: value }
-        : { kind: "post", text: text(POST_LENGTH) };
-    }
+    case "post":
+      return view ? { kind: "post", view } : { kind: "post", text: text(POST_LENGTH) };
     case "show": {
       const view = str(args[0] ?? null);
       if (!Object.hasOwn(compiled.views, view))

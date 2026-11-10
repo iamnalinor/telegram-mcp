@@ -231,9 +231,9 @@ describe("games from the presets", () => {
     ];
     for (let q = 0; q < 3; q++) {
       for (const [who, picks] of answers) {
-        expect((await press(who, at, "answer", picks[q])).text).toBe("Got it");
+        expect((await press(who, at, "answer", [q, picks[q]])).text).toBe("Got it");
       }
-      expect((await press(BOB, at, "answer", 0)).text).toBe("You have answered");
+      expect((await press(BOB, at, "answer", [q, 0])).text).toBe("You have answered");
       expect((await press(BOB, at, "next")).text).toBe("This button is only for @alice.");
       await press(ALICE, at, "next");
     }
@@ -297,7 +297,7 @@ describe("games from the presets", () => {
     expect(h.fires).toHaveLength(1);
     expect(h.fires[0].body.text).toStartWith(`scene: ${at.id}`);
     // The one who was killed is out of the game.
-    expect((await press(civ, at, "role")).text).toBe("You are civ");
+    expect((await press(civ, at, "role")).text).toBe("You were civ");
     expect((await press(civ, at, "pick", String(mafia.id))).text).toBe("You are out of the game");
 
     for (const who of players.filter((p) => p !== civ)) {
@@ -305,8 +305,8 @@ describe("games from the presets", () => {
     }
     now = state(at.id);
     expect(now.out).toBe(String(mafia.id));
-    expect(now.phase).toBe("night");
-    expect(now.day).toBe(2);
+    // The mafia is out: the town wins and the game ends.
+    expect(now).toMatchObject({ winner: "town", phase: "over", day: 2 });
     expect(h.fires).toHaveLength(2);
     const woke = h.db.raw
       .query("SELECT name FROM scene_events WHERE woke = 1 ORDER BY seq")

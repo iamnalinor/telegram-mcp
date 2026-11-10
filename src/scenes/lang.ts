@@ -13,7 +13,7 @@
  *   templates     "Turn: {turn == 'x' ? '❌' : '⭕'}" — "{{" and "}}" are literal braces
  */
 
-import { FUNCTIONS } from "./functions";
+import { ARITY, FUNCTIONS } from "./functions";
 
 export type Value = null | boolean | number | string | Value[] | { [key: string]: Value };
 
@@ -97,6 +97,31 @@ export const RESERVED: readonly string[] = [
   "in",
 ];
 
+/** How many arguments each action takes: [least, most]. */
+const ACTION_ARITY: Record<string, [number, number]> = {
+  alert: [1, 1],
+  toast: [1, 1],
+  whisper: [1, 1],
+  post: [1, 1],
+  show: [1, 1],
+  poll: [2, 3],
+  close_poll: [0, 0],
+  dice: [0, 1],
+  tag: [2, 2],
+  log: [1, 1],
+  wake: [1, 1],
+  finish: [0, 0],
+};
+
+/**
+ * The largest value an expression may build, about its JSON bytes: four
+ * times the state's cap. Lists and maps are measured as they are built, so a
+ * few doublings are refused long before they cost time or memory.
+ */
+const MAX_VALUE = 32_768;
+/** Measuring or printing a value costs a step per this many bytes. */
+const BYTES_PER_STEP = 256;
+
 /** Strings and lists stop here: a few doublings would otherwise fill the isolate's memory. */
 const MAX_STRING = 16_384;
 const MAX_LIST = 4096;
@@ -155,7 +180,9 @@ function tokenize(source: string, offset: number): Token[] {
     const at = offset + i;
     if (/[0-9]/.test(char)) {
       const match = /^\d+(?:\.\d+)?/.exec(source.slice(i))!;
-      tokens.push({ t: "num", v: Number(match[0]), at });
+      const value = Number(match[0]);
+      if (!Number.isFinite(value)) throw new LangError("the number is too large", at);
+      tokens.push({ t: "num", v: value, at });
       i += match[0].length;
       continue;
     }
@@ -349,9 +376,10 @@ class Parser {
 
   /** `name(args)`: a built-in function, or (in a statement) an action. */
   call(name: string, at: number, action: boolean): Expr & { k: "call" } {
-    if (action ? !ACTIONS.includes(name) : !(name in FUNCTIONS) && name !== "each") {
-      throw new LangError(`there is no function "${name}"`, at);
-    }
+    const known = action
+      ? Object.hasOwn(ACTION_ARITY, name)
+      : Object.hasOwn(FUNCTIONS, name) || name === "each";
+    if (!known) throw new LangError(`there is no function "${name}"`, at);
     this.expect("(");
     const args: Expr[] = [];
     while (!this.isOp(")")) {
@@ -359,6 +387,16 @@ class Parser {
       if (!this.isOp(")")) this.expect(",");
     }
     this.next();
+    const [least, most] = action ? ACTION_ARITY[name] : name === "each" ? [2, 2] : ARITY[name];
+    if (args.length < least || args.length > most) {
+      const wanted =
+        least === most
+          ? `${least}`
+          : most === Infinity
+            ? `${least} or more`
+            : `${least} to ${most}`;
+      throw new LangError(`${name}() takes ${wanted} argument${most === 1 ? "" : "s"}`, at);
+    }
     if (name !== "each") return { k: "call", fn: name, args, at };
     // each(coll, 'template'): the template is parsed now, once.
     const template = args[1];
@@ -465,19 +503,83 @@ export function truthy(value: Value): boolean {
   return Boolean(value);
 }
 
-export function equal(a: Value, b: Value): boolean {
+/** Deep equality; with a budget, every pair of nodes compared costs a step. */
+export function equal(a: Value, b: Value, budget?: Budget, at = 0): boolean {
+  if (budget) charge(budget, 1, at);
   if (a === b) return true;
   if (Array.isArray(a) && Array.isArray(b)) {
-    return a.length === b.length && a.every((item, i) => equal(item, b[i]));
+    return a.length === b.length && a.every((item, i) => equal(item, b[i], budget, at));
   }
   if (isMap(a) && isMap(b)) {
     const keys = Object.keys(a);
     return (
       keys.length === Object.keys(b).length &&
-      keys.every((key) => Object.hasOwn(b, key) && equal(a[key], b[key]))
+      keys.every((key) => Object.hasOwn(b, key) && equal(a[key], b[key], budget, at))
     );
   }
   return false;
+}
+
+/** UTF-8 bytes of a string as JSON writes it, quotes and escapes included. */
+function jsonStringBytes(text: string): number {
+  let bytes = 2;
+  for (let i = 0; i < text.length; i++) {
+    const code = text.charCodeAt(i);
+    if (code === 0x22 || code === 0x5c) bytes += 2;
+    else if (code < 0x20) bytes += 6;
+    else if (code < 0x80) bytes += 1;
+    else if (code < 0x800) bytes += 2;
+    else if (code >= 0xd800 && code < 0xdc00) {
+      bytes += 4;
+      i++;
+    } else bytes += 3;
+  }
+  return bytes;
+}
+
+/**
+ * A value's size as JSON, in UTF-8 bytes — counted only until it passes
+ * `limit`, so measuring a huge (or shared, many times nested) value costs no
+ * more than measuring one just over the limit. Returns limit + 1 then.
+ */
+export function sizeOf(value: Value, limit: number): number {
+  let total = 0;
+  const stack: Value[] = [value];
+  while (stack.length) {
+    const node = stack.pop()!;
+    if (node === null) total += 4;
+    else if (typeof node === "boolean") total += node ? 4 : 5;
+    else if (typeof node === "number") total += String(node).length;
+    else if (typeof node === "string") total += jsonStringBytes(node);
+    else if (Array.isArray(node)) {
+      total += 2 + Math.max(0, node.length - 1);
+      for (let i = node.length - 1; i >= 0; i--) stack.push(node[i]);
+    } else {
+      const keys = Object.keys(node);
+      total += 2 + Math.max(0, keys.length - 1);
+      for (const key of keys) {
+        total += jsonStringBytes(key) + 1;
+        stack.push(node[key]);
+      }
+    }
+    if (total > limit) return limit + 1;
+  }
+  return total;
+}
+
+/** A list or map just built: measured, paid for, refused when it grew too big. */
+function grown(value: Value, budget: Budget, at: number): Value {
+  if (typeof value !== "object" || value === null) return checkSize(value, at);
+  const size = sizeOf(value, MAX_VALUE);
+  charge(budget, Math.ceil(size / BYTES_PER_STEP), at);
+  if (size > MAX_VALUE) throw new LangError(`a value grew past ${MAX_VALUE} bytes`, at);
+  return checkSize(value, at);
+}
+
+/** str() for the evaluator: a list or map is measured and paid for before it is printed. */
+export function text(value: Value, budget: Budget, at: number): string {
+  if (typeof value === "object" && value !== null) grown(value, budget, at);
+  return str(value);
 }
 
 /** How a value reads in text: null is nothing, lists and maps are JSON. */
@@ -494,7 +596,7 @@ export function keyOf(value: Value): string {
 }
 
 /** Numbers that are not finite become null: JSON has no Infinity. */
-function num(value: number): Value {
+export function num(value: number): Value {
   return Number.isFinite(value) ? value : null;
 }
 
@@ -565,9 +667,20 @@ export function index(container: Value, key: Value): Value {
   return null;
 }
 
-function add(a: Value, b: Value, at: number): Value {
-  if (typeof a === "string" || typeof b === "string") return checkSize(str(a) + str(b), at);
-  if (Array.isArray(a) && Array.isArray(b)) return checkSize([...a, ...b], at);
+function add(a: Value, b: Value, at: number, budget: Budget): Value {
+  if (typeof a === "string" || typeof b === "string") {
+    const left = text(a, budget, at);
+    const right = text(b, budget, at);
+    if (left.length + right.length > MAX_STRING) {
+      throw new LangError(`a text grew past ${MAX_STRING} characters`, at);
+    }
+    return left + right;
+  }
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length + b.length > MAX_LIST)
+      throw new LangError(`a list grew past ${MAX_LIST} items`, at);
+    return grown([...a, ...b], budget, at);
+  }
   if ((typeof a === "number" || a === null) && (typeof b === "number" || b === null)) {
     return num((a ?? 0) + (b ?? 0));
   }
@@ -596,8 +709,10 @@ function compare(op: BinaryOp, a: Value, b: Value): boolean {
   return op === "<" ? x < y : op === "<=" ? x <= y : op === ">" ? x > y : x >= y;
 }
 
-export function contains(collection: Value, item: Value): boolean {
-  if (Array.isArray(collection)) return collection.some((element) => equal(element, item));
+export function contains(collection: Value, item: Value, budget?: Budget, at = 0): boolean {
+  if (Array.isArray(collection)) {
+    return collection.some((element) => equal(element, item, budget, at));
+  }
   if (isMap(collection)) return Object.hasOwn(collection, keyOf(item));
   if (typeof collection === "string") return collection.includes(str(item));
   return false;
@@ -611,10 +726,18 @@ export function evaluate(expr: Expr, scope: Scope, budget: Budget): Value {
     case "name":
       return lookup(expr.n, scope, expr.at, budget);
     case "list":
-      return expr.items.map((item) => evaluate(item, scope, budget));
+      return grown(
+        expr.items.map((item) => evaluate(item, scope, budget)),
+        budget,
+        expr.at,
+      );
     case "map":
-      return Object.fromEntries(
-        expr.entries.map(([key, value]) => [key, evaluate(value, scope, budget)]),
+      return grown(
+        Object.fromEntries(
+          expr.entries.map(([key, value]) => [key, evaluate(value, scope, budget)]),
+        ),
+        budget,
+        expr.at,
       );
     case "get":
       return index(evaluate(expr.obj, scope, budget), evaluate(expr.key, scope, budget));
@@ -622,6 +745,7 @@ export function evaluate(expr: Expr, scope: Scope, budget: Budget): Value {
       return !truthy(evaluate(expr.e, scope, budget));
     case "neg": {
       const value = evaluate(expr.e, scope, budget);
+      if (value === null) return 0;
       if (typeof value !== "number") throw new LangError("- takes a number", expr.at);
       return -value;
     }
@@ -633,6 +757,8 @@ export function evaluate(expr: Expr, scope: Scope, budget: Budget): Value {
       return binary(expr, scope, budget);
     case "call":
       if (expr.fn === "each") return each(expr, scope, budget);
+      if (!Object.hasOwn(FUNCTIONS, expr.fn))
+        throw new LangError(`there is no function "${expr.fn}"`, expr.at);
       return FUNCTIONS[expr.fn](
         expr.args.map((arg) => evaluate(arg, scope, budget)),
         { budget, at: expr.at, random: scope.random ?? defaultRandom, now: nowOf(scope) },
@@ -658,18 +784,18 @@ function binary(expr: Expr & { k: "bin" }, scope: Scope, budget: Budget): Value 
   const right = evaluate(expr.r, scope, budget);
   switch (expr.op) {
     case "+":
-      return add(left, right, expr.at);
+      return add(left, right, expr.at, budget);
     case "-":
     case "*":
     case "/":
     case "%":
       return arithmetic(expr.op, left, right, expr.at);
     case "==":
-      return equal(left, right);
+      return equal(left, right, budget, expr.at);
     case "!=":
-      return !equal(left, right);
+      return !equal(left, right, budget, expr.at);
     case "in":
-      return contains(right, left);
+      return contains(right, left, budget, expr.at);
     default:
       return compare(expr.op, left, right);
   }
@@ -688,10 +814,19 @@ function each(expr: Expr & { k: "call" }, scope: Scope, budget: Budget): Value {
     charge(budget, 1, expr.at);
     const inner: Scope = { ...scope, vars: { ...scope.vars, it: item, i, key } };
     outer.set(inner, outer.get(scope) ?? scope);
-    out += renderTemplate(expr.tpl!, inner, budget, scope.escape ?? ((text) => text));
-    checkSize(out, expr.at);
+    out = append(out, renderTemplate(expr.tpl!, inner, budget, scope.escape ?? plain), expr.at);
   }
   return out;
+}
+
+const plain = (value: string) => value;
+
+/** Text joined only while it fits: the check comes before the copy. */
+function append(out: string, piece: string, at: number): string {
+  if (out.length + piece.length > MAX_STRING) {
+    throw new LangError(`a text grew past ${MAX_STRING} characters`, at);
+  }
+  return out + piece;
 }
 
 /**
@@ -705,19 +840,22 @@ export function renderTemplate(
   budget: Budget,
   escape: (text: string) => string,
 ): string {
-  const inner: Scope = scope.escape === escape ? scope : { ...scope, escape };
-  if (inner !== scope) outer.set(inner, outer.get(scope) ?? scope);
+  const root = outer.get(scope) ?? scope;
+  // each() as the whole interpolation escapes its own values and keeps its
+  // own text; anywhere else it is a value like any other, escaped as a whole.
+  const escaping: Scope = { ...scope, escape };
+  const raw: Scope = { ...scope, escape: undefined };
+  outer.set(escaping, root);
+  outer.set(raw, root);
   let out = "";
   for (const part of template) {
     if (typeof part === "string") {
-      out += part;
+      out = append(out, part, 0);
     } else if (part.k === "call" && part.fn === "each") {
-      // Its values were escaped already, and its own text is the definition's.
-      out += str(evaluate(part, inner, budget));
+      out = append(out, str(evaluate(part, escaping, budget)), part.at);
     } else {
-      out += escape(str(evaluate(part, inner, budget)));
+      out = append(out, escape(text(evaluate(part, raw, budget), budget, part.at)), part.at);
     }
-    checkSize(out, 0);
   }
   return out;
 }
@@ -735,7 +873,9 @@ export function assign(
   if (RESERVED.includes(root.n) || !Object.hasOwn(state, root.n)) {
     throw new LangError(`"${root.n}" is not a field of the state`, root.at);
   }
-  const value = evaluate(stmt.value, scope, budget);
+  // A copy: assigning never makes two places share one list or map.
+  const result = evaluate(stmt.value, scope, budget);
+  const value = typeof result === "object" && result !== null ? structuredClone(result) : result;
   // The chain of keys under the root, evaluated before anything changes.
   const keys: { key: Value; at: number }[] = [];
   for (let node = stmt.path; node.k === "get"; node = node.obj) {
@@ -746,7 +886,8 @@ export function assign(
   for (const step of keys) {
     let child = index(container, last.key);
     if (child === null) {
-      // A missing map key on the way creates a map there.
+      // A missing map key on the way creates a map there; a list grows only by `list[len] = v`.
+      if (!isMap(container)) throw new LangError("there is nothing at this index", last.at);
       child = {};
       put(container, last.key, child, last.at);
     }
@@ -754,18 +895,24 @@ export function assign(
     last = step;
   }
   const current = index(container, last.key);
-  put(container, last.key, combine(stmt.op, current, value, last.at), last.at);
+  put(container, last.key, combine(stmt.op, current, value, last.at, budget), last.at);
   forgetLets(scope);
 }
 
-function combine(op: "=" | "+=" | "-=", current: Value, value: Value, at: number): Value {
+function combine(
+  op: "=" | "+=" | "-=",
+  current: Value,
+  value: Value,
+  at: number,
+  budget: Budget,
+): Value {
   if (op === "=") return value;
   if (Array.isArray(current)) {
     return op === "+="
-      ? checkSize([...current, value], at)
-      : current.filter((item) => !equal(item, value));
+      ? grown([...current, value], budget, at)
+      : current.filter((item) => !equal(item, value, budget, at));
   }
-  if (op === "+=") return add(current, value, at);
+  if (op === "+=") return add(current, value, at, budget);
   return arithmetic("-", current, value, at);
 }
 

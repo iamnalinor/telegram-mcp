@@ -14,6 +14,7 @@ import { DefinitionError, PRESS_NAME, type Compiled, type CompiledButton } from 
 import type { Actor } from "./engine";
 import {
   evaluate,
+  LangError,
   isMap,
   renderTemplate,
   truthy,
@@ -40,8 +41,6 @@ export interface Rendered {
   rows: RenderedButton[][];
   /** Where in the view each button comes from, e.g. "buttons[2]" or "buttons[0][1]". */
   places: string[][];
-  /** Buttons past Telegram's 100 that were left out. */
-  dropped: number;
 }
 
 /** A screen's work on top of the event's: it renders every live message. */
@@ -61,11 +60,42 @@ function safeUrl(url: string): string | null {
   return /^(https?:\/\/|tg:\/\/)\S+$/i.test(url.trim()) ? url.trim() : null;
 }
 
+/**
+ * A screen Telegram would refuse: text over the message's limit, a button's
+ * data over 64 bytes, more than 100 buttons. The event that led to it is
+ * refused, so the state that cannot be shown is never written.
+ */
+export class RenderError extends LangError {
+  constructor(
+    message: string,
+    /** Where in the view, e.g. "buttons[0][1]" or "text". */
+    readonly place: string,
+  ) {
+    super(message, 0);
+  }
+}
+
+/** What Telegram takes: a message's text after parsing, a rich message's source. */
+const TEXT_LIMIT = { markdown: 4096, rich: 32_768 };
+const CALLBACK_BYTES = 64;
+/** Room the check leaves for a scene's id in callback data. */
+const ID_ROOM = 999_999_999;
+
+/** Telegram HTML as a reader sees it: tags gone, entities back to characters. */
+function visible(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, "")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&amp;", "&");
+}
+
 export function render(
   compiled: Compiled,
   view: string,
   state: Record<string, Value>,
-  env: { owner: Actor; now: number },
+  env: { owner: Actor; now: number; sceneId?: number },
 ): Rendered {
   const screen = compiled.views[view] ?? compiled.views.main;
   if (!screen) throw new DefinitionError(`there is no view "${view}"`, "views");
@@ -87,8 +117,24 @@ export function render(
     );
   const text =
     screen.format === "rich"
-      ? fill(marked, escapeMarkdown)
-      : fill(markdownToHtml(marked), escapeHtml);
+      ? // A newline in a value would end a table row or open a block.
+        fill(marked, (value) => escapeMarkdown(value.replace(/\s*\n\s*/g, " ")))
+      : fill(
+          // Inside a link's address a value is percent-encoded, so it cannot leave the href.
+          markdownToHtml(marked).replace(
+            /href="([^"]*)"/g,
+            (_, href: string) =>
+              `href="${fill(href, (value) => escapeHtml(encodeURIComponent(value)))}"`,
+          ),
+          (value) => escapeHtml(value).replaceAll('"', "&quot;"),
+        );
+  const length = Array.from(screen.format === "rich" ? text : visible(text)).length;
+  if (length > TEXT_LIMIT[screen.format]) {
+    throw new RenderError(
+      `the text would be ${length} characters; a message holds ${TEXT_LIMIT[screen.format]}`,
+      "text",
+    );
+  }
 
   const rows: RenderedButton[][] = [];
   const places: string[][] = [];
@@ -97,6 +143,15 @@ export function render(
   const push = (row: RenderedButton[], place: (c: number) => string) => {
     const shown = row.slice(0, Math.max(0, PER_VIEW - count));
     dropped += row.length - shown.length;
+    if (dropped) throw new RenderError(`a view shows at most ${PER_VIEW} buttons`, "buttons");
+    for (const [c, button] of shown.entries()) {
+      if (button.press && bytes(callbackData(env.sceneId ?? ID_ROOM, button)) > CALLBACK_BYTES) {
+        throw new RenderError(
+          `the button's argument is too long: name and argument together leave ${CALLBACK_BYTES} bytes`,
+          place(c),
+        );
+      }
+    }
     if (!shown.length) return;
     count += shown.length;
     rows.push(shown);
@@ -169,7 +224,6 @@ export function render(
     format: screen.format,
     rows,
     places,
-    dropped,
   };
 }
 
@@ -184,9 +238,19 @@ export function callbackData(sceneId: number, button: RenderedButton): string {
   return button.arg === undefined ? base : `${base}:${JSON.stringify(button.arg)}`;
 }
 
+const bytes = (text: string) => new TextEncoder().encode(text).byteLength;
+
+function finite(value: Value): boolean {
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(finite);
+  if (isMap(value)) return Object.values(value).every(finite);
+  return true;
+}
+
 export function parseCallback(
   data: string,
 ): { sceneId: number; press: string; arg: Value | undefined } | null {
+  if (bytes(data) > CALLBACK_BYTES) return null;
   const match = /^s:(\d{1,15}):([^:]{1,16})(?::(.*))?$/s.exec(data);
   if (!match || !PRESS_NAME.test(match[2])) return null;
   let arg: Value | undefined;
@@ -196,6 +260,8 @@ export function parseCallback(
     } catch {
       return null;
     }
+    // JSON.parse reads 1e999 as Infinity, which no button could carry.
+    if (!finite(arg)) return null;
   }
   return { sceneId: Number(match[1]), press: match[2], arg };
 }

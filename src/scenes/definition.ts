@@ -19,7 +19,7 @@ import {
   type Template,
   type Value,
 } from "./lang";
-import { callbackData, render } from "./render";
+import { render, RenderError } from "./render";
 
 /** The spec's limits. */
 const LIMITS = {
@@ -97,7 +97,7 @@ export interface Compiled {
 // --- the model's JSON -------------------------------------------------------
 
 const style = z.enum(["primary", "success", "danger"]).optional();
-const buttonInput = z.object({
+const buttonInput = z.strictObject({
   text: z.string().min(1).max(200),
   press: z.string().optional(),
   arg: z.string().max(200).optional(),
@@ -107,7 +107,7 @@ const buttonInput = z.object({
 });
 const rowInput = z.union([
   z.array(buttonInput),
-  z.object({
+  z.strictObject({
     grid: z.string(),
     width: z.number().int().min(1).max(LIMITS.buttonsPerRow),
     text: z.string().min(1).max(200),
@@ -115,8 +115,8 @@ const rowInput = z.union([
     style,
     show: z.string().max(500).optional(),
   }),
-  z.object({ each: z.string(), row: z.array(buttonInput) }),
-  z.object({
+  z.strictObject({ each: z.string(), row: z.array(buttonInput) }),
+  z.strictObject({
     each: z.string(),
     per_row: z.number().int().min(1).max(LIMITS.buttonsPerRow),
     text: z.string().min(1).max(200),
@@ -126,7 +126,7 @@ const rowInput = z.union([
     show: z.string().max(500).optional(),
   }),
 ]);
-const viewInput = z.object({
+const viewInput = z.strictObject({
   text: z.string().min(1).max(4096),
   format: z.enum(["markdown", "rich"]).optional(),
   buttons: z.array(rowInput).optional(),
@@ -135,10 +135,10 @@ type StmtInput = string | { if: string; do: StmtInput[]; else?: StmtInput[] };
 const stmtInput: z.ZodType<StmtInput> = z.lazy(() =>
   z.union([
     z.string().min(1).max(500),
-    z.object({ if: z.string(), do: z.array(stmtInput), else: z.array(stmtInput).optional() }),
+    z.strictObject({ if: z.string(), do: z.array(stmtInput), else: z.array(stmtInput).optional() }),
   ]),
 );
-const definitionInput = z.object({
+const definitionInput = z.strictObject({
   title: z.string().min(1).max(100),
   brief: z.string().max(2000).optional(),
   state: z.record(z.string(), z.unknown()).optional(),
@@ -146,7 +146,7 @@ const definitionInput = z.object({
   view: viewInput.optional(),
   views: z.record(z.string(), viewInput).optional(),
   rules: z.array(
-    z.object({
+    z.strictObject({
       on: z.string(),
       when: z.string().max(500).optional(),
       who: z.string().max(500).optional(),
@@ -180,13 +180,18 @@ function at<T>(where: string, source: string, parse: (source: string) => T): T {
 function namesIn(
   node: unknown,
   found: { n: string; at: number }[] = [],
+  /** Whether to look inside each()'s template too. */
+  templates = true,
 ): { n: string; at: number }[] {
   if (Array.isArray(node)) {
-    for (const item of node) namesIn(item, found);
+    for (const item of node) namesIn(item, found, templates);
   } else if (node && typeof node === "object") {
     const expr = node as Record<string, unknown>;
     if (expr.k === "name") found.push({ n: expr.n as string, at: expr.at as number });
-    for (const value of Object.values(expr)) if (typeof value === "object") namesIn(value, found);
+    for (const [key, value] of Object.entries(expr)) {
+      if (typeof value === "object" && (templates || key !== "tpl"))
+        namesIn(value, found, templates);
+    }
   }
   return found;
 }
@@ -397,7 +402,20 @@ export function compile(input: unknown): { compiled: Compiled; state: Record<str
 
   const compiler = new Compiler(state, Object.keys(letInput));
   const lets = Object.fromEntries(
-    Object.entries(letInput).map(([name, source]) => [name, compiler.expr(`let.${name}`, source)]),
+    Object.entries(letInput).map(([name, source]) => {
+      const expr = compiler.expr(`let.${name}`, source);
+      // A let is computed once per event, outside any each(): it, i and key are never set there.
+      const loose = namesIn(expr, [], false).find((found) => ["it", "i", "key"].includes(found.n));
+      if (loose) {
+        throw new DefinitionError(
+          `a let cannot read "${loose.n}": it exists only inside each() and button generators`,
+          `let.${name}`,
+          source,
+          loose.at,
+        );
+      }
+      return [name, expr];
+    }),
   );
   const views = Object.fromEntries(
     Object.entries(viewInputs).map(([name, view]) => [
@@ -416,7 +434,9 @@ export function compile(input: unknown): { compiled: Compiled; state: Record<str
     const statements = rule.do ? compiler.statements(`${where}.do`, rule.do, 0) : undefined;
     for (const stmt of flatten(statements ?? [])) {
       const target = stmt.kind === "call" && stmt.name === "show" ? stmt.args[0] : null;
-      if (target && !(target.k === "lit" && typeof target.v === "string" && viewInputs[target.v])) {
+      const named =
+        target?.k === "lit" && typeof target.v === "string" && Object.hasOwn(viewInputs, target.v);
+      if (target && !named) {
         throw new DefinitionError("show() takes the name of a view, in quotes", `${where}.do`);
       }
     }
@@ -447,28 +467,14 @@ export function compile(input: unknown): { compiled: Compiled; state: Record<str
   // Every view once, against the initial state: mistakes show now, not on the first press.
   for (const name of viewNames) {
     const where = def.view ? "view" : `views.${name}`;
-    let shown;
     try {
-      shown = render(compiled, name, state, { owner: { id: 0, name: "owner" }, now: 0 });
+      render(compiled, name, state, { owner: { id: 0, name: "owner" }, now: 0 });
     } catch (error) {
-      if (error instanceof LangError) throw new DefinitionError(error.message, `${where}`);
-      throw error;
-    }
-    if (shown.dropped > 0) {
-      throw new DefinitionError(
-        `a view shows at most ${LIMITS.buttonsPerView} buttons`,
-        `${where}.buttons`,
-      );
-    }
-    for (const [r, row] of shown.rows.entries()) {
-      for (const [c, button] of row.entries()) {
-        if (button.press && bytes(callbackData(999_999_999, button)) > LIMITS.callbackBytes) {
-          throw new DefinitionError(
-            `the button's argument is too long: name and argument together leave ${LIMITS.callbackBytes} bytes`,
-            `${where}.${shown.places[r][c]}`,
-          );
-        }
+      if (error instanceof RenderError) {
+        throw new DefinitionError(error.message, `${where}.${error.place}`);
       }
+      if (error instanceof LangError) throw new DefinitionError(error.message, where);
+      throw error;
     }
   }
   return { compiled, state };

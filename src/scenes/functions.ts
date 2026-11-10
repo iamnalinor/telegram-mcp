@@ -14,7 +14,8 @@ import {
   isMap,
   keyOf,
   LangError,
-  str,
+  num,
+  text,
   type Budget,
   type Value,
 } from "./lang";
@@ -81,7 +82,37 @@ function scored(value: Value, call: Call): [string, number][] {
 
 const BAR_WIDTH = 10;
 
-export const FUNCTIONS: Record<string, Fn> = {
+/** How many arguments each function takes: [least, most]. */
+export const ARITY: Record<string, [number, number]> = Object.freeze(
+  Object.assign(Object.create(null) as Record<string, [number, number]>, {
+    len: [1, 1],
+    keys: [1, 1],
+    values: [1, 1],
+    has: [2, 2],
+    count: [2, 3],
+    sum: [1, Infinity],
+    min: [1, Infinity],
+    max: [1, Infinity],
+    slice: [2, 3],
+    without: [2, 2],
+    tally: [1, 1],
+    leader: [1, 1],
+    top: [1, 2],
+    full: [1, 1],
+    line: [3, 3],
+    drop: [3, 3],
+    random: [1, 1],
+    pick: [1, 1],
+    shuffle: [1, 1],
+    deal: [2, 3],
+    str: [1, 1],
+    join: [1, 2],
+    bar: [2, 3],
+    ago: [1, 1],
+  }),
+);
+
+const BUILT_INS: Record<string, Fn> = {
   len: ([value]) =>
     Array.isArray(value)
       ? value.length
@@ -101,15 +132,16 @@ export const FUNCTIONS: Record<string, Fn> = {
   },
   has: ([collection, item], call) => {
     walk(call, items(collection).length);
-    return contains(collection, item);
+    return contains(collection, item, call.budget, call.at);
   },
   count: ([list, wanted, field], call) => {
     const all = items(list);
     walk(call, all.length);
-    return all.filter((item) => equal(field === undefined ? item : index(item, field), wanted))
-      .length;
+    return all.filter((item) =>
+      equal(field === undefined ? item : index(item, field), wanted, call.budget, call.at),
+    ).length;
   },
-  sum: (args, call) => numbers(args, call).reduce((total, n) => total + n, 0),
+  sum: (args, call) => num(numbers(args, call).reduce((total, n) => total + n, 0)),
   min: (args, call) => {
     const list = numbers(args, call);
     return list.length ? Math.min(...list) : null;
@@ -128,7 +160,9 @@ export const FUNCTIONS: Record<string, Fn> = {
   },
   without: ([collection, item], call) => {
     walk(call, items(collection).length);
-    if (Array.isArray(collection)) return collection.filter((element) => !equal(element, item));
+    if (Array.isArray(collection)) {
+      return collection.filter((element) => !equal(element, item, call.budget, call.at));
+    }
     if (isMap(collection)) {
       const key = keyOf(item);
       return mapOf(Object.entries(collection).filter(([name]) => name !== key));
@@ -224,15 +258,25 @@ export const FUNCTIONS: Record<string, Fn> = {
     walk(call, parts.length);
     return mapOf(people.map((id, i) => [keyOf(id), i < parts.length ? parts[i] : (rest ?? null)]));
   },
-  str: ([value]) => str(value ?? null),
+  str: ([value], call) => text(value ?? null, call.budget, call.at),
   join: ([list, separator], call) => {
     const all = items(list);
     walk(call, all.length);
-    return checkSize(all.map(str).join(separator === undefined ? ", " : str(separator)), call.at);
+    const between = separator === undefined ? ", " : text(separator, call.budget, call.at);
+    let out = "";
+    // Checked as it grows: a long list of long texts is refused before it is built.
+    for (const [i, item] of all.entries()) {
+      const next = out + (i ? between : "") + text(item, call.budget, call.at);
+      checkSize(next, call.at);
+      out = next;
+    }
+    return out;
   },
   bar: ([n, max, width], call) => {
     const cells =
-      width === undefined ? BAR_WIDTH : Math.min(40, integer(width, "bar's width", call));
+      width === undefined
+        ? BAR_WIDTH
+        : Math.min(40, Math.max(0, integer(width, "bar's width", call)));
     const total = typeof max === "number" && max > 0 ? max : 0;
     const part = typeof n === "number" && total ? Math.min(1, Math.max(0, n / total)) : 0;
     const filled = Math.round(part * cells);
@@ -247,3 +291,8 @@ export const FUNCTIONS: Record<string, Fn> = {
     return `${Math.floor(seconds / 86_400)} d ago`;
   },
 };
+
+/** Looked up by name from definitions: no prototype, nothing to add or change. */
+export const FUNCTIONS: Readonly<Record<string, Fn>> = Object.freeze(
+  Object.assign(Object.create(null) as Record<string, Fn>, BUILT_INS),
+);

@@ -24,8 +24,8 @@ Names: press 1–16 of a-z 0-9 _. A button shows only if show holds. callback da
 
 Language (not JavaScript)
 - Values as in JSON. Names: state fields, lets, user ({id, name}), arg, event, now, owner, and it, i, key inside each.
-- Operators: + - * / %, == != (deep), < <= > >=, && || !, ??, a ? b : c, a[i], a.b, x in list (or map key). Missing things are null; 1/0 is null; null + 1 is 1. Map keys are strings: players[user.id] works.
-- Templates: text, say and button labels take {expression}; {{ and }} are literal braces. Values are shown as text, never as markup.
+- Operators: + - * / %, == != (deep), < <= > >=, && || !, ??, a ? b : c, a[i], a.b, x in list (a map's key, or a piece of a text). Missing things are null; 1/0 is null; null + 1 is 1. False are null, false, 0, '', [] and {}. Map keys are strings: players[user.id] works. Assigning copies a list or map.
+- Templates: text, say and button labels take {expression}; {{ and }} are literal braces. Values are shown as text, never as markup. "{{" is always a literal brace, so an interpolation that starts with a map literal needs a space: { {a: 1}.a }. Action arguments are expressions, not templates: toast('Hi ' + user.name).
 - Functions: len keys values has count(list, v[, field]) sum min max slice without(list|map, v) tally(map) leader(map) top(map, n) | full(cells) line(cells, width, k) drop(cells, width, col) | random(n) pick shuffle deal(roles, ids, rest) | str join(list, sep) each(coll, 'template') bar(n, max) ago(t).
 - do: statements — "path = expr", "+=" (adds, or appends to a list), "-=" (subtracts, or removes from a list), an action, or {"if": expr, "do": [...], "else": [...]} (3 deep).
 
@@ -242,19 +242,21 @@ const QUIZ = {
     format: "rich",
     text: "## Quiz {over ? '— final' : '— ' + (q + 1) + '/' + len(questions)}\n\n{over ? '' : current.q}\n\n| # | Player | Points |\n|---|---|---|\n{each(top(scores, 10), '| {i + 1} | {names[it.key]} | {it.value} |\\n')}\n{len(answered)} answered",
     buttons: [
-      { each: "current.options", per_row: 3, text: "{it}", press: "answer" },
+      { each: "current.options", per_row: 3, text: "{it}", press: "answer", arg: "[q, i]" },
       [{ text: "Next ›", press: "next", show: "!over" }],
     ],
   },
   rules: [
+    // A press from the previous question's keyboard must not answer this one.
+    { on: "press:answer", when: "arg[0] != q", say: "That question is over" },
     { on: "press:answer", when: "user.id in answered", say: "You have answered" },
     {
       on: "press:answer",
       do: [
         "names[user.id] = user.name",
-        "answered[user.id] = arg",
+        "answered[user.id] = arg[1]",
         "scores[user.id] = scores[user.id] ?? 0",
-        { if: "arg == current.a", do: ["scores[user.id] += 1"] },
+        { if: "arg[1] == current.a", do: ["scores[user.id] += 1"] },
         "toast('Got it')",
       ],
     },
@@ -266,13 +268,57 @@ const QUIZ = {
   ],
 };
 
+/** A night pick: what each role does with it. */
+const NIGHT_PICK = [
+  "night[user.id] = arg",
+  { if: "roles[user.id] == 'mafia'", do: ["kill[user.id] = arg", "alert('Noted')"] },
+  { if: "roles[user.id] == 'doc'", do: ["saved = arg", "alert('You watch over them')"] },
+  {
+    if: "roles[user.id] == 'cop'",
+    do: ["alert(roles[arg] == 'mafia' ? 'Yes, mafia' : 'No, not mafia')"],
+  },
+  { if: "roles[user.id] == 'civ'", do: ["alert('You are asleep')"] },
+];
+
+/** The end of a mafia night: the victim (unless the doctor guarded them) leaves, then the win check. */
+const NIGHT_END = [
+  "out = leader(tally(kill))",
+  { if: "out == saved", do: ["out = null"] },
+  {
+    if: "out != null",
+    do: ["alive = without(alive, out)", "dead[out] = roles[out]", "roles = without(roles, out)"],
+  },
+  "phase = 'day'",
+  "night = {}",
+  "kill = {}",
+  "saved = null",
+];
+/** The end of a mafia day: the town's choice leaves (nobody on a tie). */
+const DAY_END = [
+  "out = leader(tally(votes))",
+  {
+    if: "out != null",
+    do: ["alive = without(alive, out)", "dead[out] = roles[out]", "roles = without(roles, out)"],
+  },
+  "votes = {}",
+  "day += 1",
+  "phase = 'night'",
+];
+/** Whether a side has won; the game ends then. */
+const WIN_CHECK = [
+  { if: "mafias == 0", do: ["winner = 'town'"] },
+  { if: "mafias > 0 && mafias * 2 >= len(alive)", do: ["winner = 'mafia'"] },
+  { if: "winner != null", do: ["phase = 'over'", "finish()"] },
+];
+
 const MAFIA = {
   title: "Mafia",
   brief:
-    "I am the host. night_over: tell the night's story in the chat (state.out is who is gone, or no one). day_over: who the town voted out. When one side wins, announce it and finish the scene.",
+    "I am the host. night_over: tell the night's story in the chat (state.out is who is gone, or no one). day_over: who the town voted out. state.winner set means the game is over: announce it. The owner's Next button (or act:next) ends a phase when someone does not tap.",
   state: {
     players: {},
     roles: {},
+    dead: {},
     alive: [],
     phase: "join",
     day: 0,
@@ -281,15 +327,22 @@ const MAFIA = {
     saved: null,
     votes: {},
     out: null,
+    winner: null,
   },
-  let: { playing: "str(user.id) in alive" },
+  let: {
+    playing: "str(user.id) in alive",
+    mafias: "count(values(roles), 'mafia')",
+    lastNight: "len(night) == len(alive) - 1",
+    lastVote: "len(votes) == len(alive) - 1",
+  },
   view: {
-    text: "**Mafia** — {phase == 'join' ? 'join in: ' + len(players) + ' so far' : phase == 'night' ? 'night ' + day + ': everyone taps a name' : 'day ' + day + ': vote someone out'}\n{each(alive, '• {players[it]}\\n')}{out ? 'Out: ' + players[out] : ''}",
+    text: "**Mafia** — {phase == 'join' ? 'join in: ' + len(players) + ' so far' : phase == 'night' ? 'night ' + day + ': everyone taps a name' : phase == 'day' ? 'day ' + day + ': vote someone out' : (winner == 'town' ? 'the town wins' : 'the mafia wins')}\n{each(alive, '• {players[it]}\\n')}{out ? 'Out: ' + players[out] : ''}",
     buttons: [
       [
         { text: "🙋 Join", press: "join", show: "phase == 'join'" },
         { text: "▶ Start", press: "start", show: "phase == 'join'" },
         { text: "🎭 My role", press: "role", show: "phase != 'join'" },
+        { text: "⏭ Next", press: "next", show: "phase == 'night' || phase == 'day'" },
       ],
       {
         each: "alive",
@@ -297,7 +350,7 @@ const MAFIA = {
         text: "{players[it]}{phase == 'day' ? ' · ' + count(values(votes), it) : ''}",
         press: "pick",
         arg: "it",
-        show: "phase != 'join'",
+        show: "phase == 'night' || phase == 'day'",
       },
     ],
   },
@@ -316,55 +369,43 @@ const MAFIA = {
         "day = 1",
       ],
     },
+    { on: "press:role", when: "user.id in dead", say: "You were {dead[user.id]}" },
     { on: "press:role", when: "!(user.id in roles)", say: "You are not playing" },
     { on: "press:role", do: ["alert('You are ' + roles[user.id])"] },
     { on: "press:pick", when: "!playing", say: "You are out of the game" },
     { on: "press:pick", when: "phase == 'night' && user.id in night", say: "You have chosen" },
+    { on: "press:pick", when: "phase == 'day' && user.id in votes", say: "You have voted" },
+    // Only the pick that ends a phase wakes the host; the others are quiet.
     {
       on: "press:pick",
+      when: "phase == 'night' && lastNight",
+      do: [...NIGHT_PICK, ...NIGHT_END, ...WIN_CHECK, "wake('night_over')"],
+    },
+    { on: "press:pick", when: "phase == 'night'", do: NIGHT_PICK },
+    {
+      on: "press:pick",
+      when: "phase == 'day' && lastVote",
+      do: ["votes[user.id] = arg", ...DAY_END, ...WIN_CHECK, "wake('day_over')"],
+    },
+    { on: "press:pick", when: "phase == 'day'", do: ["votes[user.id] = arg"] },
+    {
+      on: "press:next",
+      who: "owner",
       when: "phase == 'night'",
-      do: [
-        "night[user.id] = arg",
-        { if: "roles[user.id] == 'mafia'", do: ["kill[user.id] = arg", "alert('Noted')"] },
-        { if: "roles[user.id] == 'doc'", do: ["saved = arg", "alert('You watch over them')"] },
-        {
-          if: "roles[user.id] == 'cop'",
-          do: ["alert(roles[arg] == 'mafia' ? 'Yes, mafia' : 'No, not mafia')"],
-        },
-        { if: "roles[user.id] == 'civ'", do: ["alert('You are asleep')"] },
-        {
-          if: "len(night) == len(alive)",
-          do: [
-            "out = leader(tally(kill))",
-            { if: "out == saved", do: ["out = null"] },
-            { if: "out != null", do: ["alive = without(alive, out)"] },
-            "phase = 'day'",
-            "night = {}",
-            "kill = {}",
-            "saved = null",
-            "wake('night_over')",
-          ],
-        },
-      ],
+      do: [...NIGHT_END, ...WIN_CHECK, "wake('night_over')"],
     },
-    { on: "press:pick", when: "user.id in votes", say: "You have voted" },
     {
-      on: "press:pick",
-      do: [
-        "votes[user.id] = arg",
-        {
-          if: "len(votes) == len(alive)",
-          do: [
-            "out = leader(tally(votes))",
-            { if: "out != null", do: ["alive = without(alive, out)"] },
-            "votes = {}",
-            "day += 1",
-            "phase = 'night'",
-            "wake('day_over')",
-          ],
-        },
-      ],
+      on: "press:next",
+      who: "owner",
+      when: "phase == 'day'",
+      do: [...DAY_END, ...WIN_CHECK, "wake('day_over')"],
     },
+    {
+      on: "act:next",
+      when: "phase == 'night'",
+      do: [...NIGHT_END, ...WIN_CHECK, "wake('night_over')"],
+    },
+    { on: "act:next", when: "phase == 'day'", do: [...DAY_END, ...WIN_CHECK, "wake('day_over')"] },
   ],
 };
 
@@ -386,7 +427,7 @@ export function guide(topic: string | undefined): string {
   if (topic === "presets") {
     return `Presets: ${list}. Each is a complete definition: ask for one by name, change it to fit, pass it to create_scene.`;
   }
-  const preset = PRESETS[topic];
+  const preset = Object.hasOwn(PRESETS, topic) ? PRESETS[topic] : null;
   if (!preset) return `No preset "${topic}". There are: ${list}.`;
   return JSON.stringify(preset, null, 2);
 }
